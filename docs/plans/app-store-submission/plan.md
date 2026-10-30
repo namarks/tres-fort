@@ -100,6 +100,9 @@ distribution is not that evidence.
   - [x] Select build 40 and retain Apple's review-submission receipt. The owner
     submitted 1.0 (40) on 2026-09-14 at 01:23:28 UTC (2026-09-13 Pacific);
     API readback confirms WAITING_FOR_REVIEW and MANUAL release.
+  - [x] Resubmit with a compatible candidate. On 2026-10-30 the owner approved the
+    reply and resubmission of 1.0 (55). Apple shows WAITING_FOR_REVIEW, submitted
+    at 18:11:27 UTC, with MANUAL release ([release 55](release-55.md#resubmission)).
   - [ ] Resolve remaining P1/P2/P3 verification requirements and any Apple review
     response before the separately authorized public-release decision. Submission
     acceptance does not establish that unperformed checks passed or were waived.
@@ -117,18 +120,12 @@ distribution is not that evidence.
 
 ## Next step
 
-**Now (@owner):** Version 1.0 selects the public iPhone/iPad candidate
-[1.0 (55)](release-55.md) from main `2b30078`, VALID and App Store eligible,
-PREPARE_FOR_SUBMISSION and MANUAL. The September review submission remains
-UNRESOLVED_ISSUES until you reply and resubmit. With your approval the
-description, promotional text and App Review notes were updated, the demo login
-was cleared, and App Privacy was republished with Contacts, Other Data Types and
-Product Interaction. The Free Apps Agreement is active, and the October 8 policy
-is [published](policy-publication-2026-10-11.md). The review notes name build 55,
-and the listing screenshots match it ([release 55](release-55.md#screenshots)).
-Camera beta [56](release-56.md) keeps camera tracking on test devices. Decide
-the device checks below, then approve posting the prepared
-[rejection reply](review-package.md) with build 55 and resubmitting.
+**Now (@owner):** Version 1.0 (55) is **WAITING_FOR_REVIEW** with Apple, resubmitted
+on 2026-10-30 ([release 55](release-55.md#resubmission)). Watch for Apple's
+response. Approval does not publish anything: release is MANUAL and stays a
+separate owner decision. The device checks below were neither confirmed done nor
+explicitly waived before resubmission, so they remain open. Complete them or
+record a waiver before releasing.
 
 **In parallel (@agent):** Finish the runnable P1/P2 audit against the build-55
 source `2b30078`. Reconcile the listing copy and reviewer instructions with the
@@ -139,10 +136,9 @@ fields. Make no App Store Connect, provider or production writes.
 **Owner checks:** Perform the
 designated-account consent/workout/export/deletion checks, native iPad layout
 checks and [manual partner trial](../partner-training/validation.md) with two
-phones/accounts and one iPad on build 55, or record an explicit waiver. Further screenshot or metadata
-changes, replying to Apple,
-resubmission and eventual MANUAL public release remain separately authorized
-actions. No provider write or account/training mutation is part of this
+phones/accounts and one iPad on build 55, or record an explicit waiver. Further
+screenshot or metadata changes, any further reply to Apple and eventual MANUAL
+public release remain separately authorized actions. No provider write or account/training mutation is part of this
 preparation.
 
 The [readiness evidence](readiness-2026-10-07.md) records fresh Apple, public-site,
@@ -288,8 +284,8 @@ The serving Worker (`156a73d0…`) was deployed on 2026-10-29 outside this
 workflow, without a source annotation. Migration 0057 is applied.
 
 **Current Apple readback (2026-10-30):** Version 1.0 selects **build 55**,
-**PREPARE_FOR_SUBMISSION**, with **MANUAL** release. Review submission
-`ea595b5e…` remains UNRESOLVED_ISSUES. No reply, resubmission or public release
+**WAITING_FOR_REVIEW**, with **MANUAL** release. Review submission `ea595b5e…` was
+resubmitted at `2026-10-30T18:11:27Z` with the approved reply. No public release
 occurred.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against the selected

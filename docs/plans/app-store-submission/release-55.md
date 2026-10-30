@@ -124,9 +124,27 @@ order was restored. A readback at `2026-10-30T17:45:15Z` shows iPhone 6.9-inch
 The three earlier cosmetic points remain. Progress is not in the capture sequence,
 so its streak and day grid do not appear.
 
+## Resubmission
+
+On October 30 the owner approved "post the reply and resubmit 1.0 (55)". These
+steps were done in the owner's signed-in Chrome session:
+
+1. Posted the prepared [rejection reply](review-package.md) with build 55 filled
+   in (1,167 characters), shown on the submission at 11:10 AM Pacific.
+2. Used the version page's update action to return 1.0 (55) to the submission.
+   Apple warned that a newer build exists. That build is camera beta 56, which
+   must not be submitted, so build 55 was kept.
+3. Chose **Resubmit to App Review**.
+
+An API readback at `2026-10-30T18:11:35Z` shows review submission `ea595b5e…`
+**WAITING_FOR_REVIEW**, submitted `2026-10-30T18:11:27Z`, with version 1.0 on
+**build 55**, **WAITING_FOR_REVIEW**, release type **MANUAL**. The page shows the
+same state and both messages.
+
 ## Verification boundary
 
+The owner was asked twice whether the device checks were done or waived, and did
+not answer before approving resubmission. This record does not claim either.
 The designated-account, native iPad and three-device partner checks remain
-unperformed on the public candidate. Authenticated workout compatibility with
-the serving Worker is also unverified. No App Review reply, resubmission or
-release occurred.
+unconfirmed on the public candidate, and authenticated workout compatibility with
+the serving Worker is unverified. No public release occurred.

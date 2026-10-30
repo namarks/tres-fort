@@ -12,21 +12,20 @@ within the agreed tolerance of a Garmin watch on the same run.
 
 ## Phases
 
-- [ ] **P0 — Upload a recorded run to intervals.icu**
-  - Add an app-JWT endpoint that accepts one recorded run (a FIT or GPX file
-    and its client UUID) and uploads it to the member's intervals.icu account
-    through `src/intervals.ts` with external_id `tresfort:recording:<uuid>`.
-  - Make retries idempotent on that external_id: a retry that finds the
-    activity already there returns it instead of uploading again.
-  - Pass the file through without storing the GPS stream in D1. The existing
-    activity sync then brings the run into `external_activities`, like any
-    other intervals.icu activity.
-  - Provider failure is an error with no local fallback. A write 401/403 never
-    disconnects the read credential, the same as `log_activity`.
-  - Verify with injected-fetcher tests for success, retry, duplicate,
-    disconnected, write-forbidden and oversized files. Confirm the
-    intervals.icu upload request shape and external_id handling against the
-    live API before release.
+- [x] **P0 — Upload a recorded run to intervals.icu**
+  - `POST /api/activities/recordings` (app JWT, multipart `id`, `date`,
+    optional `name`, `file`) uploads one recorded run to the member's
+    intervals.icu account through `uploadActivityFile` in `src/intervals.ts`
+    with external_id `tresfort:recording:<uuid>`.
+  - Retries are idempotent on that external_id: a retry that finds the
+    activity a day either side of the run date returns it instead of
+    uploading again, and a file intervals.icu already had answers 200.
+  - Only `.fit`, `.gpx` and `.tcx` files up to 10 MB whose first bytes match
+    the extension are accepted. The file passes through and is never stored
+    in D1; the existing activity sync brings the run into
+    `external_activities`.
+  - Provider failure is an error with no local fallback. A write 401/403
+    never disconnects the read credential, the same as `log_activity`.
 - [ ] **P1 — Record a run on iPhone**
   - Requires iOS 26 or later, which supports `HKWorkoutSession`,
     `HKLiveWorkoutBuilder` and `HKWorkoutRouteBuilder` on iPhone. On older
@@ -57,6 +56,12 @@ within the agreed tolerance of a Garmin watch on the same run.
     within 4% on the others, unless the owner sets a different tolerance.
   - Verify a locked phone for the whole run, a force-quit mid-run, no network
     at the end, and that the upload and Health save each land once.
+  - Confirm against the live intervals.icu API that the first real upload
+    creates one activity carrying the recording external_id and name, and
+    that a retry returns it. P0's request shape (query-string `name` and
+    `external_id`, multipart `file`, 201 created or 200 duplicate) comes
+    from intervals.icu's API conventions and has only been tested against
+    mocks.
 
 ## Dependencies
 
@@ -70,8 +75,19 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@agent):** Build P0 behind injected-fetcher tests, confirm the
-intervals.icu upload request shape, and open its PR.
+**Now (@agent):** Build P1, the iOS 26 recorder that saves the run to Apple
+Health and queues its upload to P0's endpoint, behind simulator tests.
+
+P0 is delivered in the repository by the PR that checked it. Its Worker
+deploy needs separate authority, and its live upload check is part of P3.
+
+## Verification evidence
+
+- P0: `test/run_recording.test.ts` covers format detection, upload with the
+  recording external_id and name, retry by external_id, provider duplicate,
+  write rejection with the read credential kept, provider 5xx/4xx and lookup
+  failure, a member without a connection, form validation and the 10 MB
+  limit, all against mocked intervals.icu responses.
 
 ## Notes / open questions
 
@@ -92,4 +108,6 @@ intervals.icu upload request shape, and open its PR.
   plan.
 - Recovering the Sep 4 to Oct 27, 2026 Strava runs is an owner task (Strava
   export uploaded to intervals.icu), not part of this plan.
+- `delete_activity` deletes only `tresfort:activity:` activities, so it can't
+  remove a recorded run. Whether it should is open.
 - Merging any phase doesn't authorize a Worker deploy or an iOS distribution.

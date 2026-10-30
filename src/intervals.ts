@@ -20,7 +20,7 @@ export type Fetcher = (
   init?: {
     method?: string;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | FormData;
     signal?: AbortSignal;
   },
 ) => Promise<{
@@ -532,16 +532,19 @@ function activityRef(raw: Record<string, unknown>): IntervalsActivityRef | null 
   };
 }
 
+/** A FormData body is sent as multipart (fetch sets the boundary); any
+ *  other body is sent as JSON. A success also carries the HTTP status. */
 async function intervalsRequest(
   url: string,
   method: 'GET' | 'POST' | 'DELETE',
   authHeader: string,
   body: unknown,
   deps: WriteDeps,
-): Promise<IntervalsWriteResult<unknown>> {
+): Promise<Extract<IntervalsWriteResult<unknown>, { ok: false }> | { ok: true; value: unknown; status: number }> {
   const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
+  const multipart = body instanceof FormData;
   let res: Awaited<ReturnType<Fetcher>>;
   try {
     res = await fetcher(url, {
@@ -549,9 +552,9 @@ async function intervalsRequest(
       headers: {
         Authorization: authHeader,
         Accept: 'application/json',
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(body === undefined || multipart ? {} : { 'Content-Type': 'application/json' }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(body === undefined ? {} : { body: multipart ? body : JSON.stringify(body) }),
       signal: controller.signal,
     });
   } catch {
@@ -577,7 +580,7 @@ async function intervalsRequest(
   }
   // A DELETE may answer with an empty body; only reads and creates need JSON.
   if (parseFailed && method !== 'DELETE') return { ok: false, reason: 'parse' };
-  return { ok: true, value: parsed };
+  return { ok: true, value: parsed, status: res.status };
 }
 
 /** POST one manual activity; returns the created provider activity. */
@@ -596,6 +599,63 @@ export async function createManualActivity(
   if (!r.ok) return r;
   const ref = isRecord(r.value) ? activityRef(r.value) : null;
   return ref ? { ok: true, value: ref } : { ok: false, reason: 'parse' };
+}
+
+/** One activity file for POST /api/v1/athlete/{id}/activities. */
+export interface ActivityFileInput {
+  file: Blob;
+  /** Its extension (.fit, .gpx or .tcx) tells intervals.icu the format. */
+  filename: string;
+  name?: string;
+  external_id: string;
+}
+
+/** The provider activities an upload produced. intervals.icu dedupes on a
+ *  hash of the file and answers 200 instead of 201 when nothing was new. */
+export interface ActivityUpload {
+  ids: string[];
+  created: boolean;
+}
+
+/** Provider ids in an upload response, whichever of its shapes arrives: one
+ *  activity, `{ activities: [...] }`, or a bare array. */
+function uploadedIds(v: unknown): string[] {
+  const items = Array.isArray(v)
+    ? v
+    : isRecord(v) && Array.isArray(v.activities)
+      ? v.activities
+      : [v];
+  const ids: string[] = [];
+  for (const item of items) {
+    const id = isRecord(item) ? providerId(item.id) : null;
+    if (id !== null && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/** Upload an activity file (multipart), which intervals.icu analyzes like a
+ *  watch upload. Name and external_id go in the query string. */
+export async function uploadActivityFile(
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
+  input: ActivityFileInput,
+  deps: WriteDeps = {},
+): Promise<IntervalsWriteResult<ActivityUpload>> {
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
+  const query = new URLSearchParams({ external_id: input.external_id });
+  if (input.name) query.set('name', input.name);
+  const url =
+    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
+    `/activities?${query.toString()}`;
+  const form = new FormData();
+  form.append('file', input.file, input.filename);
+  const r = await intervalsRequest(url, 'POST', authHeader, form, {
+    ...deps,
+    timeoutMs: deps.timeoutMs ?? 30_000,
+  });
+  if (!r.ok) return r;
+  return { ok: true, value: { ids: uploadedIds(r.value), created: r.status === 201 } };
 }
 
 /** GET the athlete's completed activities in [oldest, newest] (civil dates). */

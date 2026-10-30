@@ -98,6 +98,9 @@ import {
   updateExercise,
   swapExercise,
   upsertHealthKitActivity,
+  uploadRecordedRun,
+  recordingFormat,
+  MAX_RECORDING_BYTES,
   writeAudit,
   ensureActivePlan,
 } from '../db';
@@ -1389,6 +1392,56 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     raw: typeof b.raw === 'string' ? b.raw : null,
   });
   return c.json(row, 201);
+});
+
+// POST /api/activities/recordings — a run recorded in the app, as multipart
+// form data: `id` (client UUID, the idempotency key), `date` (civil start
+// date), optional `name`, and `file` (.fit, .gpx or .tcx). The file is
+// uploaded to the member's intervals.icu account and never stored here
+// (docs/plans/run-recorder). 201 when uploaded, 200 when an earlier attempt
+// already did.
+const RECORDING_ERROR_STATUS = {
+  intervals_not_connected: 409,
+  intervals_write_forbidden: 409,
+  intervals_rejected: 422,
+  intervals_unavailable: 502,
+  not_found: 404,
+} as const;
+
+apiRoutes.post('/activities/recordings', async (c) => {
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const id = form.get('id');
+  if (typeof id !== 'string' || !UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400);
+  const date = form.get('date');
+  if (typeof date !== 'string' || !ISO_DATE_RE.test(date)) return c.json({ error: 'invalid_date' }, 400);
+  const name = form.get('name');
+  if (name !== null && (typeof name !== 'string' || name.length > 200)) {
+    return c.json({ error: 'invalid_name' }, 400);
+  }
+  // The Workers FormData typing omits File entries; check at runtime.
+  const file = form.get('file') as unknown;
+  if (!(file instanceof File) || file.size === 0) {
+    return c.json({ error: 'invalid_file' }, 400);
+  }
+  if (file.size > MAX_RECORDING_BYTES) return c.json({ error: 'file_too_large' }, 413);
+  const head = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
+  const format = recordingFormat(file.name, head);
+  if (format === null) return c.json({ error: 'unsupported_file' }, 400);
+
+  const result = await uploadRecordedRun(c.env.DB, c.env, c.get('userId'), {
+    recording_id: id,
+    date,
+    file,
+    format,
+    name: name && name.trim().length > 0 ? name.trim() : null,
+  });
+  if ('error' in result) return c.json(result, RECORDING_ERROR_STATUS[result.error]);
+  return c.json(result, result.deduplicated ? 200 : 201);
 });
 
 // PATCH /api/me/health-sharing — flip the Apple Health group-feed opt-in

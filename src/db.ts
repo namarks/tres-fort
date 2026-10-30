@@ -8857,8 +8857,11 @@ export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnectio
   seedOwnerIntervalsCredsFromEnv, ensureOwnerUser, getIntervalsConnectionStatus,
   getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals,
 });
-export type { EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult } from './services/intervalsActivityWrite';
-export const { logEnduranceActivity, deleteIntervalsActivityByExternalId } = createIntervalsActivityWriteService({
+export type {
+  EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult, RecordedRunInput, RecordedRunUploadResult,
+} from './services/intervalsActivityWrite';
+export { MAX_RECORDING_BYTES, recordingFormat } from './services/intervalsActivityWrite';
+export const { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun } = createIntervalsActivityWriteService({
   resolveIntervalsCredential, syncExternalActivities,
 });
 

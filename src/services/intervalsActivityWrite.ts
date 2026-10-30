@@ -10,6 +10,7 @@ import {
   createManualActivity,
   deleteIntervalsActivity,
   listActivityRefs,
+  uploadActivityFile,
   type Fetcher,
   type IntervalsActivityRef,
   type IntervalsWriteResult,
@@ -30,6 +31,54 @@ export function tresFortExternalId(id: string): string {
 function isTresFortCreated(externalId: string | null): externalId is string {
   return externalId !== null && externalId.startsWith(TRES_FORT_ACTIVITY_PREFIX);
 }
+
+/** Prefix that marks a run recorded in the Tres Fort app and uploaded as a
+ *  file (docs/plans/run-recorder). */
+export const TRES_FORT_RECORDING_PREFIX = 'tresfort:recording:';
+
+/** Largest recorded-run file accepted. A two-hour GPX at one point per
+ *  second is a few megabytes; FIT is far smaller. */
+export const MAX_RECORDING_BYTES = 10 * 1024 * 1024;
+
+export type RecordingFormat = 'fit' | 'gpx' | 'tcx';
+
+/**
+ * The file's format, from its extension, when its first bytes agree: a FIT
+ * header carries ".FIT" at offset 8, and GPX/TCX are XML with their root
+ * element near the start. Null for anything else.
+ */
+export function recordingFormat(filename: string, head: Uint8Array): RecordingFormat | null {
+  const ext = /\.([a-z]+)$/i.exec(filename)?.[1]?.toLowerCase();
+  if (ext === 'fit') {
+    return String.fromCharCode(...head.subarray(8, 12)) === '.FIT' ? 'fit' : null;
+  }
+  if (ext !== 'gpx' && ext !== 'tcx') return null;
+  const text = new TextDecoder().decode(head.subarray(0, 1024));
+  if (ext === 'gpx') return text.includes('<gpx') ? 'gpx' : null;
+  return text.includes('<TrainingCenterDatabase') ? 'tcx' : null;
+}
+
+export interface RecordedRunInput {
+  /** Client UUID of the recording; sent prefixed as the provider external_id. */
+  recording_id: string;
+  /** Civil start date, for the earlier-upload lookup and the refresh window. */
+  date: string;
+  file: Blob;
+  format: RecordingFormat;
+  name: string | null;
+}
+
+export type RecordedRunUploadResult =
+  | {
+      ok: true;
+      destination: 'intervals.icu';
+      deduplicated: boolean;
+      recording_id: string;
+      /** Null only when intervals.icu reported a duplicate file without its id. */
+      intervals_activity_id: string | null;
+      refresh: RefreshSummary;
+    }
+  | EnduranceWriteError;
 
 export interface EnduranceActivityInput {
   /** Tres Fort activity UUID; sent prefixed as the provider external_id. */
@@ -316,5 +365,63 @@ export function createIntervalsActivityWriteService({
     };
   }
 
-  return { logEnduranceActivity, deleteIntervalsActivityByExternalId };
+  /**
+   * Upload a run recorded in the app to intervals.icu as an activity file,
+   * unless an earlier attempt already did. The GPS stream passes through and
+   * is never stored here; the activity returns through the normal sync.
+   * Provider failure is an error, never a local fallback.
+   */
+  async function uploadRecordedRun(
+    db: D1Database,
+    env: Env,
+    userId: string,
+    input: RecordedRunInput,
+    deps: WriteServiceDeps = {},
+  ): Promise<RecordedRunUploadResult> {
+    const cred = await resolveIntervalsCredential(db, env, userId);
+    if (!cred) return NOT_CONNECTED;
+    const request = { fetcher: deps.fetcher, accessToken: cred.accessToken };
+    const externalId = `${TRES_FORT_RECORDING_PREFIX}${input.recording_id}`;
+
+    // A day either side: the device's civil date and intervals.icu's local
+    // date can differ for a run that crosses midnight or a timezone.
+    const existing = await listActivityRefs(
+      cred.apiKey, cred.athleteId, addDays(input.date, -1), addDays(input.date, 1), request,
+    );
+    if (!existing.ok) return providerError(existing, 'check for an earlier upload');
+    const earlier = existing.value.find((r) => r.external_id === externalId);
+    if (earlier) {
+      return {
+        ok: true,
+        destination: 'intervals.icu',
+        deduplicated: true,
+        recording_id: input.recording_id,
+        intervals_activity_id: earlier.id,
+        refresh: await refresh(db, env, userId, earlier.start_date_local?.slice(0, 10) ?? input.date, deps),
+      };
+    }
+
+    const uploaded = await uploadActivityFile(
+      cred.apiKey,
+      cred.athleteId,
+      {
+        file: input.file,
+        filename: `${input.recording_id}.${input.format}`,
+        ...(input.name ? { name: input.name } : {}),
+        external_id: externalId,
+      },
+      request,
+    );
+    if (!uploaded.ok) return providerError(uploaded, 'upload the run');
+    return {
+      ok: true,
+      destination: 'intervals.icu',
+      deduplicated: !uploaded.value.created,
+      recording_id: input.recording_id,
+      intervals_activity_id: uploaded.value.ids[0] ?? null,
+      refresh: await refresh(db, env, userId, input.date, deps),
+    };
+  }
+
+  return { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun };
 }

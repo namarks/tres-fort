@@ -7,7 +7,9 @@ import UIKit
 /// workout engine saves it to Apple Health; the route, totals and heart rate
 /// are checkpointed into `RunRecordingStore` every few seconds, so a crash or
 /// a dead battery keeps the run, and a finished run uploads to intervals.icu
-/// through `RunRecordingUploader` on finish, launch and foreground.
+/// through `RunRecordingUploader` on finish, launch and foreground. While it
+/// records, a Live Activity mirrors it on the Lock Screen with pause, resume
+/// and finish, and each mile or kilometer can be announced (P2).
 @MainActor
 final class RunRecorderModel: ObservableObject {
     enum Phase: Equatable {
@@ -39,9 +41,30 @@ final class RunRecorderModel: ObservableObject {
     /// Health not saving the workout.
     @Published private(set) var note: String?
     @Published private(set) var latestHeartRate: RecordedRun.HeartRateSample?
+    /// Per-device choices, kept between runs.
+    @Published var unit: RunDistanceUnit {
+        didSet {
+            guard unit != oldValue else { return }
+            defaults.set(unit.rawValue, forKey: Self.unitKey)
+            if let run, isRecording {
+                splits = RunSplitTracker(unit: unit, meters: run.distanceMeters,
+                                         movingSeconds: run.activeSeconds(at: now()))
+                refreshLiveActivity(force: true)
+            }
+        }
+    }
+    @Published var announcesSplits: Bool {
+        didSet { defaults.set(announcesSplits, forKey: Self.announceKey) }
+    }
+
+    static let unitKey = "runRecorder.distanceUnit"
+    static let announceKey = "runRecorder.announceSplits"
 
     /// Seconds between checkpoints while route points arrive.
     static let checkpointInterval: TimeInterval = 10
+    /// Seconds between Live Activity updates for distance and pace; the
+    /// clock runs on its own, and pause and resume update at once.
+    static let liveActivityInterval: TimeInterval = 5
 
     private let accountID: String?
     private let baseURL: URL?
@@ -52,6 +75,9 @@ final class RunRecorderModel: ObservableObject {
     private let makeEngine: @MainActor () -> RunWorkoutEngine?
     private let makeLocation: @MainActor () -> RunLocationSource
     private let now: @MainActor () -> Date
+    private let defaults: UserDefaults
+    private let liveActivity: RunLiveActivityPresenting
+    private let makeSpeaker: @MainActor () -> RunSplitSpeaking
 
     private var cachedStore: RunRecordingStore?
     private var engine: RunWorkoutEngine?
@@ -59,6 +85,9 @@ final class RunRecorderModel: ObservableObject {
     private var lastCheckpoint: Date?
     private var builderMoving: Double = 0
     private var isUploading = false
+    private var splits: RunSplitTracker?
+    private var speaker: RunSplitSpeaking?
+    private var lastActivityUpdate: Date?
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -79,7 +108,10 @@ final class RunRecorderModel: ObservableObject {
          onUploaded: @escaping @MainActor () -> Void = {},
          makeEngine: (@MainActor () -> RunWorkoutEngine?)? = nil,
          makeLocation: (@MainActor () -> RunLocationSource)? = nil,
-         now: @escaping @MainActor () -> Date = Date.init) {
+         now: @escaping @MainActor () -> Date = Date.init,
+         defaults: UserDefaults = .standard,
+         liveActivity: RunLiveActivityPresenting? = nil,
+         makeSpeaker: (@MainActor () -> RunSplitSpeaking)? = nil) {
         self.accountID = accountID
         self.baseURL = baseURL
         self.api = api
@@ -92,6 +124,11 @@ final class RunRecorderModel: ObservableObject {
         }
         self.makeLocation = makeLocation ?? { CoreLocationRunSource() }
         self.now = now
+        self.defaults = defaults
+        self.liveActivity = liveActivity ?? SystemRunLiveActivity()
+        self.makeSpeaker = makeSpeaker ?? { SystemRunSplitSpeaker() }
+        unit = defaults.string(forKey: RunRecorderModel.unitKey).flatMap(RunDistanceUnit.init(rawValue:)) ?? .miles
+        announcesSplits = defaults.bool(forKey: RunRecorderModel.announceKey)
     }
 
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
@@ -167,8 +204,10 @@ final class RunRecorderModel: ObservableObject {
         }
         bind(engine: engine, location: location)
         self.run = run
+        splits = RunSplitTracker(unit: unit)
         phase = .running
         checkpoint(force: true)
+        refreshLiveActivity(force: true)
         location.start()
     }
 
@@ -179,6 +218,7 @@ final class RunRecorderModel: ObservableObject {
         phase = .paused
         engine?.pause()
         checkpoint(force: true)
+        refreshLiveActivity(force: true)
     }
 
     func resume() {
@@ -188,6 +228,7 @@ final class RunRecorderModel: ObservableObject {
         phase = .running
         engine?.resume()
         checkpoint(force: true)
+        refreshLiveActivity(force: true)
     }
 
     /// Saves the run to Health, keeps it for upload and sends it.
@@ -210,6 +251,7 @@ final class RunRecorderModel: ObservableObject {
         finished.movingSeconds = builderMoving > 0 ? builderMoving : finished.activeSeconds(at: endedAt)
         self.run = finished
         unbind()
+        liveActivity.endAll()
         if finished.points.isEmpty && finished.distanceMeters < 1 {
             // Nothing a provider could analyze; don't leave an upload that
             // fails forever.
@@ -229,6 +271,7 @@ final class RunRecorderModel: ObservableObject {
         location?.stop()
         engine?.discard()
         unbind()
+        liveActivity.endAll()
         try? store(creating: false)?.remove(id: run.id)
         self.run = nil
         phase = .idle
@@ -258,6 +301,9 @@ final class RunRecorderModel: ObservableObject {
         engine.onMetrics = { [weak self] in self?.apply($0) }
         engine.onFailure = { [weak self] in self?.engineFailed($0) }
         location.onLocations = { [weak self] in self?.handle($0) }
+        RunRecorderControl.handler = { [weak self] id, action in
+            await self?.control(recordingID: id, action: action) ?? false
+        }
     }
 
     private func unbind() {
@@ -267,6 +313,9 @@ final class RunRecorderModel: ObservableObject {
         engine = nil
         location = nil
         lastCheckpoint = nil
+        lastActivityUpdate = nil
+        splits = nil
+        RunRecorderControl.handler = nil
     }
 
     /// The Health session died under the run. Keep what was recorded as a
@@ -280,6 +329,7 @@ final class RunRecorderModel: ObservableObject {
         run.movingSeconds = builderMoving > 0 ? builderMoving : run.activeSeconds(at: endedAt)
         self.run = run
         unbind()
+        liveActivity.endAll()
         checkpoint(force: true)
         note = message
         phase = .finished
@@ -296,6 +346,8 @@ final class RunRecorderModel: ObservableObject {
             latestHeartRate = sample
         }
         self.run = run
+        if phase == .running { announceSplitIfDue() }
+        refreshLiveActivity()
     }
 
     func handle(_ locations: [CLLocation]) {
@@ -313,6 +365,60 @@ final class RunRecorderModel: ObservableObject {
         self.run = run
         engine?.addRoute(accepted)
         checkpoint()
+        refreshLiveActivity()
+    }
+
+    // MARK: - Lock Screen and splits
+
+    /// What the Live Activity shows now: the clock start shifted by every
+    /// pause, or the frozen time while paused.
+    func liveActivityState() -> RunActivityAttributes.ContentState? {
+        guard let run else { return nil }
+        let time = now()
+        let moving = run.activeSeconds(at: time)
+        return .init(clockStart: time.addingTimeInterval(-moving),
+                     pausedSeconds: phase == .paused ? moving : nil,
+                     meters: run.distanceMeters,
+                     currentPace: RunPace.current(run, unit: unit),
+                     unit: unit)
+    }
+
+    private func refreshLiveActivity(force: Bool = false) {
+        guard phase == .running || phase == .paused, let run, let state = liveActivityState() else { return }
+        let time = now()
+        if !force, let lastActivityUpdate,
+           time.timeIntervalSince(lastActivityUpdate) < Self.liveActivityInterval { return }
+        lastActivityUpdate = time
+        liveActivity.show(recordingID: run.uploadID, state: state)
+    }
+
+    /// Keeps counting splits while announcements are off, so turning them on
+    /// mid-run speaks only the next one.
+    private func announceSplitIfDue() {
+        guard let run, var tracker = splits else { return }
+        let split = tracker.update(meters: run.distanceMeters, movingSeconds: run.activeSeconds(at: now()))
+        splits = tracker
+        guard let split, announcesSplits else { return }
+        if speaker == nil { speaker = makeSpeaker() }
+        speaker?.speak(split.spokenText)
+    }
+
+    /// A Live Activity button. Only the run being recorded answers; a
+    /// repeated tap that already happened counts as done.
+    func control(recordingID: String, action: String) async -> Bool {
+        guard let run, run.uploadID == recordingID,
+              let action = RunRecorderControlIntent.Action(rawValue: action) else { return false }
+        switch action {
+        case .pause:
+            if phase == .running { pause() }
+            return phase == .paused
+        case .resume:
+            if phase == .paused { resume() }
+            return phase == .running
+        case .finish:
+            if phase == .running || phase == .paused { await end() }
+            return phase == .finished
+        }
     }
 
     // MARK: - Recovery and upload
@@ -322,8 +428,13 @@ final class RunRecorderModel: ObservableObject {
     /// Returns true when a run is recording again.
     @discardableResult
     func recover() async -> Bool {
-        guard phase == .idle, let store = store(creating: false),
-              let unfinished = try? store.unfinished() else {
+        guard phase == .idle else {
+            await uploadPending()
+            return false
+        }
+        guard let store = store(creating: false), let unfinished = try? store.unfinished() else {
+            // Nothing is recording, so any run activity is left over.
+            liveActivity.endAll()
             await uploadPending()
             return false
         }
@@ -336,11 +447,15 @@ final class RunRecorderModel: ObservableObject {
             if state == .running { run.closePause(at: now()) }
             if state == .paused && !run.isPaused { run.pauses.append(.init(start: now(), end: nil)) }
             self.run = run
+            splits = RunSplitTracker(unit: unit, meters: run.distanceMeters,
+                                     movingSeconds: run.activeSeconds(at: now()))
             phase = state == .paused ? .paused : .running
             checkpoint(force: true)
+            refreshLiveActivity(force: true)
             location.start()
             return true
         }
+        liveActivity.endAll()
         var finished = unfinished
         let endedAt = max(finished.points.last?.timestamp ?? finished.startedAt,
                           finished.pauses.last?.start ?? finished.startedAt)

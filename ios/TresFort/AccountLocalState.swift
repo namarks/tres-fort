@@ -140,6 +140,8 @@ enum AccountLocalState {
         var erased = true
         do { try StationRecordingStore.deleteAccountRecordings(accountID: userID) }
         catch { erased = false }
+        do { try RunRecordingStore.deleteAccountRecordings(accountID: userID) }
+        catch { erased = false }
         for key in protectedKeys {
             if !defaults.eraseAfterAccountDeletion(forKey: key) { erased = false }
         }

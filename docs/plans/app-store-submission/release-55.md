@@ -85,8 +85,8 @@ Listing (API, readback at `2026-10-30T00:54:12Z`):
 - **Unchanged:** keywords, support and marketing URLs, name, subtitle and
   privacy-policy URL.
 
-The notes begin "Version 1.0 (53)". They were written before build 55 was
-selected and need that build number updated.
+The notes first began "Version 1.0 (53)". With the owner's approval they were
+changed to "Version 1.0 (55)" on October 30; the rest of the text is unchanged.
 
 App Privacy (App Store Connect web UI in the owner's signed-in browser): before
 the change, the published label had 10 data types. Contacts, Product Interaction
@@ -100,10 +100,29 @@ Agreement and EU trader prompts do not apply to the free, US-only app.
 
 ## Screenshots
 
-The uploaded sets (6.9-inch, 6.3-inch iPhone and 13-inch iPad) were captured
-from build 53's iOS source `47be49d`. Build 55 changes `TodayView`,
-`MainTabView`, `WorkoutDisplayView` and `StationView`. The uploaded sets have
-not been recaptured or compared against build 55.
+The owner approved recapturing and replacing changed screenshots. All three sets
+were recaptured from `2b30078` and compared pixel by pixel with the uploaded
+build-53 sets.
+
+- **Unchanged (14 of 16):** both iPhone sets and iPad Today, Workouts, History and
+  Station differ only in the status-bar clock, so they were left in place.
+- **Changed (2):** iPad `02-runner` and `05-feedback`, which shows the runner behind
+  its sheet. #265 added a header with a workout stopwatch and the time of day.
+
+The first recapture showed the stopwatch at 1247:25:47: the display reads the real
+clock while the screenshot fixture freezes the model on its fictional date. Those
+images were not uploaded. The Debug-simulator-only fixture fix `2da2048` gives the
+fixture a plausible running time, and release builds are unaffected. Capture commit
+`b06d784` is `2b30078` plus only that fix, and the set is in
+`.artifacts/app-store-ipad-55b`. Both images matched their manifest hashes.
+
+Each replacement reached COMPLETE before its old image was deleted, and the set's
+order was restored. A readback at `2026-10-30T17:45:15Z` shows iPhone 6.9-inch
+(5 × 1320 × 2868), iPhone 6.3-inch (5 × 1206 × 2622) and iPad 13-inch
+(6 × 2064 × 2752), all COMPLETE; the 6.5-inch set is empty.
+
+The three earlier cosmetic points remain. Progress is not in the capture sequence,
+so its streak and day grid do not appear.
 
 ## Verification boundary
 

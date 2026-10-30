@@ -90,10 +90,10 @@ Use the [screenshot capture workflow](screenshot-capture.md) to produce and
 validate the five-image iPhone and six-image iPad draft sets from the selected source. The iPad set adds manual Station setup. Its fictional-data
 fixture uses actual screens and preserves source and successful-test evidence.
 
-The current drafts match selected build 53 (source `47be49d`). They are
-`.artifacts/app-store-iphone-53` and `.artifacts/app-store-ipad-53` on the
-release Mac; [release 53](release-53.md) lists the visible changes and three
-cosmetic points. Progress is not in the sequence, so its streak and day grid
+The listing matches selected build 55 ([comparison](release-55.md#screenshots)).
+The iPad runner and feedback images come from `.artifacts/app-store-ipad-55b`. The
+other images are the build-53 captures, which differ from build 55 only in the
+status-bar clock. Progress is not in the sequence, so its streak and day grid
 do not appear. On October 11, at the owner's request, version 1.0 en-US received
 build-53 screenshots for iPhone with Dynamic Island, medium (5 × 1206 × 2622), and
 large (5 × 1320 × 2868, `.artifacts/app-store-iphone-large-53`), and for iPad

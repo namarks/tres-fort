@@ -86,11 +86,11 @@ distribution is not that evidence.
       with families [1,2], no Station SDK/model, app and widget privacy
       manifests, and Apple VALID / APP_STORE_ELIGIBLE. On 2026-10-30 the owner
       approved selecting it for version 1.0, replacing build 53. The uploaded
-      screenshots come from build 53's source and have not been compared with
-      build 55. It supersedes the [build 53](release-53.md) and
+      screenshots were compared with build 55, and the two changed iPad images
+      were replaced. It supersedes the [build 53](release-53.md) and
       [build 50](release-50.md) candidates.
-    - Separate internal trial: [build 54](release-54.md) is the camera-enabled
-      beta from the same source as build 53, for internal Testers only.
+    - Separate internal trial: [build 56](release-56.md) is the camera-enabled
+      beta from the same source as build 55, for internal Testers only.
       [Build 52](release-52.md) added easier device
       setup and remembered reconnection to the iPad workout display, retaining
       the experimental camera SDK. It is VALID / IN_BETA_TESTING for internal
@@ -124,14 +124,11 @@ UNRESOLVED_ISSUES until you reply and resubmit. With your approval the
 description, promotional text and App Review notes were updated, the demo login
 was cleared, and App Privacy was republished with Contacts, Other Data Types and
 Product Interaction. The Free Apps Agreement is active, and the October 8 policy
-is [published](policy-publication-2026-10-11.md). Decide on three things:
-- updating the notes' build number from 53 to 55;
-- recapturing and replacing the screenshots, which come from build 53's source
-  while build 55 changes Today, the tab bar, the iPad workout display and Station;
-- the device checks below.
-
-Then approve posting the prepared [rejection reply](review-package.md) with
-build 55 and resubmitting.
+is [published](policy-publication-2026-10-11.md). The review notes name build 55,
+and the listing screenshots match it ([release 55](release-55.md#screenshots)).
+Camera beta [56](release-56.md) keeps camera tracking on test devices. Decide
+the device checks below, then approve posting the prepared
+[rejection reply](review-package.md) with build 55 and resubmitting.
 
 **In parallel (@agent):** Finish the runnable P1/P2 audit against the build-55
 source `2b30078`. Reconcile the listing copy and reviewer instructions with the

@@ -56,13 +56,16 @@
   <key>NSHealthUpdateUsageDescription</key>
   <string>$(HEALTH_UPDATE_USAGE_DESCRIPTION)</string>
   <!-- Run recorder (docs/plans/run-recorder). The App Store build removes
-       both keys after processing this file until the recorder ships there. -->
+       these keys after processing this file until the recorder ships there. -->
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Très Fort records your route while you run, including with the screen locked, to map it and upload it to intervals.icu.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Très Fort connects to your Bluetooth heart rate monitor to record your heart rate while you run.</string>
   <key>UIBackgroundModes</key>
   <array>
     <string>location</string>
     <string>audio</string>
+    <string>bluetooth-central</string>
   </array>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>

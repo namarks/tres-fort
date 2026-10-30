@@ -9,6 +9,7 @@ private final class FakeRunEngine: RunWorkoutEngine {
     var onFailure: ((String) -> Void)?
     private(set) var calls: [String] = []
     private(set) var route: [CLLocation] = []
+    private(set) var heartRates: [RecordedRun.HeartRateSample] = []
     var finalMetrics = RunWorkoutMetrics(distanceMeters: 0, movingSeconds: 0, heartRate: nil)
     var endError: Error?
     var recovery: RunWorkoutRecovery?
@@ -26,6 +27,7 @@ private final class FakeRunEngine: RunWorkoutEngine {
     func pause() { calls.append("pause") }
     func resume() { calls.append("resume") }
     func addRoute(_ locations: [CLLocation]) { route += locations }
+    func addHeartRate(_ sample: RecordedRun.HeartRateSample) { heartRates.append(sample) }
     func end(at date: Date) async throws -> RunWorkoutMetrics {
         calls.append("end")
         if let endError { throw endError }
@@ -98,6 +100,7 @@ final class RunRecorderTests: XCTestCase {
     private var api: RecorderUploadStub!
     private var liveActivity: FakeLiveActivity!
     private var speaker: FakeSpeaker!
+    private var central: FakeHeartRateCentral!
     private var defaults: UserDefaults!
     private var defaultsSuite: String!
     private var unauthorized = 0
@@ -111,6 +114,7 @@ final class RunRecorderTests: XCTestCase {
         api = RecorderUploadStub()
         liveActivity = FakeLiveActivity()
         speaker = FakeSpeaker()
+        central = FakeHeartRateCentral()
         defaultsSuite = "run-recorder-\(UUID())"
         defaults = UserDefaults(suiteName: defaultsSuite)
     }
@@ -135,7 +139,16 @@ final class RunRecorderTests: XCTestCase {
             now: { [unowned self] in self.clock },
             defaults: defaults,
             liveActivity: liveActivity,
-            makeSpeaker: { [unowned self] in self.speaker })
+            makeSpeaker: { [unowned self] in self.speaker },
+            heartRateMonitor: HeartRateMonitor(defaults: defaults,
+                                               makeCentral: { [unowned self] in self.central },
+                                               now: { [unowned self] in self.clock }))
+    }
+
+    private let strap = HeartRateMonitor.Strap(id: UUID(), name: "Polar H10")
+
+    private func saveStrap() {
+        defaults.set(try? JSONEncoder().encode(strap), forKey: HeartRateMonitor.savedKey)
     }
 
     private func store() throws -> RunRecordingStore {
@@ -460,6 +473,57 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertTrue(location.warm, "Back on the start screen, GPS is found again for the next run")
         location.onLocations?([fix(0, seconds: 0, accuracy: 6)])
         XCTAssertTrue(model.gpsReady)
+    }
+
+    func testStrapReadingsJoinTheRunAndTheHealthWorkout() async throws {
+        saveStrap()
+        let model = makeModel()
+        model.opened()
+        central.send(.bluetooth(.on))
+        central.send(.connected(strap.id))
+        central.send(.heartRate(strap.id, 88))
+        XCTAssertEqual(model.heartRateMonitor.status, "Polar H10 · 88 bpm")
+        XCTAssertNil(model.run, "Readings before the start record nothing")
+
+        await model.start()
+        clock = clock.addingTimeInterval(5)
+        central.send(.heartRate(strap.id, 141))
+        XCTAssertEqual(model.run?.heartRates.map(\.beatsPerMinute), [141])
+        XCTAssertEqual(model.latestHeartRate?.beatsPerMinute, 141)
+        XCTAssertEqual(engine.heartRates.map(\.beatsPerMinute), [141])
+
+        // The builder reports the same reading back; it isn't counted twice.
+        engine.onMetrics?(.init(distanceMeters: 20, movingSeconds: 5,
+                                heartRate: .init(timestamp: clock, beatsPerMinute: 141)))
+        XCTAssertEqual(model.run?.heartRates.count, 1)
+
+        model.pause()
+        clock = clock.addingTimeInterval(1)
+        central.send(.heartRate(strap.id, 135))
+        XCTAssertEqual(model.run?.heartRates.count, 2, "Heart rate keeps recording while paused")
+
+        await model.end()
+        central.send(.heartRate(strap.id, 120))
+        XCTAssertEqual(model.run?.heartRates.count, 2, "A finished run takes no more readings")
+        XCTAssertTrue(model.heartRateMonitor.isConnected, "The strap stays on while the recorder is open")
+    }
+
+    func testTheStrapConnectsWhileTheRecorderIsOpenOrARunRecords() async throws {
+        saveStrap()
+        let model = makeModel()
+        model.opened()
+        XCTAssertEqual(central.calls, ["connect"])
+        model.closed()
+        XCTAssertEqual(central.calls, ["connect", "disconnect"])
+
+        model.opened()
+        await model.start()
+        model.closed()
+        XCTAssertEqual(central.calls, ["connect", "disconnect", "connect", "connect"],
+                       "Starting asks again; closing mid-run keeps the strap")
+        model.discard()
+        XCTAssertEqual(central.calls.last, "disconnect",
+                       "A run that ends with the recorder closed lets the strap go")
     }
 
     func testRefusedLocationLeavesWarmUpToStartToExplain() async throws {

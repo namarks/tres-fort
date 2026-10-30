@@ -9,7 +9,9 @@ import UIKit
 /// a dead battery keeps the run, and a finished run uploads to intervals.icu
 /// through `RunRecordingUploader` on finish, launch and foreground. While it
 /// records, a Live Activity mirrors it on the Lock Screen with pause, resume
-/// and finish, and each mile or kilometer can be announced (P2).
+/// and finish, and each mile or kilometer can be announced (P2). A Bluetooth
+/// heart rate strap the member set up reconnects while the recorder is open
+/// or a run records, and its readings join the run.
 @MainActor
 final class RunRecorderModel: ObservableObject {
     enum Phase: Equatable {
@@ -59,6 +61,7 @@ final class RunRecorderModel: ObservableObject {
     @Published var announcesSplits: Bool {
         didSet { defaults.set(announcesSplits, forKey: Self.announceKey) }
     }
+    let heartRateMonitor: HeartRateMonitor
 
     static let unitKey = "runRecorder.distanceUnit"
     static let announceKey = "runRecorder.announceSplits"
@@ -95,6 +98,8 @@ final class RunRecorderModel: ObservableObject {
     private var splits: RunSplitTracker?
     private var speaker: RunSplitSpeaking?
     private var lastActivityUpdate: Date?
+    /// The recorder screen is showing.
+    private var isOpen = false
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -118,7 +123,8 @@ final class RunRecorderModel: ObservableObject {
          now: @escaping @MainActor () -> Date = Date.init,
          defaults: UserDefaults = .standard,
          liveActivity: RunLiveActivityPresenting? = nil,
-         makeSpeaker: (@MainActor () -> RunSplitSpeaking)? = nil) {
+         makeSpeaker: (@MainActor () -> RunSplitSpeaking)? = nil,
+         heartRateMonitor: HeartRateMonitor? = nil) {
         self.accountID = accountID
         self.baseURL = baseURL
         self.api = api
@@ -134,6 +140,7 @@ final class RunRecorderModel: ObservableObject {
         self.defaults = defaults
         self.liveActivity = liveActivity ?? SystemRunLiveActivity()
         self.makeSpeaker = makeSpeaker ?? { SystemRunSplitSpeaker() }
+        self.heartRateMonitor = heartRateMonitor ?? HeartRateMonitor(defaults: defaults, now: now)
         unit = defaults.string(forKey: RunRecorderModel.unitKey).flatMap(RunDistanceUnit.init(rawValue:)) ?? .miles
         announcesSplits = defaults.bool(forKey: RunRecorderModel.announceKey)
     }
@@ -141,6 +148,22 @@ final class RunRecorderModel: ObservableObject {
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
 
     var gpsReady: Bool { (gpsAccuracy ?? .infinity) <= Self.gpsReadyAccuracy }
+
+    // MARK: - Opening and closing
+
+    /// The recorder opened: reconnect the heart rate strap. GPS warms up from
+    /// the view, whenever the start screen shows.
+    func opened() {
+        isOpen = true
+        heartRateMonitor.connectSaved()
+    }
+
+    /// The recorder closed. A run that records keeps its GPS and strap.
+    func closed() {
+        isOpen = false
+        coolDownGPS()
+        if !isRecording && phase != .starting && phase != .recovering { heartRateMonitor.release() }
+    }
 
     // MARK: - GPS before the start
 
@@ -335,6 +358,8 @@ final class RunRecorderModel: ObservableObject {
         engine.onMetrics = { [weak self] in self?.apply($0) }
         engine.onFailure = { [weak self] in self?.engineFailed($0) }
         location.onLocations = { [weak self] in self?.handle($0) }
+        heartRateMonitor.onSample = { [weak self] in self?.record($0) }
+        heartRateMonitor.connectSaved()
         RunRecorderControl.handler = { [weak self] id, action in
             await self?.control(recordingID: id, action: action) ?? false
         }
@@ -344,6 +369,10 @@ final class RunRecorderModel: ObservableObject {
         engine?.onMetrics = nil
         engine?.onFailure = nil
         location?.onLocations = nil
+        heartRateMonitor.onSample = nil
+        // A run recovered or finished from the Lock Screen, with the
+        // recorder closed, lets the strap go.
+        if !isOpen { heartRateMonitor.release() }
         engine = nil
         location = nil
         lastCheckpoint = nil
@@ -383,6 +412,17 @@ final class RunRecorderModel: ObservableObject {
         self.run = run
         if phase == .running { announceSplitIfDue() }
         refreshLiveActivity()
+    }
+
+    /// A reading from the Bluetooth strap. The builder hands the same reading
+    /// back later; the timestamp check keeps it from counting twice.
+    func record(_ sample: RecordedRun.HeartRateSample) {
+        guard phase == .running || phase == .paused, var run, sample.beatsPerMinute > 0,
+              run.heartRates.last.map({ sample.timestamp > $0.timestamp }) ?? true else { return }
+        run.heartRates.append(sample)
+        latestHeartRate = sample
+        self.run = run
+        engine?.addHeartRate(sample)
     }
 
     func handle(_ locations: [CLLocation]) {

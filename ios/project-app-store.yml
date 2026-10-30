@@ -30,8 +30,9 @@ targets:
         OTHER_LDFLAGS[sdk=iphonesimulator*]: '$(inherited)'
         OTHER_LDFLAGS[sdk=iphoneos*]: '$(inherited)'
     # The run recorder stays out of the public build until its device checks
-    # pass (docs/plans/run-recorder), so its location keys and the
-    # background modes (location, and audio for spoken splits) do too. Code
+    # pass (docs/plans/run-recorder), so its location and Bluetooth keys and
+    # the background modes (location, audio for spoken splits, and
+    # bluetooth-central for a heart rate strap) do too. Code
     # signing runs after every build phase, so the signed plist lacks them.
     postBuildScripts:
       - name: Remove run recorder location keys
@@ -40,7 +41,7 @@ targets:
           - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
         script: |
           plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
-          for key in UIBackgroundModes NSLocationWhenInUseUsageDescription; do
+          for key in UIBackgroundModes NSLocationWhenInUseUsageDescription NSBluetoothAlwaysUsageDescription; do
             /usr/libexec/PlistBuddy -c "Delete :${key}" "$plist" 2>/dev/null || true
           done
   TresFortWidgets:

@@ -25,7 +25,7 @@ struct RunRecorderView: View {
             .padding(.bottom, 16)
         }
         .preferredColorScheme(.dark)
-        .interactiveDismissDisabled(model.isRecording || model.phase == .starting)
+        .interactiveDismissDisabled(model.isRecording || model.phase == .starting || model.phase == .recovering)
         .confirmationDialog("End this run?", isPresented: $confirmEnd, titleVisibility: .visible) {
             Button("Save run") { Task { await model.end() } }
                 .accessibilityIdentifier("runRecorder.save")
@@ -41,7 +41,7 @@ struct RunRecorderView: View {
         HStack {
             Text(title).font(Theme.display(34)).foregroundStyle(Theme.text)
             Spacer()
-            if !model.isRecording && model.phase != .starting {
+            if !model.isRecording && model.phase != .starting && model.phase != .recovering {
                 Button {
                     model.reset()
                     onClose()
@@ -58,7 +58,7 @@ struct RunRecorderView: View {
 
     private var title: String {
         switch model.phase {
-        case .idle, .starting, .failed: "Outdoor run"
+        case .idle, .recovering, .starting, .failed: "Outdoor run"
         case .running: "Running"
         case .paused: "Paused"
         case .ending: "Saving"
@@ -127,6 +127,8 @@ struct RunRecorderView: View {
         switch model.phase {
         case .idle:
             primary("Start", systemImage: "play.fill", id: "start") { Task { await model.start() } }
+        case .recovering:
+            ProgressView("Checking for an unfinished run…").frame(minHeight: 56)
         case .starting:
             ProgressView("Starting…").frame(minHeight: 56)
         case .running:

@@ -12,6 +12,9 @@ import UIKit
 final class RunRecorderModel: ObservableObject {
     enum Phase: Equatable {
         case idle
+        /// Looking for a run the app stopped in the middle of; nothing can
+        /// start until it is reattached or finished.
+        case recovering
         case starting
         case running
         case paused
@@ -123,6 +126,12 @@ final class RunRecorderModel: ObservableObject {
 
     func start() async {
         guard phase == .idle || phase == .finished || isFailed else { return }
+        // An unfinished run comes first, even before launch recovery got to it.
+        if (try? store(creating: false)?.unfinished()) != nil {
+            phase = .idle
+            if await recover() { return }
+            guard phase == .idle else { return }
+        }
         phase = .starting
         note = nil
         uploadStatus = .idle
@@ -227,7 +236,7 @@ final class RunRecorderModel: ObservableObject {
 
     /// Back to the start screen once a finished or failed run is dismissed.
     func reset() {
-        guard !isRecording, phase != .starting else { return }
+        guard !isRecording, phase != .starting, phase != .recovering else { return }
         run = nil
         note = nil
         latestHeartRate = nil
@@ -318,6 +327,7 @@ final class RunRecorderModel: ObservableObject {
             await uploadPending()
             return false
         }
+        phase = .recovering
         if let engine = makeEngine(),
            let state = await engine.recover(route: unfinished.points.map(Self.location(from:))) {
             let location = makeLocation()
@@ -342,6 +352,7 @@ final class RunRecorderModel: ObservableObject {
         } else {
             try? store.save(finished)
         }
+        phase = .idle
         await uploadPending()
         return false
     }

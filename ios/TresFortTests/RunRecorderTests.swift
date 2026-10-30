@@ -12,6 +12,14 @@ private final class FakeRunEngine: RunWorkoutEngine {
     var finalMetrics = RunWorkoutMetrics(distanceMeters: 0, movingSeconds: 0, heartRate: nil)
     var endError: Error?
     var recovery: RunWorkoutRecovery?
+    /// Holds `recover` until `releaseRecovery()`, like a slow Health query.
+    var holdRecovery = false
+    private var heldRecovery: CheckedContinuation<Void, Never>?
+
+    func releaseRecovery() {
+        heldRecovery?.resume()
+        heldRecovery = nil
+    }
 
     func requestAuthorization() async throws { calls.append("authorize") }
     func start(at date: Date, recordingID: UUID) async throws { calls.append("start") }
@@ -26,6 +34,9 @@ private final class FakeRunEngine: RunWorkoutEngine {
     func discard() { calls.append("discard") }
     func recover(route: [CLLocation]) async -> RunWorkoutRecovery? {
         calls.append("recover")
+        if holdRecovery {
+            await withCheckedContinuation { heldRecovery = $0 }
+        }
         if recovery != nil { self.route = route }
         return recovery
     }
@@ -343,6 +354,56 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(uploaded.movingSeconds, 15)
         XCTAssertFalse(uploaded.isPaused)
         XCTAssertEqual(try store().all(), [])
+    }
+
+    func testNothingStartsWhileRecoveryIsWaitingOnHealth() async throws {
+        var checkpoint = RecordedRun(startedAt: clock)
+        checkpoint.points = [point(0, seconds: 1, from: clock)]
+        try store().save(checkpoint)
+        engine.recovery = .running
+        engine.holdRecovery = true
+        let model = makeModel()
+
+        let recovery = Task { await model.recover() }
+        for _ in 0..<100 where !engine.calls.contains("recover") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.phase, .recovering)
+        await model.start()
+        XCTAssertEqual(engine.calls, ["recover"])
+
+        engine.releaseRecovery()
+        let recording = await recovery.value
+        XCTAssertTrue(recording)
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertEqual(model.run?.id, checkpoint.id)
+    }
+
+    func testStartPicksUpAnUnfinishedRunFirst() async throws {
+        var checkpoint = RecordedRun(startedAt: clock)
+        checkpoint.points = [point(0, seconds: 1, from: clock)]
+        try store().save(checkpoint)
+        engine.recovery = .running
+
+        let model = makeModel()
+        await model.start()
+
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertEqual(model.run?.id, checkpoint.id)
+        XCTAssertEqual(engine.calls, ["recover"])
+
+        // An orphan instead finishes and uploads, then the new run starts.
+        model.discard()
+        var orphan = RecordedRun(startedAt: clock)
+        orphan.points = [point(0, seconds: 1, from: clock), point(1, seconds: 11, from: clock)]
+        try store().save(orphan)
+        engine.recovery = nil
+        clock = clock.addingTimeInterval(600)
+        await model.start()
+        XCTAssertEqual(api.uploaded.map(\.id), [orphan.id])
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertNotEqual(model.run?.id, orphan.id)
+        XCTAssertEqual(engine.calls, ["recover", "discard", "recover", "authorize", "start"])
     }
 
     func testRecoveryWithoutStoredRunsCreatesNoDirectory() async throws {

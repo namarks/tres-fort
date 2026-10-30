@@ -10,6 +10,7 @@ struct RunRecorderView: View {
 
     @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var confirmEnd = false
+    @State private var settingUpHeartRate = false
 
     var body: some View {
         ZStack {
@@ -20,6 +21,7 @@ struct RunRecorderView: View {
                 stats
                 if model.phase == .idle || isFailed {
                     gpsStatus
+                    heartRateStatus
                     preferences
                 }
                 Spacer(minLength: 0)
@@ -33,7 +35,11 @@ struct RunRecorderView: View {
         .task(id: model.phase) {
             if model.phase == .idle || isFailed { await model.warmUpGPS() }
         }
-        .onDisappear { model.coolDownGPS() }
+        .onAppear { model.opened() }
+        .onDisappear { model.closed() }
+        .sheet(isPresented: $settingUpHeartRate) {
+            HeartRateMonitorSetupView(monitor: model.heartRateMonitor)
+        }
         .interactiveDismissDisabled(model.isRecording || model.phase == .starting || model.phase == .recovering)
         .confirmationDialog("End this run?", isPresented: $confirmEnd, titleVisibility: .visible) {
             Button("Save run") { Task { await model.end() } }
@@ -100,6 +106,11 @@ struct RunRecorderView: View {
             .foregroundStyle(model.gpsReady ? Theme.accent : Theme.muted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("runRecorder.gps")
+    }
+
+    /// The Bluetooth strap: what's connected, or a way to set one up.
+    private var heartRateStatus: some View {
+        HeartRateStatusRow(monitor: model.heartRateMonitor) { settingUpHeartRate = true }
     }
 
     /// Units and spoken splits, chosen before the run starts. Splits can be

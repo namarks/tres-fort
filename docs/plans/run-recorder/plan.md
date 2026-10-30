@@ -129,8 +129,8 @@ P3 needs a TestFlight build on the owner's iPhone, which needs separate
 authority, as does the Worker deploy that carries P0. P1 and P2 are delivered
 in the repository; their HealthKit, location, ActivityKit and speech calls
 have only been compiled and run against fakes, so P3 is their first real
-test, including the Lock Screen controls and splits heard with the phone
-locked. Launch-time recovery runs
+test, including the Lock Screen controls, splits heard with the phone
+locked and a Bluetooth heart rate strap. Launch-time recovery runs
 when the app next opens; handling the system's workout-recovery relaunch in
 the scene delegate is left to P3's force-quit check.
 
@@ -160,6 +160,12 @@ the scene delegate is left to P3's force-quit check.
   ending it on discard, launch and a lost run, reattaching it on recovery,
   Lock Screen controls for this run only, and split announcements with the
   persisted unit and toggle, with fake activity and speech.
+- P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
+  opens, and strap readings joining the run and the Health workout without
+  the builder's echo counting twice. `HeartRateMonitorTests` covers parsing
+  the Heart Rate Measurement, no Bluetooth until a strap is set up, choosing,
+  remembering, switching and forgetting a strap, reconnecting after a drop
+  and Bluetooth problems in the status, with a fake central.
 
 ## Notes / open questions
 
@@ -168,6 +174,20 @@ the scene delegate is left to P3's force-quit check.
   asks for location and starts foreground GPS when it opens, shows "Finding
   GPS…" or "GPS ready" (a fix within 20 m), and hands that GPS to the run;
   closing the screen without a run stops it.
+- Second P3 feedback (2026-10-30): heart rate came only from whatever the
+  Health workout session picked up, with no sign in the app of a strap or
+  how to connect one. The recorder now connects a Bluetooth heart rate strap
+  itself (the standard Heart Rate service, so Polar, Wahoo, Garmin HRM and
+  similar). Its start screen shows the strap and live reading, or "No heart
+  rate monitor" with Set up. The setup screen finds straps nearby, remembers
+  the one picked on this iPhone and can forget it. The strap reconnects while
+  the recorder is open or a run records, including after a drop. Its
+  readings join the run's upload and are added to the Health workout when
+  Health allows saving heart rate. Bluetooth permission is asked only on
+  setup. The beta adds `NSBluetoothAlwaysUsageDescription` and the
+  `bluetooth-central` background mode; the App Store build removes both. A
+  watch that broadcasts heart rate only over ANT+ can't connect, because
+  iPhone has no ANT+ radio.
 
 - Nick chose on 2026-10-30 to bypass Strava for runs he records on his
   iPhone. Strava's API terms stop Strava-sourced activities from reaching Tres

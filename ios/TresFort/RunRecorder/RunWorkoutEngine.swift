@@ -28,6 +28,8 @@ protocol RunWorkoutEngine: AnyObject {
     func pause()
     func resume()
     func addRoute(_ locations: [CLLocation])
+    /// A reading from the member's Bluetooth strap, saved with the workout.
+    func addHeartRate(_ sample: RecordedRun.HeartRateSample)
     /// Ends the session and saves the workout and its route to Health.
     /// Returns the builder's final totals.
     func end(at date: Date) async throws -> RunWorkoutMetrics
@@ -64,6 +66,11 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
     private var routeBuilder: HKWorkoutRouteBuilder?
     private var stopped: CheckedContinuation<Void, Never>?
     private var ending = false
+    /// Strap readings not yet added to the builder.
+    private var heartRates: [HKQuantitySample] = []
+
+    /// Strap readings go to the builder in batches.
+    private static let heartRateBatch = 10
 
     private static var configuration: HKWorkoutConfiguration {
         let configuration = HKWorkoutConfiguration()
@@ -75,7 +82,7 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
     func requestAuthorization() async throws {
         guard HKHealthStore.isHealthDataAvailable() else { throw RunWorkoutEngineError.unavailable }
         try await store.requestAuthorization(
-            toShare: [HKObjectType.workoutType(), HKSeriesType.workoutRoute()],
+            toShare: [HKObjectType.workoutType(), HKSeriesType.workoutRoute(), HKQuantityType(.heartRate)],
             read: [HKQuantityType(.distanceWalkingRunning), HKQuantityType(.heartRate),
                    HKQuantityType(.activeEnergyBurned)])
     }
@@ -103,6 +110,25 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         routeBuilder.insertRouteData(locations) { _, _ in }
     }
 
+    func addHeartRate(_ sample: RecordedRun.HeartRateSample) {
+        guard builder != nil else { return }
+        let bpm = HKUnit.count().unitDivided(by: .minute())
+        heartRates.append(HKQuantitySample(
+            type: HKQuantityType(.heartRate),
+            quantity: HKQuantity(unit: bpm, doubleValue: sample.beatsPerMinute),
+            start: sample.timestamp, end: sample.timestamp))
+        if heartRates.count >= Self.heartRateBatch {
+            builder?.add(takeHeartRates()) { _, _ in }
+        }
+    }
+
+    /// Without Health permission to save heart rate, the builder refuses
+    /// these; the readings still go to intervals.icu with the route.
+    private func takeHeartRates() -> [HKQuantitySample] {
+        defer { heartRates = [] }
+        return heartRates
+    }
+
     func end(at date: Date) async throws -> RunWorkoutMetrics {
         guard let session, let builder else { throw RunWorkoutEngineError.notStarted }
         ending = true
@@ -117,6 +143,12 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         defer {
             session.end()
             clear()
+        }
+        if !heartRates.isEmpty {
+            let samples = takeHeartRates()
+            await withCheckedContinuation { continuation in
+                builder.add(samples) { _, _ in continuation.resume() }
+            }
         }
         do {
             try await builder.endCollection(at: date)
@@ -166,6 +198,7 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
     }
 
     private func clear() {
+        heartRates = []
         session = nil
         builder = nil
         routeBuilder = nil

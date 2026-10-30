@@ -107,6 +107,11 @@ final class GroupModel: ObservableObject {
     /// profile-name update. Without this, an older in-flight feed or stats
     /// response could restore the previous effective display name.
     private var identityCacheGeneration = 0
+    /// Fences group-list responses. Advanced by each `load()` and every
+    /// invalidation, but not by per-group refreshes: switching groups while
+    /// the tab-open list request is pending must not discard the fresh
+    /// membership list.
+    private var groupListGeneration = 0
 
     /// Fired after a manual activity is persisted, drained from the
     /// outbox, or deleted. The owner (MainTabView) sets this to refresh
@@ -276,11 +281,12 @@ final class GroupModel: ObservableObject {
             invalidateSharedGroups()
             phase = .loading
         }
-        let generation = identityCacheGeneration
+        groupListGeneration += 1
+        let generation = groupListGeneration
         do {
             let list = try await listGroups(jwt: jwt)
             guard isCurrentAccount,
-                  generation == identityCacheGeneration else { return }
+                  generation == groupListGeneration else { return }
             groups = list
             pruneSharedProjections(keeping: Set(list.map(\.id)))
             ensureSelection()
@@ -295,7 +301,7 @@ final class GroupModel: ObservableObject {
             // Account/setup snapshot for the Profile tab.
             await refreshMe()
         } catch {
-            guard isCurrentAccount, generation == identityCacheGeneration,
+            guard isCurrentAccount, generation == groupListGeneration,
                   !Self.isCancellation(error) else { return }
             if case let APIError.http(code, _) = error,
                code == 401,
@@ -822,6 +828,7 @@ final class GroupModel: ObservableObject {
     /// and the activity outbox are separate and remain intact.
     func invalidateSharedGroups() {
         identityCacheGeneration += 1
+        groupListGeneration += 1
         groupSafety = nil
         groups.removeAll()
         feed.removeAll()

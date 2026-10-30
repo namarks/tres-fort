@@ -329,6 +329,39 @@ final class GroupSafetyTests: XCTestCase {
         }
     }
 
+    func testSwitchingGroupsDuringTabRevalidationKeepsTheFreshList() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        var listRead: CheckedContinuation<[GroupSummary], Error>?
+        let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in
+            try await withCheckedThrowingContinuation { listRead = $0 }
+        }, groupLoader: { _, _ in throw URLError(.cancelled) },
+        profileLoader: { _ in throw URLError(.notConnectedToInternet) })
+        model.groups = ["a", "b"].map {
+            .init(id: $0, name: "Crew \($0)", created_by: "user-a", created_at: 1, members: [])
+        }
+        model.selectedGroupID = "a"
+        model.phase = .ready
+        model.feed["a"] = []
+
+        let loading = Task { await model.load(revalidate: true) }
+        for _ in 0..<100 where listRead == nil { await Task.yield() }
+        let continuation = try XCTUnwrap(listRead)
+        // The title switcher stays usable while the list is pending.
+        await model.refreshGroup(groupID: "b")
+        // The fresh list (no longer including either group) still applies.
+        continuation.resume(returning: [])
+        await loading.value
+        XCTAssertTrue(model.groups.isEmpty)
+        XCTAssertTrue(model.feed.isEmpty)
+        XCTAssertEqual(model.phase, .none)
+    }
+
     func testCancelledTabLoadDoesNotShowTheErrorScreen() async throws {
         let suite = "GroupSafetyTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))

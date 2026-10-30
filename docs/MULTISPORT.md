@@ -569,7 +569,10 @@ M5 only when a real pain point justifies the API coupling.
 
 - **Rebuilding intervals' execution.** No Garmin/watch sync, no structured-step
   workout DSL in v1 — prose descriptions only. Revisit only if a user needs
-  on-watch guided intervals.
+  on-watch guided intervals. Exception (owner decision, 2026-10-30): the
+  [iPhone run recorder](plans/run-recorder/plan.md) records outdoor runs in
+  the app and uploads them to intervals.icu as files, so intervals stays the
+  store of record.
 - **A second writable cardio store.** Endurance truth stays in intervals;
   tres-fort mirrors read-only. Never invert this.
 - **A materialized weeks/calendar table.** The calendar is derived; only the

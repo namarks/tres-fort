@@ -175,6 +175,10 @@ integration or social breadth.
 - [Group experience and governance](group-experience-and-governance/plan.md) —
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
+- [Run recorder on iPhone](run-recorder/plan.md) — **active**; record
+  outdoor runs in the app instead of Strava, save them to Apple Health and
+  upload them to intervals.icu as files. P0 builds the upload path; real-run
+  accuracy against a Garmin is checked on the owner's iPhone.
 
 ### Platform (`platform`)
 

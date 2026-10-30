@@ -78,6 +78,18 @@ struct WorkoutDisplayState: Codable, Equatable {
     /// The exercise the workout is on, between sets too.
     var currentSlotID: String? { current?.slotID ?? outline?.first(where: \.isCurrent)?.slotID }
 
+    /// The display compares this start with the real clock. The store-asset
+    /// fixture freezes the model on its fictional date, so it supplies a
+    /// plausible running time instead. Release builds use the model's start.
+    private static func displayedWorkoutStart(_ start: Date?) -> Date? {
+        #if DEBUG && targetEnvironment(simulator)
+        if UIFixtureScenario.selected == .appStore, start != nil {
+            return Date().addingTimeInterval(-1_457)
+        }
+        #endif
+        return start
+    }
+
     @MainActor
     static func project(sync: SyncModel, paused: Bool = false, displayUnit: WeightUnit? = nil) -> Self {
         let name = sync.selectedDay?.title ?? (sync.isFreestyle ? "Freestyle" : "Workout")
@@ -89,7 +101,7 @@ struct WorkoutDisplayState: Codable, Equatable {
                  restEndDate: phase == .rest ? sync.restEndDate : nil,
                  timedEndDate: phase == .active ? sync.timedEndDate : nil,
                  timedStartDate: phase == .active ? sync.timedStartDate : nil,
-                 workoutStartDate: sync.workoutStart, message: message, isFreestyle: sync.isFreestyle,
+                 workoutStartDate: displayedWorkoutStart(sync.workoutStart), message: message, isFreestyle: sync.isFreestyle,
                  outline: outline)
         }
 

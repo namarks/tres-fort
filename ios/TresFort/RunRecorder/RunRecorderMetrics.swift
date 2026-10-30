@@ -57,13 +57,13 @@ enum RunLocationFilter {
 }
 
 enum RunPace {
-    static let metersPerMile = 1_609.344
+    static let metersPerMile = RunDistanceUnit.miles.meters
     /// Current pace looks back this far over the route.
     static let currentWindow: TimeInterval = 30
 
-    /// Seconds per mile over the last 30 seconds of route since the latest
+    /// Seconds per unit over the last 30 seconds of route since the latest
     /// pause, or nil when there is too little movement to say.
-    static func current(_ run: RecordedRun) -> Double? {
+    static func current(_ run: RecordedRun, unit: RunDistanceUnit = .miles) -> Double? {
         guard !run.isPaused, let segment = RecordedRunTCX.segments(run).last,
               let last = segment.last else { return nil }
         let window = segment.filter { last.timestamp.timeIntervalSince($0.timestamp) <= currentWindow }
@@ -71,33 +71,11 @@ enum RunPace {
         let seconds = last.timestamp.timeIntervalSince(first.timestamp)
         let meters = zip(window, window.dropFirst()).reduce(0.0) { $0 + RecordedRunTCX.meters($1.0, $1.1) }
         guard seconds >= 10, meters >= 10 else { return nil }
-        return seconds / (meters / metersPerMile)
+        return seconds / (meters / unit.meters)
     }
 
-    static func average(movingSeconds: Double, meters: Double) -> Double? {
+    static func average(movingSeconds: Double, meters: Double, unit: RunDistanceUnit = .miles) -> Double? {
         guard movingSeconds > 0, meters >= 10 else { return nil }
-        return movingSeconds / (meters / metersPerMile)
-    }
-}
-
-enum RunFormat {
-    static func duration(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded(.down)))
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
-    }
-
-    static func miles(_ meters: Double) -> String {
-        String(format: "%.2f", max(0, meters) / RunPace.metersPerMile)
-    }
-
-    /// "8:05" per mile, or an em dash when there is no pace yet. Paces slower
-    /// than an hour per mile read as no pace.
-    static func pace(_ secondsPerMile: Double?) -> String {
-        guard let secondsPerMile, secondsPerMile.isFinite, secondsPerMile > 0, secondsPerMile < 3600 else {
-            return "–"
-        }
-        let total = Int(secondsPerMile.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
+        return movingSeconds / (meters / unit.meters)
     }
 }

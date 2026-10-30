@@ -30,7 +30,8 @@ targets:
         OTHER_LDFLAGS[sdk=iphonesimulator*]: '$(inherited)'
         OTHER_LDFLAGS[sdk=iphoneos*]: '$(inherited)'
     # The run recorder stays out of the public build until its device checks
-    # pass (docs/plans/run-recorder), so its location keys do too. Code
+    # pass (docs/plans/run-recorder), so its location keys and the
+    # background modes (location, and audio for spoken splits) do too. Code
     # signing runs after every build phase, so the signed plist lacks them.
     postBuildScripts:
       - name: Remove run recorder location keys

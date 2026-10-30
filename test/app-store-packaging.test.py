@@ -75,7 +75,7 @@ class AppStorePackagingTests(unittest.TestCase):
         self.assertIn("invited partner's iPhone", info['NSLocalNetworkUsageDescription'])
         # The shared plist carries the run recorder's keys; the App Store
         # build removes them from the processed copy.
-        self.assertEqual(info['UIBackgroundModes'], ['location'])
+        self.assertEqual(info['UIBackgroundModes'], ['location', 'audio'])
         self.assertIn('Remove run recorder location keys', text)
         self.assertIn('Delete :${key}', text)
         self.assertIn('DEBUG APP_STORE_BUILD', text)

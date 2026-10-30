@@ -18,6 +18,7 @@ struct RunRecorderView: View {
                 header
                 map
                 stats
+                if model.phase == .idle || isFailed { preferences }
                 Spacer(minLength: 0)
                 controls
             }
@@ -41,6 +42,17 @@ struct RunRecorderView: View {
         HStack {
             Text(title).font(Theme.display(34)).foregroundStyle(Theme.text)
             Spacer()
+            if model.isRecording {
+                Button {
+                    model.announcesSplits.toggle()
+                } label: {
+                    Image(systemName: model.announcesSplits ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                        .font(.headline).frame(width: 44, height: 44)
+                }
+                .foregroundStyle(model.announcesSplits ? Theme.accent : Theme.muted)
+                .accessibilityLabel(model.announcesSplits ? "Stop announcing splits" : "Announce splits")
+                .accessibilityIdentifier("runRecorder.announce")
+            }
             if !model.isRecording && model.phase != .starting && model.phase != .recovering {
                 Button {
                     model.reset()
@@ -66,6 +78,28 @@ struct RunRecorderView: View {
         }
     }
 
+    private var isFailed: Bool {
+        if case .failed = model.phase { return true }
+        return false
+    }
+
+    /// Units and spoken splits, chosen before the run starts. Splits can be
+    /// muted from the header while running.
+    private var preferences: some View {
+        VStack(spacing: 8) {
+            Picker("Units", selection: $model.unit) {
+                ForEach(RunDistanceUnit.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("runRecorder.unit")
+            Toggle("Announce each \(model.unit.spokenName)", isOn: $model.announcesSplits)
+                .font(.callout)
+                .foregroundStyle(Theme.text)
+                .tint(Theme.accent)
+                .accessibilityIdentifier("runRecorder.announceSplits")
+        }
+    }
+
     private var map: some View {
         Map(position: $camera) {
             UserAnnotation()
@@ -87,14 +121,17 @@ struct RunRecorderView: View {
             let run = model.run
             let moving = run?.activeSeconds(at: context.date) ?? 0
             let meters = run?.distanceMeters ?? 0
+            let unit = model.unit
             VStack(spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     stat("Time", RunFormat.duration(moving), large: true, id: "time")
-                    stat("Miles", RunFormat.miles(meters), large: true, id: "distance")
+                    stat(unit.title, RunFormat.distance(meters, in: unit), large: true, id: "distance")
                 }
                 HStack(alignment: .firstTextBaseline) {
-                    stat("Pace /mi", RunFormat.pace(run.flatMap(RunPace.current)), id: "pace")
-                    stat("Avg /mi", RunFormat.pace(RunPace.average(movingSeconds: moving, meters: meters)),
+                    stat("Pace /\(unit.abbreviation)", RunFormat.pace(run.flatMap { RunPace.current($0, unit: unit) }),
+                         id: "pace")
+                    stat("Avg /\(unit.abbreviation)",
+                         RunFormat.pace(RunPace.average(movingSeconds: moving, meters: meters, unit: unit)),
                          id: "averagePace")
                     stat("Heart rate", heartRate(at: context.date), id: "heartRate")
                 }

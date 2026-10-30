@@ -75,10 +75,25 @@ within the agreed tolerance of a Garmin watch on the same run.
       finishes at its last point or pause and uploads. Finished runs upload
       on finish, launch and foreground. If the Health session fails mid-run,
       or Health doesn't save the workout, the run still uploads.
-- [ ] **P2 — Run from the Lock Screen**
+- [x] **P2 — Run from the Lock Screen**
   - Show a Live Activity with time, distance and pace, plus pause and end
     controls, from the existing widget extension.
   - Give optional spoken split announcements per kilometre or mile.
+  - Delivered: the widget extension's `RunActivityWidget` shows the moving
+    time (a system timer from the start shifted by pauses, frozen while
+    paused), distance and current pace on the Lock Screen and in the Dynamic
+    Island. Distance and pace update at most every 5 seconds; pause and
+    resume update at once. Its buttons run `RunRecorderControlIntent` in the
+    app: Pause while running, Resume and Finish while paused, so finishing
+    takes two taps and a pocket tap can't end the run. Only the run being
+    recorded answers. The activity ends when the run is saved, discarded or
+    lost, and a relaunch picks a recovered run's activity back up.
+  - The recorder offers miles or kilometers for its screen, Lock Screen and
+    splits, and an optional announcement of each whole unit (split time and
+    average pace), off by default and mutable from the header mid-run. Both
+    choices stay on the device. Speech ducks other audio, which needs the
+    `audio` background mode; the App Store build removes it with the other
+    background modes.
 - [ ] **P3 — Verify accuracy and reliability on a real device**
   - Record at least three outdoor runs on the owner's iPhone at the same time
     as the Garmin Forerunner 945 (open sky, trees or buildings, and a run with
@@ -106,13 +121,16 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@agent):** Build P2, the Lock Screen Live Activity with pause and end
-controls and optional spoken splits, on P1's recorder.
+**Now (@owner):** Authorize a TestFlight build with the recorder and the
+Worker deploy that carries P0, then record the P3 runs beside the
+Forerunner.
 
 P3 needs a TestFlight build on the owner's iPhone, which needs separate
-authority, as does the Worker deploy that carries P0. P1 is delivered in the
-repository; its HealthKit and location calls have only been compiled and run
-against fakes, so P3 is their first real test. Launch-time recovery runs
+authority, as does the Worker deploy that carries P0. P1 and P2 are delivered
+in the repository; their HealthKit, location, ActivityKit and speech calls
+have only been compiled and run against fakes, so P3 is their first real
+test, including the Lock Screen controls and splits heard with the phone
+locked. Launch-time recovery runs
 when the app next opens; handling the system's workout-recovery relaunch in
 the scene delegate is left to P3's force-quit check.
 
@@ -136,6 +154,12 @@ the scene delegate is left to P3's force-quit check.
   an orphaned checkpoint, all with fake engine, GPS and uploader.
   `RunRecorderPackagingTests` checks the built Info.plist in the beta and in
   both App Store shards.
+- P2: `RunRecorderTests` also covers kilometer distance and pace, the split
+  tracker (whole units, jumps, a recovered run), the spoken split text, Live
+  Activity state through start, throttled updates, pause, resume and end,
+  ending it on discard, launch and a lost run, reattaching it on recovery,
+  Lock Screen controls for this run only, and split announcements with the
+  persisted unit and toggle, with fake activity and speech.
 
 ## Notes / open questions
 

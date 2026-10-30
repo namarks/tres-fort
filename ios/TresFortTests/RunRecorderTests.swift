@@ -53,6 +53,25 @@ private final class FakeLocationSource: RunLocationSource {
     func stop() { running = false }
 }
 
+@MainActor
+private final class FakeLiveActivity: RunLiveActivityPresenting {
+    private(set) var shown: [RunActivityAttributes.ContentState] = []
+    private(set) var recordingIDs: [String] = []
+    private(set) var endCount = 0
+
+    func show(recordingID: String, state: RunActivityAttributes.ContentState) {
+        recordingIDs.append(recordingID)
+        shown.append(state)
+    }
+    func endAll() { endCount += 1 }
+}
+
+@MainActor
+private final class FakeSpeaker: RunSplitSpeaking {
+    private(set) var spoken: [String] = []
+    func speak(_ text: String) { spoken.append(text) }
+}
+
 private final class RecorderUploadStub: RecordingUploadAPI {
     var error: Error?
     private(set) var uploaded: [RecordedRun] = []
@@ -72,6 +91,10 @@ final class RunRecorderTests: XCTestCase {
     private var engine: FakeRunEngine!
     private var location: FakeLocationSource!
     private var api: RecorderUploadStub!
+    private var liveActivity: FakeLiveActivity!
+    private var speaker: FakeSpeaker!
+    private var defaults: UserDefaults!
+    private var defaultsSuite: String!
     private var unauthorized = 0
     private var uploads = 0
 
@@ -80,10 +103,16 @@ final class RunRecorderTests: XCTestCase {
         engine = FakeRunEngine()
         location = FakeLocationSource()
         api = RecorderUploadStub()
+        liveActivity = FakeLiveActivity()
+        speaker = FakeSpeaker()
+        defaultsSuite = "run-recorder-\(UUID())"
+        defaults = UserDefaults(suiteName: defaultsSuite)
     }
 
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: base)
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        RunRecorderControl.handler = nil
     }
 
     private func makeModel(jwt: String? = "jwt") -> RunRecorderModel {
@@ -94,7 +123,10 @@ final class RunRecorderTests: XCTestCase {
             onUploaded: { [unowned self] in self.uploads += 1 },
             makeEngine: { [unowned self] in self.engine },
             makeLocation: { [unowned self] in self.location },
-            now: { [unowned self] in self.clock })
+            now: { [unowned self] in self.clock },
+            defaults: defaults,
+            liveActivity: liveActivity,
+            makeSpeaker: { [unowned self] in self.speaker })
     }
 
     private func store() throws -> RunRecordingStore {
@@ -171,6 +203,53 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(run.activeSeconds(at: clock.addingTimeInterval(999)), 310)
     }
 
+    func testKilometersConvertDistanceAndPace() {
+        XCTAssertEqual(RunFormat.distance(5_000, in: .kilometers), "5.00")
+        XCTAssertEqual(RunFormat.distance(5_000, in: .miles), "3.11")
+        XCTAssertEqual(try XCTUnwrap(RunPace.average(movingSeconds: 1500, meters: 5_000, unit: .kilometers)), 300,
+                       accuracy: 0.001)
+        var run = RecordedRun(startedAt: clock)
+        run.points = (0...3).map { point($0, seconds: Double($0) * 10, from: clock) }
+        let perMile = try XCTUnwrap(RunPace.current(run))
+        XCTAssertEqual(try XCTUnwrap(RunPace.current(run, unit: .kilometers)), perMile / 1.609344, accuracy: 0.001)
+    }
+
+    func testSplitTrackerReportsEachWholeUnit() {
+        var miles = RunSplitTracker(unit: .miles)
+        XCTAssertNil(miles.update(meters: 1_500, movingSeconds: 450))
+        XCTAssertEqual(miles.update(meters: 1_610, movingSeconds: 480),
+                       RunSplit(number: 1, unit: .miles, seconds: 480, averagePace: 480 / (1_610 / 1_609.344)))
+        XCTAssertNil(miles.update(meters: 1_700, movingSeconds: 500))
+        XCTAssertEqual(miles.update(meters: 3_219, movingSeconds: 950)?.seconds, 470)
+        // A jump over two units reports the latest, sharing out the time.
+        let jump = miles.update(meters: 6_438, movingSeconds: 1_950)
+        XCTAssertEqual(jump?.number, 4)
+        XCTAssertEqual(jump?.seconds, 500)
+
+        var kilometers = RunSplitTracker(unit: .kilometers)
+        XCTAssertEqual(kilometers.update(meters: 1_000, movingSeconds: 300)?.number, 1)
+    }
+
+    func testARecoveredTrackerSkipsSplitsAlreadyRun() {
+        // 2.5 miles in 25 minutes: two splits done, about 20 minutes in.
+        var tracker = RunSplitTracker(unit: .miles, meters: 1_609.344 * 2.5, movingSeconds: 1_500)
+        XCTAssertEqual(tracker.completed, 2)
+        XCTAssertNil(tracker.update(meters: 1_609.344 * 2.9, movingSeconds: 1_740))
+        let third = tracker.update(meters: 1_609.344 * 3.01, movingSeconds: 1_800)
+        XCTAssertEqual(third?.number, 3)
+        XCTAssertEqual(try XCTUnwrap(third?.seconds), 600, accuracy: 0.001)
+    }
+
+    func testSplitAnnouncementReadsAsWords() {
+        let split = RunSplit(number: 3, unit: .miles, seconds: 512, averagePace: 521)
+        XCTAssertEqual(split.spokenText,
+                       "Mile 3. Split 8 minutes 32 seconds. Average pace 8 minutes 41 seconds per mile.")
+        XCTAssertEqual(RunSplit(number: 1, unit: .kilometers, seconds: 300, averagePace: 300).spokenText,
+                       "Kilometer 1. Split 5 minutes. Average pace 5 minutes per kilometer.")
+        XCTAssertEqual(RunSplit.spoken(3_661), "1 hour 1 minute 1 second")
+        XCTAssertEqual(RunSplit.spoken(0.2), "0 seconds")
+    }
+
     func testHealthWorkoutCarriesTheUploadExternalID() {
         let id = UUID()
         XCTAssertEqual(RunRecordingHealthTag.externalID(for: id), "tresfort:recording:" + id.uuidString.lowercased())
@@ -223,6 +302,109 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(model.uploadStatus, .uploaded)
         XCTAssertEqual(uploads, 1)
         XCTAssertEqual(try store().all(), [])
+    }
+
+    func testLiveActivityFollowsTheRunAndEndsWithIt() async throws {
+        let model = makeModel()
+        await model.start()
+        let id = try XCTUnwrap(model.run?.uploadID)
+        XCTAssertEqual(liveActivity.recordingIDs, [id])
+        XCTAssertEqual(liveActivity.shown.last?.clockStart, clock)
+        XCTAssertEqual(liveActivity.shown.last?.isPaused, false)
+        XCTAssertEqual(liveActivity.shown.last?.unit, .miles)
+
+        // Distance updates wait five seconds between Lock Screen updates.
+        clock = clock.addingTimeInterval(2)
+        engine.onMetrics?(.init(distanceMeters: 8, movingSeconds: 2, heartRate: nil))
+        XCTAssertEqual(liveActivity.shown.count, 1)
+        clock = clock.addingTimeInterval(4)
+        engine.onMetrics?(.init(distanceMeters: 20, movingSeconds: 6, heartRate: nil))
+        XCTAssertEqual(liveActivity.shown.count, 2)
+        XCTAssertEqual(liveActivity.shown.last?.meters, 20)
+
+        // Pause shows at once with the clock stopped; resume moves the clock
+        // start later by the pause.
+        model.pause()
+        XCTAssertEqual(liveActivity.shown.last?.pausedSeconds, 6)
+        clock = clock.addingTimeInterval(30)
+        model.resume()
+        XCTAssertNil(liveActivity.shown.last?.pausedSeconds)
+        XCTAssertEqual(liveActivity.shown.last?.clockStart, clock.addingTimeInterval(-6))
+
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        clock = clock.addingTimeInterval(20)
+        await model.end()
+        XCTAssertEqual(liveActivity.endCount, 1)
+        XCTAssertEqual(Set(liveActivity.recordingIDs), [id])
+    }
+
+    func testDiscardAndAnUnfinishedLaunchEndTheLiveActivity() async throws {
+        let model = makeModel()
+        await model.start()
+        model.discard()
+        XCTAssertEqual(liveActivity.endCount, 1)
+        // At launch with nothing recording, a leftover activity ends.
+        let recording = await makeModel().recover()
+        XCTAssertFalse(recording)
+        XCTAssertEqual(liveActivity.endCount, 2)
+    }
+
+    func testLockScreenControlsPauseResumeAndFinishOnlyThisRun() async throws {
+        let model = makeModel()
+        await model.start()
+        let id = try XCTUnwrap(model.run?.uploadID)
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        let handler = try XCTUnwrap(RunRecorderControl.handler)
+
+        let otherRun = await handler(UUID().uuidString.lowercased(), "pause")
+        XCTAssertFalse(otherRun)
+        XCTAssertEqual(model.phase, .running)
+        let unknown = await handler(id, "stop")
+        XCTAssertFalse(unknown)
+
+        let paused = await handler(id, "pause")
+        XCTAssertTrue(paused)
+        XCTAssertEqual(model.phase, .paused)
+        let pausedAgain = await handler(id, "pause")
+        XCTAssertTrue(pausedAgain, "A repeated tap that already happened counts as done")
+        clock = clock.addingTimeInterval(20)
+        let resumed = await handler(id, "resume")
+        XCTAssertTrue(resumed)
+        XCTAssertEqual(model.phase, .running)
+
+        clock = clock.addingTimeInterval(20)
+        let finished = await handler(id, "finish")
+        XCTAssertTrue(finished)
+        XCTAssertEqual(model.phase, .finished)
+        XCTAssertEqual(api.uploaded.map(\.uploadID), [id])
+        XCTAssertNil(RunRecorderControl.handler, "A finished run stops answering the Lock Screen")
+    }
+
+    func testSplitsAreSpokenOnlyWhenTurnedOnAndPreferencesPersist() async throws {
+        let model = makeModel()
+        XCTAssertEqual(model.unit, .miles)
+        XCTAssertFalse(model.announcesSplits)
+        await model.start()
+        clock = clock.addingTimeInterval(480)
+        engine.onMetrics?(.init(distanceMeters: 1_610, movingSeconds: 480, heartRate: nil))
+        XCTAssertEqual(speaker.spoken, [], "Announcements start off")
+
+        model.announcesSplits = true
+        clock = clock.addingTimeInterval(470)
+        engine.onMetrics?(.init(distanceMeters: 3_219, movingSeconds: 950, heartRate: nil))
+        XCTAssertEqual(speaker.spoken.count, 1)
+        XCTAssertTrue(speaker.spoken[0].hasPrefix("Mile 2. Split 7 minutes 50 seconds."))
+
+        // Nothing is spoken while paused, even if the distance settles.
+        model.pause()
+        engine.onMetrics?(.init(distanceMeters: 4_830, movingSeconds: 950, heartRate: nil))
+        XCTAssertEqual(speaker.spoken.count, 1)
+        model.discard()
+
+        model.unit = .kilometers
+        let reopened = makeModel()
+        XCTAssertEqual(reopened.unit, .kilometers)
+        XCTAssertTrue(reopened.announcesSplits)
     }
 
     func testDeniedOrApproximateLocationFailsBeforeHealth() async throws {
@@ -332,6 +514,8 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(engine.route.map(\.timestamp), checkpoint.points.map(\.timestamp))
         XCTAssertTrue(location.running)
         XCTAssertEqual(api.uploaded.count, 0)
+        XCTAssertEqual(liveActivity.recordingIDs, [checkpoint.uploadID], "The Lock Screen picks the run back up")
+        XCTAssertEqual(liveActivity.endCount, 0)
     }
 
     func testRecoveryFinishesAnOrphanFromItsCheckpoint() async throws {
@@ -354,6 +538,7 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(uploaded.movingSeconds, 15)
         XCTAssertFalse(uploaded.isPaused)
         XCTAssertEqual(try store().all(), [])
+        XCTAssertEqual(liveActivity.endCount, 1, "The lost run's Lock Screen activity ends")
     }
 
     func testNothingStartsWhileRecoveryIsWaitingOnHealth() async throws {

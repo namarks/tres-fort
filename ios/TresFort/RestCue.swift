@@ -222,9 +222,10 @@ final class RestNotificationCoordinator {
 /// rest elapses.
 ///
 /// Two delivery paths, because the in-process poll Task that calls `play()` is
-/// **suspended** once the phone locks or the app backgrounds (there is no
-/// background-audio mode, by design — keeping a silent AVAudioSession alive to
-/// dodge suspension is a battery-draining App-Review hazard):
+/// **suspended** once the phone locks or the app backgrounds (the lift runner
+/// keeps no background audio, by design — keeping a silent AVAudioSession
+/// alive to dodge suspension is a battery-draining App-Review hazard; the
+/// beta's audio mode serves only the run recorder's spoken splits):
 ///   - **Foreground** — `play()`: the rich chime + spoken cue + haptic.
 ///   - **Backgrounded / locked** — a scheduled *local notification*
 ///     (`scheduleNotification`). `UNTimeIntervalNotificationTrigger` is the

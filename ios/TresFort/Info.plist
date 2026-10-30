@@ -62,6 +62,7 @@
   <key>UIBackgroundModes</key>
   <array>
     <string>location</string>
+    <string>audio</string>
   </array>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>

@@ -24,8 +24,24 @@ targets:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
         CAMERA_USAGE_DESCRIPTION: "Scan your partner's iPad invitation code to join a workout."
+        HEALTH_UPDATE_USAGE_DESCRIPTION: "Très Fort only reads Apple Health data for workout coaching and your private weight trend. It does not write to Apple Health."
+        # The location-key phase below edits the processed Info.plist.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         OTHER_LDFLAGS[sdk=iphonesimulator*]: '$(inherited)'
         OTHER_LDFLAGS[sdk=iphoneos*]: '$(inherited)'
+    # The run recorder stays out of the public build until its device checks
+    # pass (docs/plans/run-recorder), so its location keys do too. Code
+    # signing runs after every build phase, so the signed plist lacks them.
+    postBuildScripts:
+      - name: Remove run recorder location keys
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        script: |
+          plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          for key in UIBackgroundModes NSLocationWhenInUseUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Delete :${key}" "$plist" 2>/dev/null || true
+          done
   TresFortWidgets:
     settings:
       base:

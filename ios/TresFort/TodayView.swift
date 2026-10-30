@@ -189,6 +189,9 @@ struct TodayView: View {
     /// existing tests / previews can construct the view without the new
     /// dependency.
     var onLogActivity: (() -> Void)? = nil
+    /// Opens the run recorder MainTabView hosts. Nil where recording isn't
+    /// supported (before iOS 26, iPad, the App Store build).
+    var onRecordRun: (() -> Void)? = nil
     var isWorkoutFocused = true
     var onMinimizeWorkout: (() -> Void)? = nil
     var onResumeWorkout: (() -> Void)? = nil
@@ -474,8 +477,11 @@ struct TodayView: View {
         StationLink.isAvailable && !partner.isOpen && !sync.running
             && UIDevice.current.userInterfaceIdiom == .phone
     }
+    private var canOfferRecordRun: Bool {
+        onRecordRun != nil && !sync.partnerReserved && !sync.running
+    }
     private var hasMoreWaysToTrain: Bool {
-        canOfferFreestyle || canOfferLogActivity || canOfferTrainTogether
+        canOfferFreestyle || canOfferLogActivity || canOfferRecordRun || canOfferTrainTogether
     }
 
     /// Occasional ways to train, kept off the main screen so today's workout,
@@ -494,6 +500,12 @@ struct TodayView: View {
                     Label("Log an activity", systemImage: "figure.walk")
                 }
                 .accessibilityIdentifier("today.logActivity")
+            }
+            if canOfferRecordRun, let onRecordRun {
+                Button(action: onRecordRun) {
+                    Label("Record a run", systemImage: "figure.run")
+                }
+                .accessibilityIdentifier("today.recordRun")
             }
             if canOfferTrainTogether {
                 Button { showPartner = true } label: {

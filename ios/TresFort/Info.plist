@@ -46,15 +46,23 @@
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSSupportsLiveActivities</key>
   <true/>
-  <!-- HealthKit purpose strings. We READ only (request no write access), but App
-       Store upload validation (409) requires BOTH strings once the HealthKit
-       entitlement is present — so the Update string must exist even though iOS
-       never shows it (we pass toShare: []). The Share string IS shown in the
-       read-permission sheet. -->
+  <!-- HealthKit purpose strings. App Store upload validation (409) requires
+       BOTH strings once the HealthKit entitlement is present. The Update
+       string comes from the build: the beta's run recorder saves runs to
+       Health, while the App Store build only reads and keeps its read-only
+       wording. The Share string IS shown in the read-permission sheet. -->
   <key>NSHealthShareUsageDescription</key>
   <string>Très Fort reads workouts, heart rate, distance, and calories for coaching. You can also allow weight access to view your weight trend privately on this device.</string>
   <key>NSHealthUpdateUsageDescription</key>
-  <string>Très Fort only reads Apple Health data for workout coaching and your private weight trend. It does not write to Apple Health.</string>
+  <string>$(HEALTH_UPDATE_USAGE_DESCRIPTION)</string>
+  <!-- Run recorder (docs/plans/run-recorder). The App Store build removes
+       both keys after processing this file until the recorder ships there. -->
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Très Fort records your route while you run, including with the screen locked, to map it and upload it to intervals.icu.</string>
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>location</string>
+  </array>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
   <key>UIAppFonts</key>

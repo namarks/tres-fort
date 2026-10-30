@@ -65,9 +65,19 @@ class AppStorePackagingTests(unittest.TestCase):
         descriptions = [item['CAMERA_USAGE_DESCRIPTION'] for item in self.shipping_settings(project)
                         if item['PRODUCT_BUNDLE_IDENTIFIER'] == 'com.nmarkspdx.tresfort']
         self.assertEqual(descriptions, ["Scan your partner's iPad invitation code to join a workout."] * 2)
+        health = [item['HEALTH_UPDATE_USAGE_DESCRIPTION'] for item in self.shipping_settings(project)
+                  if item['PRODUCT_BUNDLE_IDENTIFIER'] == 'com.nmarkspdx.tresfort']
+        self.assertEqual(len(health), 2)
+        self.assertTrue(all('does not write to Apple Health' in value for value in health))
         info = plistlib.loads((self.ios / 'TresFort/Info.plist').read_bytes())
         self.assertEqual(info['NSCameraUsageDescription'], '$(CAMERA_USAGE_DESCRIPTION)')
+        self.assertEqual(info['NSHealthUpdateUsageDescription'], '$(HEALTH_UPDATE_USAGE_DESCRIPTION)')
         self.assertIn("invited partner's iPhone", info['NSLocalNetworkUsageDescription'])
+        # The shared plist carries the run recorder's keys; the App Store
+        # build removes them from the processed copy.
+        self.assertEqual(info['UIBackgroundModes'], ['location'])
+        self.assertIn('Remove run recorder location keys', text)
+        self.assertIn('Delete :${key}', text)
         self.assertIn('DEBUG APP_STORE_BUILD', text)
         self.assertNotIn('APP_STORE_IPHONE_ONLY', text)
         self.assertIn('TresFortWidgets.appex in Embed Foundation Extensions', text)
@@ -96,6 +106,11 @@ class AppStorePackagingTests(unittest.TestCase):
         self.assertEqual(len(descriptions), 2)
         self.assertTrue(all('Track exercise movements' in value and 'invitation code' in value
                             for value in descriptions))
+        health = [item['HEALTH_UPDATE_USAGE_DESCRIPTION'] for item in self.shipping_settings(project)
+                  if item['PRODUCT_BUNDLE_IDENTIFIER'] == 'com.nmarkspdx.tresfort']
+        self.assertEqual(len(health), 2)
+        self.assertTrue(all('saves runs you record' in value for value in health))
+        self.assertNotIn('Remove run recorder location keys', text)
         self.assertNotIn('APP_STORE_BUILD', text)
         self.assertNotIn('APP_STORE_IPHONE_ONLY', text)
         self.assert_widget_app_group(project)
@@ -111,7 +126,8 @@ class AppStorePackagingTests(unittest.TestCase):
         original = project.read_text()
         invalid = [original.replace('APP_STORE_BUILD', 'APP_STORE_IPHONE_ONLY'),
                    original.replace('APP_STORE_BUILD', ''),
-                   original.replace('TARGETED_DEVICE_FAMILY = "1,2";', 'TARGETED_DEVICE_FAMILY = 1;', 1)]
+                   original.replace('TARGETED_DEVICE_FAMILY = "1,2";', 'TARGETED_DEVICE_FAMILY = 1;', 1),
+                   original.replace('Remove run recorder location keys', 'Unrelated phase')]
         for contents in invalid:
             with self.subTest(project=contents[:40]):
                 self.assertNotEqual(contents, original)

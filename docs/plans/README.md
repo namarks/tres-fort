@@ -177,10 +177,10 @@ integration or social breadth.
   and notifications, and essential group controls.
 - [Run recorder on iPhone](run-recorder/plan.md) — **active**; record
   outdoor runs in the app instead of Strava, save them to Apple Health and
-  upload them to intervals.icu as files. P0's upload endpoint and P1(a)'s
-  on-device store and uploader are in the repository; P1(b) builds the
-  iOS 26 workout-session recorder. Real-run accuracy against a Garmin is
-  checked on the owner's iPhone.
+  upload them to intervals.icu as files. P0's upload endpoint and P1's
+  iOS 26 recorder (beta build only) are in the repository; P2 adds Lock
+  Screen controls. Real-run accuracy against a Garmin is checked on the
+  owner's iPhone.
 
 ### Platform (`platform`)
 

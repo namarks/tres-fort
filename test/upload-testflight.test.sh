@@ -12,7 +12,7 @@ trap cleanup EXIT
 case_number=0
 last_output=""
 last_status=0
-public_project_contents=$'APP_STORE_BUILD\nTARGETED_DEVICE_FAMILY = "1,2";\nTARGETED_DEVICE_FAMILY = "1,2";\nTARGETED_DEVICE_FAMILY = "1,2";\nTARGETED_DEVICE_FAMILY = "1,2";'
+public_project_contents=$'APP_STORE_BUILD\nRemove run recorder location keys\nTARGETED_DEVICE_FAMILY = "1,2";\nTARGETED_DEVICE_FAMILY = "1,2";\nTARGETED_DEVICE_FAMILY = "1,2";\nTARGETED_DEVICE_FAMILY = "1,2";'
 
 fail() {
   echo "not ok ${case_number} - $1" >&2

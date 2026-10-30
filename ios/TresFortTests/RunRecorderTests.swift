@@ -203,7 +203,7 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(run.activeSeconds(at: clock.addingTimeInterval(999)), 310)
     }
 
-    func testKilometersConvertDistanceAndPace() {
+    func testKilometersConvertDistanceAndPace() throws {
         XCTAssertEqual(RunFormat.distance(5_000, in: .kilometers), "5.00")
         XCTAssertEqual(RunFormat.distance(5_000, in: .miles), "3.11")
         XCTAssertEqual(try XCTUnwrap(RunPace.average(movingSeconds: 1500, meters: 5_000, unit: .kilometers)), 300,
@@ -230,7 +230,7 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(kilometers.update(meters: 1_000, movingSeconds: 300)?.number, 1)
     }
 
-    func testARecoveredTrackerSkipsSplitsAlreadyRun() {
+    func testARecoveredTrackerSkipsSplitsAlreadyRun() throws {
         // 2.5 miles in 25 minutes: two splits done, about 20 minutes in.
         var tracker = RunSplitTracker(unit: .miles, meters: 1_609.344 * 2.5, movingSeconds: 1_500)
         XCTAssertEqual(tracker.completed, 2)

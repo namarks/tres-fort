@@ -237,4 +237,50 @@ final class GroupSafetyTests: XCTestCase {
         XCTAssertEqual(model.phase, .none, "A successful Retry must leave the error state")
     }
 
+    func testDetailRefreshDoesNotSupersedeALoadedOrLoadingGroup() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        var rosterRead: CheckedContinuation<GroupSummary, Error>?
+        var rosterReads = 0
+        let model = GroupModel(auth: auth, defaults: defaults, groupLoader: { _, _ in
+            rosterReads += 1
+            return try await withCheckedThrowingContinuation { rosterRead = $0 }
+        })
+        model.groups = [.init(id: "group", name: "Crew", created_by: "user-a", created_at: 1, members: [])]
+        model.selectedGroupID = "group"
+        model.phase = .ready
+        model.feed["group"] = []
+        model.stats["group"] = []
+        model.activitySeries["group"] = []
+
+        // Already loaded: the detail view's appearance leaves it alone.
+        await model.refreshGroupIfNeeded(groupID: "group")
+        XCTAssertEqual(rosterReads, 0)
+        XCTAssertEqual(model.feed["group"]?.isEmpty, true)
+
+        // Loading (e.g. started by load()): the detail view doesn't restart it.
+        let refreshing = Task { await model.refreshGroup(groupID: "group") }
+        for _ in 0..<100 where rosterRead == nil { await Task.yield() }
+        let continuation = try XCTUnwrap(rosterRead)
+        XCTAssertNil(model.feed["group"], "A refresh hides the feed until it reloads")
+        await model.refreshGroupIfNeeded(groupID: "group")
+        XCTAssertEqual(rosterReads, 1)
+        continuation.resume(throwing: URLError(.notConnectedToInternet))
+        await refreshing.value
+
+        // Nothing loaded or loading: the detail view refreshes.
+        rosterRead = nil
+        model.groups = [.init(id: "group", name: "Crew", created_by: "user-a", created_at: 1, members: [])]
+        let retry = Task { await model.refreshGroupIfNeeded(groupID: "group") }
+        for _ in 0..<100 where rosterRead == nil { await Task.yield() }
+        XCTAssertEqual(rosterReads, 2)
+        try XCTUnwrap(rosterRead).resume(throwing: URLError(.notConnectedToInternet))
+        await retry.value
+    }
+
 }

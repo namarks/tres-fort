@@ -49,6 +49,11 @@ final class GroupModel: ObservableObject {
     @Published var feedNextSinceID: [String: String?] = [:]
     @Published var isRefreshingFeed: [String: Bool] = [:]
     @Published var isRefreshingStats: [String: Bool] = [:]
+    /// `refreshGroup` calls in flight per group. `load()` publishes `.ready`
+    /// and then refreshes the selected group, so the detail view appears
+    /// mid-refresh; this lets its `.task` see that instead of starting a
+    /// second, superseding refresh.
+    private var groupRefreshesInFlight: [String: Int] = [:]
 
     // MARK: Intervals.icu connection
 
@@ -298,6 +303,8 @@ final class GroupModel: ObservableObject {
         // A removed detail view can still start its queued task while a full
         // roster reload is in flight. It must not supersede that reload.
         guard groups.contains(where: { $0.id == groupID }), let jwt = currentJWT else { return }
+        groupRefreshesInFlight[groupID, default: 0] += 1
+        defer { groupRefreshesInFlight[groupID, default: 1] -= 1 }
         identityCacheGeneration += 1
         let generation = identityCacheGeneration
         feed[groupID] = nil
@@ -325,6 +332,17 @@ final class GroupModel: ObservableObject {
         async let statsTask: Void = refreshStats(groupID: groupID)
         async let seriesTask: Void = refreshActivitySeries(groupID: groupID)
         _ = await (feedTask, statsTask, seriesTask)
+    }
+
+    /// Refresh a group the detail view is showing only when nothing has
+    /// loaded or is loading it. Opening the Group tab already refreshes the
+    /// selected group from `load()`; a second refresh would clear the feed
+    /// and roster again and discard the first one's responses.
+    func refreshGroupIfNeeded(groupID: String) async {
+        guard groupRefreshesInFlight[groupID, default: 0] == 0 else { return }
+        guard feed[groupID] == nil || stats[groupID] == nil || activitySeries[groupID] == nil
+        else { return }
+        await refreshGroup(groupID: groupID)
     }
 
     private func handleGroupRefreshFailure(_ error: Error, jwt: String, generation: Int) {

@@ -68,7 +68,7 @@ struct GroupDetailView: View {
             FeedItemDetailSheet(item: item, groupID: group.id, groupModel: groupModel)
         }
         .task(id: group.id) {
-            await groupModel.refreshGroup(groupID: group.id)
+            await groupModel.refreshGroupIfNeeded(groupID: group.id)
         }
     }
 
@@ -157,21 +157,30 @@ struct GroupDetailView: View {
 
     @ViewBuilder
     private var feedSection: some View {
-        let items = groupModel.feed[group.id] ?? []
         sectionHeader("ACTIVITY")
             .padding(.top, 6)
-        if items.isEmpty {
-            EmptyFeedState()
-                .padding(.top, 12)
-        } else {
-            ForEach(items) { item in
-                Button {
-                    selectedItem = item
-                } label: {
-                    FeedItemRow(item: item)
+        // A nil feed means it hasn't loaded yet (every refresh clears it
+        // first). Only a loaded, empty feed is "no activity".
+        if let items = groupModel.feed[group.id] {
+            if items.isEmpty {
+                EmptyFeedState()
+                    .padding(.top, 12)
+            } else {
+                ForEach(items) { item in
+                    Button {
+                        selectedItem = item
+                    } label: {
+                        FeedItemRow(item: item)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+        } else {
+            ProgressView()
+                .tint(Theme.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 32)
+                .accessibilityLabel("Loading activity")
         }
     }
 

@@ -74,8 +74,6 @@ final class RunRecorderModel: ObservableObject {
     @Published var glanceMetrics: [RunMetric] {
         didSet { defaults.set(glanceMetrics.map(\.rawValue), forKey: Self.glanceMetricsKey) }
     }
-    /// The current pause was started by auto-pause, so moving again resumes it.
-    @Published private(set) var isAutoPaused = false
     let heartRateMonitor: HeartRateMonitor
 
     static let unitKey = "runRecorder.distanceUnit"
@@ -184,6 +182,10 @@ final class RunRecorderModel: ObservableObject {
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
 
     var gpsReady: Bool { (gpsAccuracy ?? .infinity) <= Self.gpsReadyAccuracy }
+
+    /// The current pause was started by auto-pause, so moving again resumes
+    /// it. Kept in the checkpoint, so a recovered run still resumes.
+    var isAutoPaused: Bool { phase == .paused && run?.pauses.last?.automatic == true }
 
     /// Ending now would save nothing: under a minute or 100 m.
     var isTooShortToSave: Bool {
@@ -314,10 +316,9 @@ final class RunRecorderModel: ObservableObject {
 
     private func pause(auto: Bool) {
         guard phase == .running, var run else { return }
-        run.pauses.append(.init(start: now(), end: nil))
+        run.pauses.append(.init(start: now(), end: nil, automatic: auto ? true : nil))
         self.run = run
         phase = .paused
-        isAutoPaused = auto
         slowSince = nil
         fastSince = nil
         engine?.pause()
@@ -332,7 +333,6 @@ final class RunRecorderModel: ObservableObject {
         run.closePause(at: now())
         self.run = run
         phase = .running
-        isAutoPaused = false
         slowSince = nil
         fastSince = nil
         engine?.resume()
@@ -341,23 +341,21 @@ final class RunRecorderModel: ObservableObject {
         if wasAuto { speak("Run resumed.") }
     }
 
-    /// Watches GPS speed while recording. Fixes without a speed don't count.
-    private func autoPauseIfDue(_ locations: [CLLocation]) {
-        guard autoPauses else { return }
-        for location in locations where location.speed >= 0 {
-            let time = location.timestamp
-            if phase == .running {
-                slowSince = location.speed < Self.autoPauseSpeed ? slowSince ?? time : nil
-                if let slowSince, time.timeIntervalSince(slowSince) >= Self.autoPauseDelay {
-                    return pause(auto: true)
-                }
-            } else if phase == .paused, isAutoPaused {
-                fastSince = location.speed > Self.autoResumeSpeed ? fastSince ?? time : nil
-                if let fastSince, time.timeIntervalSince(fastSince) >= Self.autoResumeDelay {
-                    return resume()
-                }
-            }
+    private enum AutoPause { case pause, resume }
+
+    /// Watches GPS speed while recording, one fix at a time. Fixes without a
+    /// speed don't count.
+    private func autoPause(after location: CLLocation) -> AutoPause? {
+        guard autoPauses, location.speed >= 0 else { return nil }
+        let time = location.timestamp
+        if phase == .running {
+            slowSince = location.speed < Self.autoPauseSpeed ? slowSince ?? time : nil
+            if let slowSince, time.timeIntervalSince(slowSince) >= Self.autoPauseDelay { return .pause }
+        } else if isAutoPaused {
+            fastSince = location.speed > Self.autoResumeSpeed ? fastSince ?? time : nil
+            if let fastSince, time.timeIntervalSince(fastSince) >= Self.autoResumeDelay { return .resume }
         }
+        return nil
     }
 
     /// Saves the run to Health, keeps it for upload and sends it.
@@ -463,7 +461,6 @@ final class RunRecorderModel: ObservableObject {
         lastCheckpoint = nil
         lastActivityUpdate = nil
         gpsAccuracy = nil
-        isAutoPaused = false
         slowSince = nil
         fastSince = nil
         splits = nil
@@ -517,8 +514,25 @@ final class RunRecorderModel: ObservableObject {
         if let last = locations.last {
             gpsAccuracy = last.horizontalAccuracy >= 0 ? last.horizontalAccuracy : nil
         }
-        if phase == .running || phase == .paused { autoPauseIfDue(locations) }
-        guard phase == .running, var run else { return }
+        guard phase == .running || phase == .paused else { return }
+        // In order, so a pause or resume part-way through a batch keeps the
+        // fixes run before it and drops only those taken while paused.
+        var running: [CLLocation] = []
+        for location in locations {
+            if phase == .running { running.append(location) }
+            guard let change = autoPause(after: location) else { continue }
+            addRoute(running)
+            running = []
+            switch change {
+            case .pause: pause(auto: true)
+            case .resume: resume()
+            }
+        }
+        addRoute(running)
+    }
+
+    private func addRoute(_ locations: [CLLocation]) {
+        guard !locations.isEmpty, var run else { return }
         var accepted: [CLLocation] = []
         for location in locations {
             let point = RecordedRun.RoutePoint(location)

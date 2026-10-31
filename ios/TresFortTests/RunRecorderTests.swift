@@ -558,6 +558,38 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(speaker.spoken, ["Run paused.", "Run resumed."])
     }
 
+    func testAutoPauseKeepsTheFixesRunBeforeItInTheSameBatch() async throws {
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1, speed: 3), fix(1, seconds: 11, speed: 3),
+                               fix(2, seconds: 21, speed: 0.3), fix(2, seconds: 26, speed: 0.2),
+                               fix(2, seconds: 28, speed: 0.1)])
+        XCTAssertEqual(model.phase, .paused)
+        XCTAssertEqual(model.run?.points.count, 4, "The fix taken after the pause stays out")
+        XCTAssertEqual(engine.route.count, 4)
+
+        location.onLocations?([fix(2, seconds: 40, speed: 2.5), fix(3, seconds: 42, speed: 2.6),
+                               fix(4, seconds: 50, speed: 3)])
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertEqual(model.run?.points.count, 5, "Only the fix after the resume joins")
+    }
+
+    func testARecoveredAutoPauseStillResumesWhenTheRunnerMoves() async throws {
+        var checkpoint = RecordedRun(startedAt: clock)
+        checkpoint.points = [point(0, seconds: 1, from: clock), point(1, seconds: 11, from: clock)]
+        checkpoint.pauses = [.init(start: clock.addingTimeInterval(20), end: nil, automatic: true)]
+        try store().save(checkpoint)
+        engine.recovery = .paused
+        clock = clock.addingTimeInterval(60)
+
+        let model = makeModel()
+        await model.recover()
+        XCTAssertEqual(model.phase, .paused)
+        XCTAssertTrue(model.isAutoPaused)
+        location.onLocations?([fix(2, seconds: 1, speed: 3), fix(3, seconds: 3, speed: 3)])
+        XCTAssertEqual(model.phase, .running)
+    }
+
     func testAPauseTheRunnerAskedForWaitsForThem() async throws {
         let model = makeModel()
         await model.start()

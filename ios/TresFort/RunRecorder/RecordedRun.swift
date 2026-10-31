@@ -21,10 +21,14 @@ struct RecordedRun: Codable, Equatable, Identifiable {
         var beatsPerMinute: Double
     }
 
-    /// A pause the member started; `end` stays nil until they resume.
+    /// A pause the member or auto-pause started; `end` stays nil until the
+    /// run resumes.
     struct Pause: Codable, Equatable {
         var start: Date
         var end: Date?
+        /// Auto-pause started it, so moving again resumes it. Nil for a
+        /// pause the member asked for, and in runs saved before auto-pause.
+        var automatic: Bool?
     }
 
     var schemaVersion: Int = RecordedRun.currentSchemaVersion

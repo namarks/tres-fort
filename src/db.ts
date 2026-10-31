@@ -6588,6 +6588,9 @@ export async function updatePlanTree(
   // A load unit follows the same positional match: a rebuild that omits
   // target_weight_unit must not relabel a 24 kg target as 24 lb.
   const oldUnitByDayExOcc = new Map<string, 'lb' | 'kg'>();
+  // Planned run steps a rebuild omits follow the same positional match, so a
+  // changed warm-up flag cannot drop them.
+  const oldRunStepsByDayExOcc = new Map<string, string | null>();
   {
     const occ = new Map<string, number>();
     for (const ot of oldTeRows.results) {
@@ -6598,6 +6601,7 @@ export async function updatePlanTree(
       occ.set(exKey, o + 1);
       oldIsWarmupByDayExOcc.set(`${exKey}:${o}`, ot.is_warmup);
       oldUnitByDayExOcc.set(`${exKey}:${o}`, ot.target_weight_unit ?? 'lb');
+      oldRunStepsByDayExOcc.set(`${exKey}:${o}`, ot.run_steps ?? null);
     }
   }
 
@@ -6621,6 +6625,9 @@ export async function updatePlanTree(
   const unitPerOccurrence: ('lb' | 'kg')[][] = input.workouts.map((d) =>
     (d.exercises ?? []).map(() => 'lb' as const),
   );
+  const runStepsPerOccurrence: (string | null)[][] = input.workouts.map((d) =>
+    (d.exercises ?? []).map(() => null),
+  );
   const newTeIdByClassOcc = new Map<string, string>();
   {
     const posOcc = new Map<string, number>(); // positional (exId) — inheritance lookup
@@ -6640,6 +6647,9 @@ export async function updatePlanTree(
               : 0;
         isWarmupPerOccurrence[di]![ei] = isWarmup;
         unitPerOccurrence[di]![ei] = e.target_weight_unit ?? oldUnitByDayExOcc.get(`${exKey}:${p}`) ?? 'lb';
+        runStepsPerOccurrence[di]![ei] = e.run_steps === undefined
+          ? oldRunStepsByDayExOcc.get(`${exKey}:${p}`) ?? null
+          : serializeRunSteps(e.run_steps);
         const classKey = `${exKey}:${isWarmup}`;
         const c = classOcc.get(classKey) ?? 0;
         classOcc.set(classKey, c + 1);
@@ -6768,10 +6778,6 @@ export async function updatePlanTree(
       const exId = resolved.get(e.exercise)!;
       const isWarmup = isWarmupPerOccurrence[di]![ei]!;
       const group = groupCandidates[di]!.exercises[ei]!;
-      // Like the load unit, steps a rebuild omits follow the matched slot.
-      const runSteps = e.run_steps === undefined
-        ? oldByNewSlot.get(teIdPerExerciseOccurrence[di]![ei]!)?.run_steps ?? null
-        : serializeRunSteps(e.run_steps);
       stmts.push(
         db
           .prepare(
@@ -6790,7 +6796,7 @@ export async function updatePlanTree(
             e.progression == null ? null : JSON.stringify(e.progression),
             e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, -plan!.version,
             group.group_id, group.group_rest_seconds, group.group_transition_seconds,
-            unitPerOccurrence[di]![ei]!, runSteps,
+            unitPerOccurrence[di]![ei]!, runStepsPerOccurrence[di]![ei]!,
           ),
       );
     });

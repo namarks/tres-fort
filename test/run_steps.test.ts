@@ -192,7 +192,25 @@ describe('planned runs in the plan document (migration 0058)', () => {
     ] });
     expect(await runSlots()).toEqual([canonicalIntervals, null]);
 
-    const invalid = await tool('update_plan', { expected_version: kept.version + 1, workouts: [
+    // The match is positional, so changing the warm-up flag keeps them too.
+    const flagged = await tool('get_current_plan');
+    await tool('update_plan', { expected_version: flagged.version, workouts: [
+      { name: 'Track', exercises: [
+        { exercise: 'Outdoor Run', target_sets: 1, target_reps: 1, is_warmup: true },
+        { exercise: 'Outdoor Run', target_sets: 1, target_reps: 1 },
+      ] },
+    ] });
+    expect(await runSlots()).toEqual([canonicalIntervals, null]);
+    const unflagged = await tool('get_current_plan');
+    await tool('update_plan', { expected_version: unflagged.version, workouts: [
+      { name: 'Track', exercises: [
+        { exercise: 'Outdoor Run', target_sets: 1, target_reps: 1, is_warmup: false },
+        { exercise: 'Outdoor Run', target_sets: 1, target_reps: 1 },
+      ] },
+    ] });
+    expect(await runSlots()).toEqual([canonicalIntervals, null]);
+
+    const invalid = await tool('update_plan', { expected_version: unflagged.version + 1, workouts: [
       { name: 'Track', exercises: [
         { exercise: 'Outdoor Run', target_sets: 1, target_reps: 1,
           run_steps: [{ kind: 'warmup', duration_s: 60 }, { repeat: 3, steps: [{ kind: 'work', distance_m: 400,

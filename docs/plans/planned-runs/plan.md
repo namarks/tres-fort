@@ -127,17 +127,18 @@ intervals.icu, which stays the store of completed runs.
 |---|---|---|---|
 | P3 | coordinates_with | plan:run-recorder#P3 | Spoken cues are tuned on the same real runs that check the recorder. The owner chose on 2026-10-31 to build P2 before those runs. |
 | P2 | coordinates_with | plan:run-recorder#P4 | Both change the recorder's screen and its pause handling. |
-| P4 | gated_by | external:owner-planned-runs-device-verification | Real runs on the owner's iPhone need an authorized TestFlight build. |
+| P4 | gated_by | external:owner-planned-runs-device-verification | Real runs on the owner's iPhone, on TestFlight build 59. |
 
 ## Next step
 
-**Now (@owner):** Authorize migration 0058, the Worker deploy and a
-TestFlight build, then run a planned interval session and a heart rate run
-(P4). Run-recorder P3's real runs can use the same build.
+**Now (@owner):** On TestFlight build 59, run a planned interval session
+and a heart rate run (P4), after the coach adds them to the plan.
+Run-recorder P3's real runs can use the same build.
 
-P0's migration 0058 must be applied before a Worker that reads or writes
-`run_steps` serves traffic. Applying it and deploying need separate
-authority.
+Released on 2026-10-31 with the owner's go-ahead: migration 0058 was applied
+in production before the Worker deploy of main 97856cf, and TestFlight beta
+build 59 was built from the same commit. No production row carries steps
+yet, so the first coach-planned run is the first real write.
 
 ## Verification evidence
 

@@ -128,8 +128,8 @@ sees it in the same place as Garmin runs.
     tap on a number picks what it shows, and the choices stay on the
     device. The screen stays on while that layout shows during a run. End
     on a run under a minute or 100 m offers only Discard, and a Lock Screen
-    Finish on one discards it without a Health workout or upload. Awaiting
-    an authorized TestFlight build to try on a run.
+    Finish on one discards it without a Health workout or upload. In
+    TestFlight build 59 (2026-10-31).
 
 ## Execution frontier
 
@@ -148,12 +148,12 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@owner):** Authorize a TestFlight build with the recorder and the
-Worker deploy that carries P0, then record the P3 runs.
+**Now (@owner):** Record the remaining P3 runs on TestFlight build 59
+(main 97856cf), which carries auto-pause, the running layout and planned
+runs.
 
-P3 needs a TestFlight build on the owner's iPhone, which needs separate
-authority, as does the Worker deploy that carries P0. P1 and P2 are delivered
-in the repository; their HealthKit, location, ActivityKit and speech calls
+P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
+their HealthKit, location, ActivityKit and speech calls
 have only been compiled and run against fakes, so P3 is their first real
 test, including the Lock Screen controls, splits heard with the phone
 locked and a Bluetooth heart rate strap. Launch-time recovery runs

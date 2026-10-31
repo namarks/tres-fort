@@ -574,6 +574,39 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(model.run?.points.count, 5, "Only the fix after the resume joins")
     }
 
+    func testAutomaticPausesAreTimedByTheFixesThatTriggerThem() async throws {
+        let model = makeModel()
+        await model.start()
+        let started = clock
+        // Fixes arrive in batches a few seconds after they were taken.
+        clock = started.addingTimeInterval(30)
+        location.onLocations?([fix(0, seconds: -29, speed: 3), fix(1, seconds: -20, speed: 0.2),
+                               fix(1, seconds: -14, speed: 0.1)])
+        XCTAssertEqual(model.phase, .paused)
+        XCTAssertEqual(model.run?.pauses.last?.start, started.addingTimeInterval(16))
+
+        clock = started.addingTimeInterval(60)
+        location.onLocations?([fix(2, seconds: -10, speed: 3), fix(3, seconds: -8, speed: 3),
+                               fix(4, seconds: -5, speed: 3)])
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertEqual(model.run?.pauses.last?.end, started.addingTimeInterval(52))
+        let run = try XCTUnwrap(model.run)
+        XCTAssertEqual(run.points.last?.timestamp, started.addingTimeInterval(55))
+        XCTAssertEqual(RecordedRunTCX.segments(run).last?.last?.timestamp, started.addingTimeInterval(55),
+                       "The point kept after the resume counts as moving")
+    }
+
+    func testImpreciseOrStaleFixesDontPauseOrResume() async throws {
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1, accuracy: 80, speed: 0),
+                               fix(0, seconds: 10, accuracy: 80, speed: 0)])
+        XCTAssertEqual(model.phase, .running, "Fixes the route rejects don't pause the run")
+        location.onLocations?([fix(0, seconds: 20, speed: 3), fix(0, seconds: 12, speed: 0),
+                               fix(0, seconds: 21, speed: 0)])
+        XCTAssertEqual(model.phase, .running, "An out-of-order fix doesn't backdate the stop")
+    }
+
     func testARecoveredAutoPauseStillResumesWhenTheRunnerMoves() async throws {
         var checkpoint = RecordedRun(startedAt: clock)
         checkpoint.points = [point(0, seconds: 1, from: clock), point(1, seconds: 11, from: clock)]

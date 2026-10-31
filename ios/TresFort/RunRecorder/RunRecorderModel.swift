@@ -129,6 +129,9 @@ final class RunRecorderModel: ObservableObject {
     /// When GPS speed first fell below, or rose above, the auto-pause speeds.
     private var slowSince: Date?
     private var fastSince: Date?
+    /// The latest fix auto-pause considered, so a late or repeated fix
+    /// can't count twice.
+    private var lastSpeedFix: Date?
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -314,9 +317,14 @@ final class RunRecorderModel: ObservableObject {
     /// A pause the member asked for stays paused until they resume.
     func pause() { pause(auto: false) }
 
-    private func pause(auto: Bool) {
+    /// An automatic pause starts at the fix that triggered it, which can
+    /// arrive a few seconds later in a batch.
+    private func pause(auto: Bool, at fixTime: Date? = nil) {
         guard phase == .running, var run else { return }
-        run.pauses.append(.init(start: now(), end: nil, automatic: auto ? true : nil))
+        let time = now()
+        let floor = max(run.startedAt, run.pauses.last?.end ?? run.startedAt)
+        let start = fixTime.map { min(max($0, floor), time) } ?? time
+        run.pauses.append(.init(start: start, end: nil, automatic: auto ? true : nil))
         self.run = run
         phase = .paused
         slowSince = nil
@@ -327,10 +335,16 @@ final class RunRecorderModel: ObservableObject {
         if auto { speak("Run paused.") }
     }
 
-    func resume() {
+    func resume() { resume(at: nil) }
+
+    /// An automatic resume ends the pause at the fix that triggered it, so
+    /// the fixes kept after it count as moving.
+    private func resume(at fixTime: Date?) {
         guard phase == .paused, var run else { return }
         let wasAuto = isAutoPaused
-        run.closePause(at: now())
+        let time = now()
+        let floor = run.pauses.last?.start ?? run.startedAt
+        run.closePause(at: fixTime.map { min(max($0, floor), time) } ?? time)
         self.run = run
         phase = .running
         slowSince = nil
@@ -343,11 +357,16 @@ final class RunRecorderModel: ObservableObject {
 
     private enum AutoPause { case pause, resume }
 
-    /// Watches GPS speed while recording, one fix at a time. Fixes without a
-    /// speed don't count.
+    /// Watches GPS speed while recording, one fix at a time. Only a fix the
+    /// route would accept counts: precise enough, from this run, newer than
+    /// the last, and carrying a speed.
     private func autoPause(after location: CLLocation) -> AutoPause? {
-        guard autoPauses, location.speed >= 0 else { return nil }
         let time = location.timestamp
+        guard autoPauses, location.speed >= 0, let run,
+              location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy <= RunLocationFilter.maximumHorizontalAccuracy,
+              time >= run.startedAt, lastSpeedFix.map({ time > $0 }) ?? true else { return nil }
+        lastSpeedFix = time
         if phase == .running {
             slowSince = location.speed < Self.autoPauseSpeed ? slowSince ?? time : nil
             if let slowSince, time.timeIntervalSince(slowSince) >= Self.autoPauseDelay { return .pause }
@@ -463,6 +482,7 @@ final class RunRecorderModel: ObservableObject {
         gpsAccuracy = nil
         slowSince = nil
         fastSince = nil
+        lastSpeedFix = nil
         splits = nil
         RunRecorderControl.handler = nil
     }
@@ -524,8 +544,8 @@ final class RunRecorderModel: ObservableObject {
             addRoute(running)
             running = []
             switch change {
-            case .pause: pause(auto: true)
-            case .resume: resume()
+            case .pause: pause(auto: true, at: location.timestamp)
+            case .resume: resume(at: location.timestamp)
             }
         }
         addRoute(running)

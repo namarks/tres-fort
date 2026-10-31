@@ -1,6 +1,6 @@
 # Run recorder on iPhone
 
-Slug: run-recorder · Status: active · Updated: 2026-10-30 · Theme: connected-training
+Slug: run-recorder · Status: active · Updated: 2026-10-31 · Theme: connected-training
 
 ## Goal
 
@@ -108,6 +108,25 @@ within the agreed tolerance of a Garmin watch on the same run.
     `external_id`, multipart `file`, 201 created or 200 duplicate) comes
     from intervals.icu's API conventions and has only been tested against
     mocks.
+- [ ] **P4 — Auto-pause and a running display**
+  - Auto-pause, on by default and switchable before the run: pause when GPS
+    speed stays under a walking threshold for a few seconds, and resume
+    when it rises again, using the same pause records as a manual pause so
+    the builder, splits and Lock Screen agree. A manual pause stays paused
+    until the member resumes it. The resume and pause are spoken when
+    announcements are on.
+  - A glanceable running layout: two or three large numbers chosen by the
+    member (time, distance, current pace, average pace, heart rate), high
+    contrast, with the map behind a swipe. Keep the screen awake while it
+    shows, if the member chooses that.
+  - Don't upload a run too short to analyze (under a minute or 100 m): ask to
+    discard it instead. The first P3 session left a zero-length run on
+    intervals.icu.
+
+## Execution frontier
+
+- P3
+- P4
 
 ## Dependencies
 
@@ -169,6 +188,15 @@ the scene delegate is left to P3's force-quit check.
 
 ## Notes / open questions
 
+- First P3 run (build 58, 2026-10-30 evening, Pacific): the recorder upload
+  reached intervals.icu as a run of 2.04 km in 8:32 moving, average heart
+  rate 149 from the strap (max 162). A second, empty activity (no distance,
+  zero moving time, heart rate 77) was uploaded from a start-and-end test.
+  The Forerunner's copy had not reached intervals.icu when checked, so the
+  distance comparison is still open. The owner asked for auto-pause, a
+  glanceable running display, and planned runs with pace or heart rate
+  targets and spoken on/off-pace cues. P4 covers the first two; planned runs
+  are [their own plan](../planned-runs/plan.md).
 - First P3 feedback (build 57, 2026-10-30): finding the runner took too long
   because GPS and the location prompt only started on Start. The recorder now
   asks for location and starts foreground GPS when it opens, shows "Finding

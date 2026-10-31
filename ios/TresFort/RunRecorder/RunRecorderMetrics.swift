@@ -74,6 +74,16 @@ enum RunPace {
         return seconds / (meters / unit.meters)
     }
 
+    /// A route point older than this means GPS has stopped, so there's no
+    /// current pace to coach from.
+    static let freshness: TimeInterval = 10
+
+    /// Current pace, but only while GPS is still delivering points.
+    static func fresh(_ run: RecordedRun, at now: Date, unit: RunDistanceUnit = .miles) -> Double? {
+        guard let last = run.points.last, now.timeIntervalSince(last.timestamp) <= freshness else { return nil }
+        return current(run, unit: unit)
+    }
+
     static func average(movingSeconds: Double, meters: Double, unit: RunDistanceUnit = .miles) -> Double? {
         guard movingSeconds > 0, meters >= 10 else { return nil }
         return movingSeconds / (meters / unit.meters)

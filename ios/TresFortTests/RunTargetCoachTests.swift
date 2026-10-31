@@ -35,10 +35,10 @@ final class RunTargetCoachTests: XCTestCase {
     func testACueWaitsForTheStepToSettleAndTheChangeToHold() {
         var coach = RunTargetCoach()
         coach.startStep(at: 0)
-        // Too slow from the start: nothing until the step has settled, the
-        // change has held and 30 s have passed since the step was announced.
+        // Too slow from the start: readings count from 30 s into the step,
+        // and the change must hold 10 s.
         let said = run(&coach, target: pace, value: 360, from: 1, to: 60)
-        XCTAssertEqual(said.map(\.0), [30])
+        XCTAssertEqual(said.map(\.0), [40])
         XCTAssertEqual(said.map(\.1), ["Speed up."])
     }
 
@@ -46,9 +46,9 @@ final class RunTargetCoachTests: XCTestCase {
         var coach = RunTargetCoach()
         coach.startStep(at: 0)
         XCTAssertEqual(run(&coach, target: pace, value: 360, from: 1, to: 40).map(\.1), ["Speed up."])
-        // Back on pace at 41 s: held 10 s by 50 s, but the last cue was at 30 s.
+        // Back on pace at 41 s: held 10 s by 51 s, but the last cue was at 40 s.
         let back = run(&coach, target: pace, value: 315, from: 41, to: 70)
-        XCTAssertEqual(back.map(\.0), [60])
+        XCTAssertEqual(back.map(\.0), [70])
         XCTAssertEqual(back.map(\.1), ["On pace."])
         // A brief excursion shorter than the hold says nothing.
         XCTAssertTrue(run(&coach, target: pace, value: 280, from: 71, to: 78).isEmpty)
@@ -66,6 +66,7 @@ final class RunTargetCoachTests: XCTestCase {
         coach.startStep(at: 100)
         XCTAssertNil(coach.update(target: heartRate, value: nil, stepSeconds: 40, movingSeconds: 140))
         let said = run(&coach, target: heartRate, value: 120, from: 101, to: 160, stepStart: 100)
+        XCTAssertEqual(said.map(\.0), [140])
         XCTAssertEqual(said.map(\.1), ["Heart rate low. Pick it up."])
         let high = run(&coach, target: heartRate, value: 160, from: 161, to: 220, stepStart: 100)
         XCTAssertEqual(high.map(\.1), ["Heart rate high. Ease off."])
@@ -78,8 +79,35 @@ final class RunTargetCoachTests: XCTestCase {
         coach.startStep(at: 41)
         XCTAssertNil(coach.announced)
         // Still slow in the new step: said again once it has settled.
-        let said = run(&coach, target: pace, value: 360, from: 42, to: 80, stepStart: 41)
-        XCTAssertEqual(said.map(\.0), [71])
+        let said = run(&coach, target: pace, value: 360, from: 42, to: 90, stepStart: 41)
+        XCTAssertEqual(said.map(\.0), [81])
+    }
+
+    func testAGapInReadingsRestartsTheHold() {
+        var coach = RunTargetCoach()
+        coach.startStep(at: 0)
+        XCTAssertTrue(run(&coach, target: heartRate, value: 160, from: 31, to: 35).isEmpty)
+        for second in 36...99 {
+            XCTAssertNil(coach.update(target: heartRate, value: nil, stepSeconds: Double(second),
+                                      movingSeconds: Double(second)))
+        }
+        // The strap is back: the high reading must hold again.
+        let said = run(&coach, target: heartRate, value: 160, from: 100, to: 115)
+        XCTAssertEqual(said.map(\.0), [110])
+    }
+
+    func testPaceNeedsARecentRoutePoint() {
+        let start = Date(timeIntervalSince1970: 1_793_000_000)
+        var recorded = RecordedRun(startedAt: start)
+        // About 30 m every 10 s.
+        recorded.points = (0...3).map { step in
+            RecordedRun.RoutePoint(timestamp: start.addingTimeInterval(Double(step) * 10),
+                  latitude: 45.5190 + Double(step) * 0.00027, longitude: -122.6793,
+                  altitude: nil, horizontalAccuracy: 5)
+        }
+        XCTAssertNotNil(RunPace.fresh(recorded, at: start.addingTimeInterval(35), unit: .kilometers))
+        XCTAssertNil(RunPace.fresh(recorded, at: start.addingTimeInterval(41), unit: .kilometers),
+                     "GPS stopped 11 s ago")
     }
 
     func testStepsAreSpokenInTheRunUnit() {

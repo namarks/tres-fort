@@ -670,7 +670,7 @@ final class RunRecorderModel: ObservableObject {
         let value: Double?
         switch target {
         case .pace:
-            value = RunPace.current(run, unit: .kilometers)
+            value = RunPace.fresh(run, at: time, unit: .kilometers)
         case .heartRate:
             let recent = run.heartRates.filter { time.timeIntervalSince($0.timestamp) <= Self.heartRateWindow }
             value = recent.isEmpty ? nil : recent.map(\.beatsPerMinute).reduce(0, +) / Double(recent.count)

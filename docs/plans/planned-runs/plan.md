@@ -104,11 +104,13 @@ intervals.icu, which stays the store of completed runs.
   - `RunTargetCoach` says when pace or heart rate leaves the step's target
     ("Speed up", "Ease off", "Heart rate high. Ease off", "Heart rate low.
     Pick it up") and when it's back ("On pace", "Heart rate on target").
-  - Pace is the recorder's 30-second current pace; heart rate is the
-    15-second average. Leaving the range needs a margin (5 s/km, 2 bpm) and
-    returning needs none. No cue comes in a step's first 20 seconds, a change
-    must hold 10 seconds, and cues are at least 30 seconds apart, counting
-    the step announcement. Staying on target says nothing.
+  - Pace is the recorder's 30-second current pace, used only while GPS
+    delivered a point in the last 10 seconds; heart rate is the 15-second
+    average. Leaving the range needs a margin (5 s/km, 2 bpm) and returning
+    needs none. Readings from a step's first 30 seconds don't count, so the
+    pace window holds only that step. A change must hold 10 seconds, and a
+    gap in readings starts the hold again. Cues are at least 30 seconds
+    apart, counting the step announcement. Staying on target says nothing.
   - Cues use the split speaker and its mute control, so they duck music and
     work with the phone locked. The start screen's toggle reads "Announce
     each mile, step and target" for a planned run.
@@ -155,8 +157,8 @@ authority.
   paused time not counting, a backdated auto-pause undoing a step but not a
   skip, skipping, the uploaded name, a slot without
   steps, and recovery at the saved step.
-- P3: `RunTargetCoachTests` covers the margins, settling, holding, the
-  30-second gap, back-on-target and heart rate cues, a new step starting
+- P3: `RunTargetCoachTests` covers the margins, settling, holding, a gap
+  in readings, stale GPS, the 30-second gap between cues, back-on-target and heart rate cues, a new step starting
   fresh, and the spoken step wording in miles and kilometers.
   `RunRecorderTests` covers a planned run speaking its first and next
   steps, one heart rate cue, and the end of the plan.

@@ -11,9 +11,9 @@ struct RunTargetCoach: Equatable {
         case onTarget, below, above
     }
 
-    /// No target cue in a step's first seconds, while pace and heart rate
-    /// settle.
-    static let settleSeconds: Double = 20
+    /// Readings from a step's first seconds don't count, so the 30-second
+    /// pace window holds only this step's running.
+    static let settleSeconds: Double = 30
     /// A change must hold this long before it's spoken.
     static let holdSeconds: Double = 10
     /// At most one target cue this often, counting the step's announcement.
@@ -57,13 +57,19 @@ struct RunTargetCoach: Equatable {
     /// per km or the heart rate; nil when there's none to judge.
     mutating func update(target: RunPlan.Target, value: Double?, stepSeconds: Double,
                          movingSeconds: Double) -> String? {
-        guard let value, let reading = Self.reading(value, target: target) else { return nil }
+        // No reading, or one still settling into the step: a change must
+        // hold again once readings return.
+        guard let value, stepSeconds >= Self.settleSeconds else {
+            candidate = nil
+            return nil
+        }
+        // Inside the margin the pending change neither grows nor resets.
+        guard let reading = Self.reading(value, target: target) else { return nil }
         if reading != candidate {
             candidate = reading
             candidateSince = movingSeconds
         }
-        guard stepSeconds >= Self.settleSeconds,
-              movingSeconds - candidateSince >= Self.holdSeconds,
+        guard movingSeconds - candidateSince >= Self.holdSeconds,
               reading != (announced ?? .onTarget),
               lastCue.map({ movingSeconds - $0 >= Self.minimumGap }) ?? true else { return nil }
         announced = reading

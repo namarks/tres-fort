@@ -1,5 +1,6 @@
 import MapKit
 import SwiftUI
+import UIKit
 
 /// Full-screen run recorder: route map, live stats and the controls. Owned
 /// by MainTabView so a recording outlives tab changes; it can't be swiped
@@ -17,8 +18,12 @@ struct RunRecorderView: View {
             Theme.background
             VStack(spacing: 16) {
                 header
-                map
-                stats
+                if model.isRecording && model.showsGlance {
+                    RunGlanceView(model: model)
+                } else {
+                    map
+                    stats
+                }
                 if model.phase == .idle || isFailed {
                     gpsStatus
                     heartRateStatus
@@ -36,19 +41,30 @@ struct RunRecorderView: View {
             if model.phase == .idle || isFailed { await model.warmUpGPS() }
         }
         .onAppear { model.opened() }
-        .onDisappear { model.closed() }
+        .onDisappear {
+            model.closed()
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        // The running layout is read mid-stride, so the screen stays on.
+        .onChange(of: model.isRecording && model.showsGlance, initial: true) { _, awake in
+            UIApplication.shared.isIdleTimerDisabled = awake
+        }
         .sheet(isPresented: $settingUpHeartRate) {
             HeartRateMonitorSetupView(monitor: model.heartRateMonitor)
         }
         .interactiveDismissDisabled(model.isRecording || model.phase == .starting || model.phase == .recovering)
         .confirmationDialog("End this run?", isPresented: $confirmEnd, titleVisibility: .visible) {
-            Button("Save run") { Task { await model.end() } }
-                .accessibilityIdentifier("runRecorder.save")
+            if !model.isTooShortToSave {
+                Button("Save run") { Task { await model.end() } }
+                    .accessibilityIdentifier("runRecorder.save")
+            }
             Button("Discard run", role: .destructive) { model.discard() }
                 .accessibilityIdentifier("runRecorder.discard")
             Button("Keep running", role: .cancel) {}
         } message: {
-            Text("Saving adds the run to Apple Health and uploads it to intervals.icu.")
+            Text(model.isTooShortToSave
+                 ? "Runs under a minute or 100 m aren’t saved."
+                 : "Saving adds the run to Apple Health and uploads it to intervals.icu.")
         }
     }
 
@@ -57,6 +73,15 @@ struct RunRecorderView: View {
             Text(title).font(Theme.display(34)).foregroundStyle(Theme.text)
             Spacer()
             if model.isRecording {
+                Button {
+                    model.showsGlance.toggle()
+                } label: {
+                    Image(systemName: model.showsGlance ? "map" : "textformat.size")
+                        .font(.headline).frame(width: 44, height: 44)
+                }
+                .foregroundStyle(Theme.muted)
+                .accessibilityLabel(model.showsGlance ? "Show the map" : "Show large numbers")
+                .accessibilityIdentifier("runRecorder.glance")
                 Button {
                     model.announcesSplits.toggle()
                 } label: {
@@ -86,7 +111,7 @@ struct RunRecorderView: View {
         switch model.phase {
         case .idle, .recovering, .starting, .failed: "Outdoor run"
         case .running: "Running"
-        case .paused: "Paused"
+        case .paused: model.isAutoPaused ? "Auto-paused" : "Paused"
         case .ending: "Saving"
         case .finished: "Run saved"
         }
@@ -127,6 +152,11 @@ struct RunRecorderView: View {
                 .foregroundStyle(Theme.text)
                 .tint(Theme.accent)
                 .accessibilityIdentifier("runRecorder.announceSplits")
+            Toggle("Pause when I stop", isOn: $model.autoPauses)
+                .font(.callout)
+                .foregroundStyle(Theme.text)
+                .tint(Theme.accent)
+                .accessibilityIdentifier("runRecorder.autoPause")
         }
     }
 

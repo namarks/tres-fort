@@ -61,10 +61,26 @@ final class RunRecorderModel: ObservableObject {
     @Published var announcesSplits: Bool {
         didSet { defaults.set(announcesSplits, forKey: Self.announceKey) }
     }
+    /// Pause when the runner stops and resume when they go again. On unless
+    /// the member turns it off.
+    @Published var autoPauses: Bool {
+        didSet { defaults.set(autoPauses, forKey: Self.autoPauseKey) }
+    }
+    /// The large-number running layout instead of the map.
+    @Published var showsGlance: Bool {
+        didSet { defaults.set(showsGlance, forKey: Self.glanceKey) }
+    }
+    /// The numbers the running layout shows, top to bottom.
+    @Published var glanceMetrics: [RunMetric] {
+        didSet { defaults.set(glanceMetrics.map(\.rawValue), forKey: Self.glanceMetricsKey) }
+    }
     let heartRateMonitor: HeartRateMonitor
 
     static let unitKey = "runRecorder.distanceUnit"
     static let announceKey = "runRecorder.announceSplits"
+    static let autoPauseKey = "runRecorder.autoPause"
+    static let glanceKey = "runRecorder.glance"
+    static let glanceMetricsKey = "runRecorder.glanceMetrics"
 
     /// Seconds between checkpoints while route points arrive.
     static let checkpointInterval: TimeInterval = 10
@@ -73,6 +89,16 @@ final class RunRecorderModel: ObservableObject {
     static let liveActivityInterval: TimeInterval = 5
     /// A fix this precise means GPS has locked on and the run can start.
     static let gpsReadyAccuracy: CLLocationAccuracy = 20
+    /// Auto-pause: slower than walking pace (about 2.9 km/h) for this long
+    /// pauses, and faster than an easy walk for this long resumes.
+    static let autoPauseSpeed: CLLocationSpeed = 0.8
+    static let autoPauseDelay: TimeInterval = 5
+    static let autoResumeSpeed: CLLocationSpeed = 1.4
+    static let autoResumeDelay: TimeInterval = 2
+    /// A run shorter than either of these has nothing worth analyzing, so it
+    /// isn't saved or uploaded.
+    static let minimumSeconds: TimeInterval = 60
+    static let minimumMeters: Double = 100
 
     private let accountID: String?
     private let baseURL: URL?
@@ -100,6 +126,12 @@ final class RunRecorderModel: ObservableObject {
     private var lastActivityUpdate: Date?
     /// The recorder screen is showing.
     private var isOpen = false
+    /// When GPS speed first fell below, or rose above, the auto-pause speeds.
+    private var slowSince: Date?
+    private var fastSince: Date?
+    /// The latest fix auto-pause considered, so a late or repeated fix
+    /// can't count twice.
+    private var lastSpeedFix: Date?
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -143,11 +175,26 @@ final class RunRecorderModel: ObservableObject {
         self.heartRateMonitor = heartRateMonitor ?? HeartRateMonitor(defaults: defaults, now: now)
         unit = defaults.string(forKey: RunRecorderModel.unitKey).flatMap(RunDistanceUnit.init(rawValue:)) ?? .miles
         announcesSplits = defaults.bool(forKey: RunRecorderModel.announceKey)
+        autoPauses = defaults.object(forKey: RunRecorderModel.autoPauseKey) as? Bool ?? true
+        showsGlance = defaults.bool(forKey: RunRecorderModel.glanceKey)
+        let metrics = (defaults.stringArray(forKey: RunRecorderModel.glanceMetricsKey) ?? [])
+            .compactMap(RunMetric.init(rawValue:))
+        glanceMetrics = metrics.isEmpty ? RunMetric.glanceDefault : metrics
     }
 
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
 
     var gpsReady: Bool { (gpsAccuracy ?? .infinity) <= Self.gpsReadyAccuracy }
+
+    /// The current pause was started by auto-pause, so moving again resumes
+    /// it. Kept in the checkpoint, so a recovered run still resumes.
+    var isAutoPaused: Bool { phase == .paused && run?.pauses.last?.automatic == true }
+
+    /// Ending now would save nothing: under a minute or 100 m.
+    var isTooShortToSave: Bool {
+        guard let run else { return true }
+        return run.activeSeconds(at: now()) < Self.minimumSeconds || run.distanceMeters < Self.minimumMeters
+    }
 
     // MARK: - Opening and closing
 
@@ -267,29 +314,84 @@ final class RunRecorderModel: ObservableObject {
         location.start()
     }
 
-    func pause() {
+    /// A pause the member asked for stays paused until they resume.
+    func pause() { pause(auto: false) }
+
+    /// An automatic pause starts at the fix that triggered it, which can
+    /// arrive a few seconds later in a batch.
+    private func pause(auto: Bool, at fixTime: Date? = nil) {
         guard phase == .running, var run else { return }
-        run.pauses.append(.init(start: now(), end: nil))
+        let time = now()
+        let floor = max(run.startedAt, run.pauses.last?.end ?? run.startedAt)
+        let start = fixTime.map { min(max($0, floor), time) } ?? time
+        run.pauses.append(.init(start: start, end: nil, automatic: auto ? true : nil))
         self.run = run
         phase = .paused
+        slowSince = nil
+        fastSince = nil
         engine?.pause()
         checkpoint(force: true)
         refreshLiveActivity(force: true)
+        if auto { speak("Run paused.") }
     }
 
-    func resume() {
+    func resume() { resume(at: nil) }
+
+    /// An automatic resume ends the pause at the fix that triggered it, so
+    /// the fixes kept after it count as moving.
+    private func resume(at fixTime: Date?) {
         guard phase == .paused, var run else { return }
-        run.closePause(at: now())
+        let wasAuto = isAutoPaused
+        let time = now()
+        let floor = run.pauses.last?.start ?? run.startedAt
+        run.closePause(at: fixTime.map { min(max($0, floor), time) } ?? time)
         self.run = run
         phase = .running
+        slowSince = nil
+        fastSince = nil
         engine?.resume()
         checkpoint(force: true)
         refreshLiveActivity(force: true)
+        if wasAuto { speak("Run resumed.") }
+    }
+
+    private enum AutoPause { case pause, resume }
+
+    /// Watches GPS speed while recording, one fix at a time. Only a fix the
+    /// route would accept counts: precise enough, from this run, newer than
+    /// the last, and carrying a speed.
+    private func autoPause(after location: CLLocation) -> AutoPause? {
+        let time = location.timestamp
+        guard autoPauses, location.speed >= 0, let run,
+              location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy <= RunLocationFilter.maximumHorizontalAccuracy,
+              time >= run.startedAt, lastSpeedFix.map({ time > $0 }) ?? true else { return nil }
+        lastSpeedFix = time
+        if phase == .running {
+            slowSince = location.speed < Self.autoPauseSpeed ? slowSince ?? time : nil
+            if let slowSince, time.timeIntervalSince(slowSince) >= Self.autoPauseDelay { return .pause }
+        } else if isAutoPaused {
+            fastSince = location.speed > Self.autoResumeSpeed ? fastSince ?? time : nil
+            if let fastSince, time.timeIntervalSince(fastSince) >= Self.autoResumeDelay { return .resume }
+        }
+        return nil
     }
 
     /// Saves the run to Health, keeps it for upload and sends it.
     func end() async {
         guard phase == .running || phase == .paused, var run else { return }
+        if isTooShortToSave {
+            // Nothing a provider could analyze; don't save a Health workout
+            // or leave an upload.
+            location?.stop()
+            engine?.discard()
+            unbind()
+            liveActivity.endAll()
+            try? store(creating: false)?.remove(id: run.id)
+            note = "Runs under a minute or 100 m aren’t saved."
+            phase = .finished
+            return
+        }
         phase = .ending
         let endedAt = now()
         location?.stop()
@@ -378,6 +480,9 @@ final class RunRecorderModel: ObservableObject {
         lastCheckpoint = nil
         lastActivityUpdate = nil
         gpsAccuracy = nil
+        slowSince = nil
+        fastSince = nil
+        lastSpeedFix = nil
         splits = nil
         RunRecorderControl.handler = nil
     }
@@ -429,7 +534,25 @@ final class RunRecorderModel: ObservableObject {
         if let last = locations.last {
             gpsAccuracy = last.horizontalAccuracy >= 0 ? last.horizontalAccuracy : nil
         }
-        guard phase == .running, var run else { return }
+        guard phase == .running || phase == .paused else { return }
+        // In order, so a pause or resume part-way through a batch keeps the
+        // fixes run before it and drops only those taken while paused.
+        var running: [CLLocation] = []
+        for location in locations {
+            if phase == .running { running.append(location) }
+            guard let change = autoPause(after: location) else { continue }
+            addRoute(running)
+            running = []
+            switch change {
+            case .pause: pause(auto: true, at: location.timestamp)
+            case .resume: resume(at: location.timestamp)
+            }
+        }
+        addRoute(running)
+    }
+
+    private func addRoute(_ locations: [CLLocation]) {
+        guard !locations.isEmpty, var run else { return }
         var accepted: [CLLocation] = []
         for location in locations {
             let point = RecordedRun.RoutePoint(location)
@@ -476,9 +599,15 @@ final class RunRecorderModel: ObservableObject {
         guard let run, var tracker = splits else { return }
         let split = tracker.update(meters: run.distanceMeters, movingSeconds: run.activeSeconds(at: now()))
         splits = tracker
-        guard let split, announcesSplits else { return }
+        guard let split else { return }
+        speak(split.spokenText)
+    }
+
+    /// Spoken only while announcements are on.
+    private func speak(_ text: String) {
+        guard announcesSplits else { return }
         if speaker == nil { speaker = makeSpeaker() }
-        speaker?.speak(split.spokenText)
+        speaker?.speak(text)
     }
 
     /// A Live Activity button. Only the run being recorded answers; a

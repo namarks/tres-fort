@@ -180,7 +180,12 @@ integration or social breadth.
   upload them to intervals.icu as files. P0's upload endpoint, P1's
   iOS 26 recorder (beta build only) and P2's Lock Screen controls and
   spoken splits are in the repository. Real-run accuracy against a Garmin
-  is checked on the owner's iPhone.
+  is checked on the owner's iPhone. P4 adds auto-pause and a glanceable
+  running display.
+- [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
+  **active**; the coach plans runs with steps and pace or heart rate
+  targets in the Tres Fort plan, and the recorder follows them with spoken
+  on/off-target cues. Completed runs still upload to intervals.icu.
 
 ### Platform (`platform`)
 

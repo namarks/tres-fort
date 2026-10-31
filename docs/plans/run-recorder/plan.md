@@ -1,6 +1,6 @@
 # Run recorder on iPhone
 
-Slug: run-recorder · Status: active · Updated: 2026-10-30 · Theme: connected-training
+Slug: run-recorder · Status: active · Updated: 2026-10-31 · Theme: connected-training
 
 ## Goal
 
@@ -108,6 +108,34 @@ within the agreed tolerance of a Garmin watch on the same run.
     `external_id`, multipart `file`, 201 created or 200 duplicate) comes
     from intervals.icu's API conventions and has only been tested against
     mocks.
+- [ ] **P4 — Auto-pause and a running display**
+  - Auto-pause, on by default and switchable before the run: pause when GPS
+    speed stays under a walking threshold for a few seconds, and resume
+    when it rises again, using the same pause records as a manual pause so
+    the builder, splits and Lock Screen agree. A manual pause stays paused
+    until the member resumes it. The resume and pause are spoken when
+    announcements are on.
+  - A glanceable running layout: a few large numbers chosen by the member
+    (time, distance, current pace, average pace, heart rate), in place of
+    the map. Keep the screen awake while it shows.
+  - Don't upload a run too short to analyze (under a minute or 100 m): ask to
+    discard it instead. The first P3 session left a zero-length run on
+    intervals.icu.
+  - Delivered in the repository: "Pause when I stop" (on by default) pauses
+    after 5 seconds under 0.8 m/s of GPS speed and resumes after 2 seconds
+    over 1.4 m/s, saying "Run paused." and "Run resumed." when announcements
+    are on; the title reads "Auto-paused". A header button swaps the map for
+    four large numbers (pace, distance, time and heart rate by default); a
+    tap on a number picks what it shows, and the choices stay on the
+    device. The screen stays on while that layout shows during a run. End
+    on a run under a minute or 100 m offers only Discard, and a Lock Screen
+    Finish on one discards it without a Health workout or upload. Awaiting
+    an authorized TestFlight build to try on a run.
+
+## Execution frontier
+
+- P3
+- P4
 
 ## Dependencies
 
@@ -160,6 +188,10 @@ the scene delegate is left to P3's force-quit check.
   ending it on discard, launch and a lost run, reattaching it on recovery,
   Lock Screen controls for this run only, and split announcements with the
   persisted unit and toggle, with fake activity and speech.
+- P4: `RunRecorderTests` covers auto-pause and resume from GPS speed with
+  their spoken cues, a manual pause that moving doesn't resume, turning
+  auto-pause off and keeping that choice, a run too short to save (no Health
+  workout, upload or checkpoint), and the kept running-layout choices.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing
@@ -169,6 +201,15 @@ the scene delegate is left to P3's force-quit check.
 
 ## Notes / open questions
 
+- First P3 run (build 58, 2026-10-30 evening, Pacific): the recorder upload
+  reached intervals.icu as a run of 2.04 km in 8:32 moving, average heart
+  rate 149 from the strap (max 162). A second, empty activity (no distance,
+  zero moving time, heart rate 77) was uploaded from a start-and-end test.
+  The Forerunner's copy had not reached intervals.icu when checked, so the
+  distance comparison is still open. The owner asked for auto-pause, a
+  glanceable running display, and planned runs with pace or heart rate
+  targets and spoken on/off-pace cues. P4 covers the first two; planned runs
+  are [their own plan](../planned-runs/plan.md).
 - First P3 feedback (build 57, 2026-10-30): finding the runner took too long
   because GPS and the location prompt only started on Start. The recorder now
   asks for location and starts foreground GPS when it opens, shows "Finding

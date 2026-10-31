@@ -76,12 +76,24 @@ intervals.icu, which stays the store of completed runs.
     the slot still works.
   - Not covered: a recorded run doesn't mark the planned workout done, and
     the iPad runner and partner workouts show run slots as before.
-- [ ] **P2 — Follow the plan while recording**
-  - The recorder moves through the steps by time or distance. It shows the
-    current step, its target range and what's left in it. The member can
-    skip a step.
-  - The uploaded run's name says which planned run it was. A run started
-    without a plan works as it does now.
+- [x] **P2 — Follow the plan while recording**
+  - A run started from a planned slot keeps its steps in the run's
+    checkpoint (`RecordedRun.plan`), so a recovered run picks up at the same
+    step. `RunPlanProgress` unrolls repeats and ends a step when its moving
+    time or distance is done. Paused time doesn't count, and a finished
+    step's exact end starts the next one, so a late update doesn't shorten
+    it.
+  - While recording, a banner above the map or large numbers shows the
+    step and repeat ("STEP 3 OF 10 · REP 2 OF 4"), its target, what's left
+    and the next step, with a Skip button. After the last step it says the
+    plan is done and the run keeps recording.
+  - The uploaded run is named after the planned workout. A run started
+    without a plan, or from a slot without steps it can read, works as
+    before.
+  - The plan moves on with each distance, route or heart rate update and
+    once a second, so a timed step ends on time.
+  - Not covered: the Lock Screen still shows only time, distance and pace.
+    Spoken step and target cues are P3.
 - [ ] **P3 — Spoken cues**
   - Announce each step as it starts ("800 meters at 4:10 per kilometer").
   - Say when pace or heart rate leaves the target range ("Speed up",
@@ -100,15 +112,17 @@ intervals.icu, which stays the store of completed runs.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | blocked_by | plan:run-recorder#P3 | Steps and cues build on a recorder whose accuracy has been checked on a real device. |
+| P3 | coordinates_with | plan:run-recorder#P3 | Spoken cues are tuned on the same real runs that check the recorder. The owner chose on 2026-10-31 to build P2 before those runs. |
 | P2 | coordinates_with | plan:run-recorder#P4 | Both change the recorder's screen and its pause handling. |
 | P4 | gated_by | external:owner-planned-runs-device-verification | Real runs on the owner's iPhone need an authorized TestFlight build. |
 
 ## Next step
 
-**Now (@agent):** P2, follow the plan while recording. Its dependency,
-run-recorder P3's device check, still needs about two more runs on the
-owner's iPhone.
+**Now (@agent):** P3, spoken step and on/off-target cues.
+
+To try P1 and P2 on a phone, the owner authorizes migration 0058, the
+Worker deploy and a TestFlight build; run-recorder P3's real runs can use
+the same build.
 
 P0's migration 0058 must be applied before a Worker that reads or writes
 `run_steps` serves traffic. Applying it and deploying need separate
@@ -125,6 +139,12 @@ authority.
   and both targets, rejecting text the app can't read, the step, summary,
   pace (per km and per mile), distance and duration wording, run slot
   labels and the shared unit preference.
+- P2: `RunPlanProgressTests` covers unrolling repeats, timed and distance
+  steps, several steps in one late update, skipping, the end of the plan,
+  what's left in miles or kilometers, and the checkpoint with and without a
+  plan. `RunRecorderTests` covers a planned run moving through its steps,
+  paused time not counting, skipping, the uploaded name, a slot without
+  steps, and recovery at the saved step.
 
 ## Notes / open questions
 

@@ -860,6 +860,91 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(engine.calls, ["recover", "discard", "recover", "authorize", "start"])
     }
 
+    // MARK: - Planned runs
+
+    private let intervalSteps = """
+    [{"kind":"warmup","duration_s":60},{"repeat":2,"steps":[{"kind":"work","distance_m":400},\
+    {"kind":"recovery","duration_s":30}]}]
+    """
+
+    func testAPlannedRunFollowsItsStepsAndUploadsUnderItsName() async throws {
+        let model = makeModel()
+        model.plannedRun = PlannedRun(id: "slot", workoutName: "Track Tuesday", plan: RunPlan(json: intervalSteps),
+                                      runSteps: intervalSteps, durationSeconds: nil)
+        await model.start()
+        XCTAssertEqual(model.run?.name, "Track Tuesday")
+        XCTAssertEqual(model.planSteps.count, 5)
+        XCTAssertEqual(model.currentPlanStep?.step.kind, .warmup)
+
+        // The warm-up ends on moving time.
+        clock = clock.addingTimeInterval(61)
+        engine.onMetrics?(.init(distanceMeters: 200, movingSeconds: 61, heartRate: nil))
+        XCTAssertEqual(model.currentPlanStep?.step.kind, .work)
+        XCTAssertEqual(model.currentPlanStep?.round, 1)
+        // The interval ends on distance, and the checkpoint keeps the step.
+        clock = clock.addingTimeInterval(90)
+        engine.onMetrics?(.init(distanceMeters: 610, movingSeconds: 151, heartRate: nil))
+        XCTAssertEqual(model.currentPlanStep?.step.kind, .recovery)
+        let id = try XCTUnwrap(model.run?.id)
+        XCTAssertEqual(try store().load(id: id)?.plan?.progress.stepIndex, 2)
+
+        // Paused time doesn't count toward a timed step.
+        model.pause()
+        clock = clock.addingTimeInterval(120)
+        model.advancePlan()
+        model.resume()
+        model.advancePlan()
+        XCTAssertEqual(model.currentPlanStep?.step.kind, .recovery)
+
+        model.skipPlanStep()
+        XCTAssertEqual(model.currentPlanStep?.step.kind, .work)
+        XCTAssertEqual(model.currentPlanStep?.round, 2)
+        model.skipPlanStep()
+        model.skipPlanStep()
+        XCTAssertNil(model.currentPlanStep, "The plan is done; the run keeps recording")
+        XCTAssertEqual(model.phase, .running)
+
+        await model.end()
+        XCTAssertEqual(api.uploaded.first?.name, "Track Tuesday")
+        model.reset()
+        XCTAssertTrue(model.planSteps.isEmpty)
+        XCTAssertNil(model.plannedRun)
+    }
+
+    func testARunWithoutStepsKeepsThePlainRecorder() async throws {
+        let model = makeModel()
+        model.plannedRun = PlannedRun(id: "slot", workoutName: "Easy Friday", plan: nil, durationSeconds: 1_800)
+        await model.start()
+        XCTAssertEqual(model.run?.name, "Easy Friday")
+        XCTAssertNil(model.run?.plan)
+        XCTAssertTrue(model.planSteps.isEmpty)
+        XCTAssertNil(model.currentPlanStep)
+
+        let plain = makeModel()
+        model.discard()
+        await plain.start()
+        XCTAssertEqual(plain.run?.name, "Run")
+        XCTAssertNil(plain.run?.plan)
+    }
+
+    func testARecoveredRunPicksUpItsStep() async throws {
+        var checkpoint = RecordedRun(startedAt: clock)
+        checkpoint.points = [point(0, seconds: 1, from: clock)]
+        checkpoint.plan = RunPlanFollowing(runSteps: intervalSteps,
+                                           progress: RunPlanProgress(stepIndex: 3, stepStartSeconds: 200,
+                                                                     stepStartMeters: 900))
+        try store().save(checkpoint)
+        engine.recovery = .running
+        clock = clock.addingTimeInterval(210)
+
+        let model = makeModel()
+        let recording = await model.recover()
+        XCTAssertTrue(recording)
+        XCTAssertEqual(model.planSteps.count, 5)
+        XCTAssertEqual(model.currentPlanStep?.step.kind, .work)
+        XCTAssertEqual(model.currentPlanStep?.round, 2)
+    }
+
     func testRecoveryWithoutStoredRunsCreatesNoDirectory() async throws {
         let recording = await makeModel().recover()
         XCTAssertFalse(recording)

@@ -49,6 +49,9 @@ final class RunRecorderModel: ObservableObject {
     /// The plan slot the recorder was opened for, if any. It stays through
     /// the run and clears when the member closes the recorder.
     @Published var plannedRun: PlannedRun?
+    /// The steps the recording run follows, read from its checkpoint. Empty
+    /// for a run without a plan.
+    @Published private(set) var planSteps: [RunPlan.ExpandedStep] = []
     /// Per-device choices, kept between runs.
     @Published var unit: RunDistanceUnit {
         didSet {
@@ -135,6 +138,9 @@ final class RunRecorderModel: ObservableObject {
     /// The latest fix auto-pause considered, so a late or repeated fix
     /// can't count twice.
     private var lastSpeedFix: Date?
+    /// Moves the plan on once a second, so a timed step ends on time even
+    /// when no new distance or heart rate arrives.
+    private var planTicker: Task<Void, Never>?
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -301,7 +307,11 @@ final class RunRecorderModel: ObservableObject {
         }
         let startedAt = now()
         var run = RecordedRun(startedAt: startedAt)
-        run.name = "Run"
+        // The uploaded run carries the planned workout's name.
+        run.name = plannedRun?.workoutName ?? "Run"
+        if let steps = plannedRun?.runSteps, RunPlan(json: steps) != nil {
+            run.plan = RunPlanFollowing(runSteps: steps)
+        }
         do {
             try await engine.start(at: startedAt, recordingID: run.id)
         } catch {
@@ -310,6 +320,7 @@ final class RunRecorderModel: ObservableObject {
         }
         bind(engine: engine, location: location)
         self.run = run
+        follow(run)
         splits = RunSplitTracker(unit: unit)
         phase = .running
         checkpoint(force: true)
@@ -435,6 +446,7 @@ final class RunRecorderModel: ObservableObject {
         liveActivity.endAll()
         try? store(creating: false)?.remove(id: run.id)
         self.run = nil
+        planSteps = []
         phase = .idle
     }
 
@@ -445,6 +457,7 @@ final class RunRecorderModel: ObservableObject {
         note = nil
         latestHeartRate = nil
         plannedRun = nil
+        planSteps = []
         phase = .idle
     }
 
@@ -488,6 +501,8 @@ final class RunRecorderModel: ObservableObject {
         fastSince = nil
         lastSpeedFix = nil
         splits = nil
+        planTicker?.cancel()
+        planTicker = nil
         RunRecorderControl.handler = nil
     }
 
@@ -519,7 +534,10 @@ final class RunRecorderModel: ObservableObject {
             latestHeartRate = sample
         }
         self.run = run
-        if phase == .running { announceSplitIfDue() }
+        if phase == .running {
+            announceSplitIfDue()
+            advancePlan()
+        }
         refreshLiveActivity()
     }
 
@@ -569,8 +587,53 @@ final class RunRecorderModel: ObservableObject {
         guard !accepted.isEmpty else { return }
         self.run = run
         engine?.addRoute(accepted)
+        advancePlan()
         checkpoint()
         refreshLiveActivity()
+    }
+
+    // MARK: - Following a planned run
+
+    /// Reads the steps a run follows and starts moving through them.
+    private func follow(_ run: RecordedRun) {
+        planSteps = run.plan.flatMap { RunPlan(json: $0.runSteps) }?.expandedSteps ?? []
+        planTicker?.cancel()
+        planTicker = nil
+        guard !planSteps.isEmpty else { return }
+        planTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                self?.advancePlan()
+            }
+        }
+    }
+
+    /// The step the run is on, and the progress through it. Nil without a
+    /// plan or once the plan is done.
+    var currentPlanStep: RunPlan.ExpandedStep? {
+        guard let index = run?.plan?.progress.stepIndex, planSteps.indices.contains(index) else { return nil }
+        return planSteps[index]
+    }
+
+    /// Ends every step the run has finished, by moving time or distance.
+    func advancePlan() {
+        guard phase == .running, var run, var following = run.plan, !planSteps.isEmpty else { return }
+        guard following.progress.advance(planSteps, movingSeconds: run.activeSeconds(at: now()),
+                                         meters: run.distanceMeters) else { return }
+        run.plan = following
+        self.run = run
+        checkpoint(force: true)
+    }
+
+    /// The member moves on to the next step before this one is done.
+    func skipPlanStep() {
+        guard phase == .running || phase == .paused, var run, var following = run.plan,
+              !following.progress.isComplete(planSteps) else { return }
+        following.progress.skip(planSteps, movingSeconds: run.activeSeconds(at: now()), meters: run.distanceMeters)
+        run.plan = following
+        self.run = run
+        checkpoint(force: true)
     }
 
     // MARK: - Lock Screen and splits
@@ -658,6 +721,7 @@ final class RunRecorderModel: ObservableObject {
             if state == .running { run.closePause(at: now()) }
             if state == .paused && !run.isPaused { run.pauses.append(.init(start: now(), end: nil)) }
             self.run = run
+            follow(run)
             splits = RunSplitTracker(unit: unit, meters: run.distanceMeters,
                                      movingSeconds: run.activeSeconds(at: now()))
             phase = state == .paused ? .paused : .running

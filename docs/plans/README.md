@@ -186,8 +186,9 @@ integration or social breadth.
   **active**; the coach plans runs with steps and pace or heart rate
   targets in the Tres Fort plan, and the recorder follows them with spoken
   on/off-target cues. Completed runs still upload to intervals.icu. P0's
-  step format, migration 0058 and MCP tools, and P1's display in the app
-  with a Start run button, are in the repository.
+  step format, migration 0058 and MCP tools, P1's display in the app
+  with a Start run button, and P2's step-by-step guidance while recording
+  are in the repository.
 
 ### Platform (`platform`)
 

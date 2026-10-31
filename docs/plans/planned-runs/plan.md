@@ -108,7 +108,7 @@ intervals.icu, which stays the store of completed runs.
 
 **Now (@agent):** P2, follow the plan while recording. Its dependency,
 run-recorder P3's device check, still needs about two more runs on the
-owner's iPhone beside the Forerunner.
+owner's iPhone.
 
 P0's migration 0058 must be applied before a Worker that reads or writes
 `run_steps` serves traffic. Applying it and deploying need separate

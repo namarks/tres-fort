@@ -179,8 +179,8 @@ integration or social breadth.
   outdoor runs in the app instead of Strava, save them to Apple Health and
   upload them to intervals.icu as files. P0's upload endpoint, P1's
   iOS 26 recorder (beta build only) and P2's Lock Screen controls and
-  spoken splits are in the repository. Real-run accuracy against a Garmin
-  is checked on the owner's iPhone. P4 adds auto-pause and a glanceable
+  spoken splits are in the repository. Real runs are
+  checked on the owner's iPhone. P4 adds auto-pause and a glanceable
   running display.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach plans runs with steps and pace or heart rate

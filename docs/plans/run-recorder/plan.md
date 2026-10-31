@@ -7,8 +7,7 @@ Slug: run-recorder · Status: active · Updated: 2026-10-31 · Theme: connected-
 Let a member record an outdoor run in the Tres Fort iPhone app instead of
 Strava. The run gets live time, distance and pace and a GPS route, is saved
 to Apple Health, and reaches intervals.icu as a full activity file, so the coach
-sees it in the same place as Garmin runs. Recorded distance and pace stay
-within the agreed tolerance of a Garmin watch on the same run.
+sees it in the same place as Garmin runs.
 
 ## Phases
 
@@ -95,11 +94,11 @@ within the agreed tolerance of a Garmin watch on the same run.
     `audio` background mode; the App Store build removes it with the other
     background modes.
 - [ ] **P3 — Verify accuracy and reliability on a real device**
-  - Record at least three outdoor runs on the owner's iPhone at the same time
-    as the Garmin Forerunner 945 (open sky, trees or buildings, and a run with
-    pauses). Record distance, moving time and average pace from both.
-  - Accept when distance is within 2% of the Garmin on the open-sky run and
-    within 4% on the others, unless the owner sets a different tolerance.
+  - Record at least three outdoor runs on the owner's iPhone (open sky,
+    trees or buildings, and a run with pauses), and check that distance,
+    moving time and pace look right to the owner. The owner dropped the
+    side-by-side comparison with the Garmin Forerunner 945 on 2026-10-31,
+    so there is no measured tolerance.
   - Verify a locked phone for the whole run, a force-quit mid-run, no network
     at the end, and that the upload and Health save each land once.
   - Confirm against the live intervals.icu API that the first real upload
@@ -150,8 +149,7 @@ mirrors P1's session.
 ## Next step
 
 **Now (@owner):** Authorize a TestFlight build with the recorder and the
-Worker deploy that carries P0, then record the P3 runs beside the
-Forerunner.
+Worker deploy that carries P0, then record the P3 runs.
 
 P3 needs a TestFlight build on the owner's iPhone, which needs separate
 authority, as does the Worker deploy that carries P0. P1 and P2 are delivered
@@ -205,8 +203,8 @@ the scene delegate is left to P3's force-quit check.
   reached intervals.icu as a run of 2.04 km in 8:32 moving, average heart
   rate 149 from the strap (max 162). A second, empty activity (no distance,
   zero moving time, heart rate 77) was uploaded from a start-and-end test.
-  The Forerunner's copy had not reached intervals.icu when checked, so the
-  distance comparison is still open. The owner asked for auto-pause, a
+  The Forerunner's copy never reached intervals.icu, and on 2026-10-31 the
+  owner dropped the Garmin comparison altogether. The owner asked for auto-pause, a
   glanceable running display, and planned runs with pace or heart rate
   targets and spoken on/off-pace cues. P4 covers the first two; planned runs
   are [their own plan](../planned-runs/plan.md).

@@ -47,13 +47,22 @@ struct PlannedRunPrescription: View {
 struct PlannedRunCard: View {
     let run: PlannedRun
     let unit: RunDistanceUnit
+    /// About eight lines; more scroll.
+    static let maxStepsHeight: CGFloat = 170
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(run.workoutName.uppercased())
                 .font(Theme.mono(12, .bold)).tracking(1).foregroundStyle(Theme.accent)
             if let plan = run.plan {
-                RunPlanStepsView(plan: plan, unit: unit)
+                // A long plan scrolls inside the card, so the recorder's
+                // controls below it stay on screen.
+                ViewThatFits(in: .vertical) {
+                    RunPlanStepsView(plan: plan, unit: unit)
+                    ScrollView { RunPlanStepsView(plan: plan, unit: unit) }
+                        .accessibilityIdentifier("runRecorder.plannedRun.scroll")
+                }
+                .frame(maxHeight: Self.maxStepsHeight)
             } else {
                 Text(run.durationSeconds.map { "Run · " + RunPlanFormat.duration($0) } ?? "Run at your own pace")
                     .font(Theme.mono(13)).foregroundStyle(Theme.muted)

@@ -973,6 +973,36 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(model.currentPlanStep?.step.kind, .work)
     }
 
+    func testAPlannedRunSpeaksItsStepsAndHeartRateCues() async throws {
+        let steps = """
+        [{"kind":"warmup","duration_s":60},\
+        {"kind":"work","duration_s":300,"target":{"type":"heart_rate","min_bpm":130,"max_bpm":145}}]
+        """
+        let model = makeModel()
+        model.announcesSplits = true
+        model.plannedRun = PlannedRun(id: "slot", workoutName: "Zone 2", plan: RunPlan(json: steps),
+                                      runSteps: steps, durationSeconds: nil)
+        await model.start()
+        let started = clock
+        XCTAssertEqual(speaker.spoken, ["Step 1 of 2. 1 minute warm-up."])
+
+        clock = started.addingTimeInterval(61)
+        model.advancePlan()
+        XCTAssertEqual(speaker.spoken.last, "Step 2 of 2. 5 minutes at 130 to 145 beats per minute.")
+
+        // Heart rate well above the range from the step's start: one cue once
+        // the step has settled and the change has held.
+        for second in 62...120 {
+            clock = started.addingTimeInterval(TimeInterval(second))
+            model.record(.init(timestamp: clock, beatsPerMinute: 160))
+            model.advancePlan()
+        }
+        XCTAssertEqual(speaker.spoken.filter { $0.hasPrefix("Heart rate") }, ["Heart rate high. Ease off."])
+
+        model.skipPlanStep()
+        XCTAssertEqual(speaker.spoken.last, "Plan complete. Keep going or end the run.")
+    }
+
     func testARecoveredRunPicksUpItsStep() async throws {
         var checkpoint = RecordedRun(startedAt: clock)
         checkpoint.points = [point(0, seconds: 1, from: clock)]

@@ -15,25 +15,44 @@ intervals.icu, which stays the store of completed runs.
 
 ## Phases
 
-- [ ] **P0 — Runs in the plan document**
-  - Define the step format:
-    - Ordered steps, each a warm-up, work, recovery or cool-down step.
-    - Each step ends after a duration or a distance.
-    - Each step has an optional target: a pace range (seconds per km) or a
-      heart rate range (bpm).
-    - Repeat groups cover intervals.
-  - Store the steps on a run slot of a plan workout. Use a new numbered
-    migration and an outdoor Run catalog exercise with the `cardio`
-    modality.
-  - Validate the steps on every write: bounded count and nesting, positive
-    durations and distances, and target ranges where min ≤ max.
-  - The steps travel with the versioned plan:
-    - `plans.version` changes when they change.
-    - They appear in snapshots and restore, and in `/api/state`.
-    - The SQL and TypeScript writable-document serializers stay in parity.
-  - The MCP tools that add and update exercises, and `update_plan`, accept and
-    return steps. Accepted writes are audited and noted like other plan edits.
-  - Record the MULTISPORT §11 exception for planned run steps.
+- [x] **P0 — Runs in the plan document**
+  - The step format lives in `src/runSteps.ts`:
+    - An ordered array of steps and repeat groups. A step is
+      `{kind, duration_s | distance_m, target?}`, with `kind` one of
+      `warmup`, `work`, `recovery` or `cooldown`, and exactly one of a
+      whole-second duration or a distance in meters.
+    - A target is a pace range `{type: "pace", fastest_s_per_km,
+      slowest_s_per_km}` (120 to 1200 s/km) or a heart rate range
+      `{type: "heart_rate", min_bpm, max_bpm}` (40 to 230 bpm), with the
+      lower bound no higher than the upper one.
+    - A repeat group is `{repeat, steps}`: 1 to 50 repeats of 1 to 10 plain
+      steps. Groups don't nest. A plan holds at most 50 items and 200 steps
+      once repeats are expanded. Unknown keys are rejected.
+  - Migration 0058 adds the nullable `template_exercises.run_steps` column
+    and the `ex_outdoor_run` catalog row ("Outdoor Run", `cardio`, `min`).
+    The bare "run" and "jog" stay on Treadmill, because aliases never take
+    an existing phrase.
+  - `validateExercisePrescription`, which every slot writer calls, validates
+    the steps from a caller's array or the stored text and names the exact
+    field, such as `run_steps.1.steps.0.target`. Only the outdoor run can
+    carry steps, so swapping a run that has steps to another exercise is
+    rejected until they're cleared. The column stores canonical JSON text.
+  - The steps travel with the versioned plan like `progression`:
+    - Adding, patching and clearing them bumps `plans.version`.
+    - `update_plan` keeps the matched slot's steps when a rebuilt slot omits
+      them, and `null` clears them.
+    - The SQL and TypeScript snapshot serializers both write `run_steps` as
+      the slot's last key. Older snapshots read as having no steps and compare
+      unchanged. Restore writes the steps back. Plan reads and `/api/state`
+      return them as JSON text.
+  - `add_exercise`, `update_exercise` and `update_plan` accept steps, and
+    their descriptions document the format. The REST add and patch routes
+    accept them too, through the same functions. Accepted writes are audited
+    and noted like other plan edits.
+  - MULTISPORT §11 records the exception for planned run steps.
+  - Not covered: partner workouts copy slots without steps, and the runner's
+    per-set target snapshot doesn't include them. Neither path records
+    runs.
 - [ ] **P1 — Planned runs in the app**
   - Today, the week strip and the workout view show a planned run's steps
     and targets. Starting it opens the run recorder with that plan.
@@ -69,8 +88,20 @@ intervals.icu, which stays the store of completed runs.
 
 ## Next step
 
-**Now (@agent):** Write the step format and its validation (P0), with the
-migration, serializer parity and MCP tool changes, as one PR.
+**Now (@agent):** Show planned runs and their steps in the app (P1): Today,
+the week strip and the workout view, read-only in the editor.
+
+P0's migration 0058 must be applied before a Worker that reads or writes
+`run_steps` serves traffic. Applying it and deploying need separate
+authority.
+
+## Verification evidence
+
+- P0: `test/run_steps.test.ts` covers the step format and its field paths,
+  the catalog row and its aliases, MCP and REST add, patch and clear with the
+  audit row and note, the run-only rule including swap, `update_plan`
+  inheritance and clearing, snapshot parity in both serializers, a pre-0058
+  snapshot comparing unchanged, and restore.
 
 ## Notes / open questions
 

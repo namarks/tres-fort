@@ -65,6 +65,7 @@ import {
   runWorkoutWriteBatch,
   runWorkoutWriteStatement,
 } from './workout-write-fence';
+import { RUN_EXERCISE_ID, parseRunSteps, serializeRunSteps } from './runSteps';
 import { emptyExerciseGroup, isGroupId, normalizeRemovedGroupMember, validateExerciseGroups, validatePlanExerciseGroups, type ExerciseGroupFields, type GroupConflict } from './exerciseGroups';
 export type { GroupConflict } from './exerciseGroups';
 const now = () => Date.now();
@@ -3172,7 +3173,8 @@ export function preparePlanSnapshotInsert(
                      'target_duration_s',te.target_duration_s,
                      'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup,
                      'group_id',te.group_id,'group_rest_seconds',te.group_rest_seconds,
-                     'group_transition_seconds',te.group_transition_seconds
+                     'group_transition_seconds',te.group_transition_seconds,
+                     'run_steps',te.run_steps
                    ) AS slot_document
                    FROM template_exercises te
                    WHERE te.workout_id=d.id
@@ -3525,27 +3527,27 @@ export async function restorePlanSnapshot(
       `INSERT OR IGNORE INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
-        created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds,target_weight_unit)
-       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21,?23
+        created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds,target_weight_unit,run_steps)
+       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21,?23,?24
        WHERE ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
-      nonce, slot.target_weight_unit ?? 'lb'));
+      nonce, slot.target_weight_unit ?? 'lb', slot.run_steps ?? null));
     statements.push(db.prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
        cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
-       group_transition_seconds=?21,target_weight_unit=?23 WHERE id=?4 AND ${guarded(22)}`,
+       group_transition_seconds=?21,target_weight_unit=?23,run_steps=?24 WHERE id=?4 AND ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
-      nonce, slot.target_weight_unit ?? 'lb'));
+      nonce, slot.target_weight_unit ?? 'lb', slot.run_steps ?? null));
   }
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
@@ -4086,8 +4088,10 @@ export async function nextWorkoutOrderIndex(
 export async function addTemplateExercise(
   db: D1Database,
   planId: string,
-  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at' | 'is_warmup'> & {
+  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at' | 'is_warmup' | 'run_steps'> & {
     is_warmup: number | boolean;
+    /** Caller's run steps (an array); stored as canonical text. */
+    run_steps?: unknown;
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_exercise' },
   options: SlotEditOptions = {},
@@ -4117,6 +4121,7 @@ export async function addTemplateExercise(
   const row: TemplateExerciseRow = {
     ...input,
     target_weight_unit: input.target_weight_unit ?? 'lb',
+    run_steps: input.run_steps === undefined ? null : serializeRunSteps(input.run_steps),
     is_warmup: input.is_warmup ? 1 : 0,
     id: uuid(),
     created_at: ts,
@@ -4132,8 +4137,8 @@ export async function addTemplateExercise(
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     db.prepare(
       `INSERT INTO template_exercises
-       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,target_weight_unit)
-       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?21
+       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,target_weight_unit,run_steps)
+       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?21,?22
        WHERE EXISTS (SELECT 1 FROM plans WHERE id=?17 AND user_id=?18 AND version=-?19 AND plan_write_nonce=?20)`,
     )
     .bind(
@@ -4141,7 +4146,7 @@ export async function addTemplateExercise(
       row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
       row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
-      row.target_weight_unit ?? 'lb',
+      row.target_weight_unit ?? 'lb', row.run_steps ?? null,
     ),
     ...(collides ? ordered.map((slot, index) => db.prepare(
       `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
@@ -6298,6 +6303,9 @@ export interface ExerciseInput extends ExerciseGroupFields {
    *  NULL/omitted → conventional reps slot. */
   target_duration_s?: number | null;
   progression?: unknown;
+  /** Planned run steps (src/runSteps.ts) on the outdoor run; null clears
+   *  them. Omitted keeps the matched slot's steps in a rebuild. */
+  run_steps?: unknown;
   cues?: string | null;
   /** 1 = prescribed warm-up slot (erg, mobility). Omitted/0 = working slot.
    *  Preserved across a full-tree rebuild so update_plan never silently
@@ -6317,7 +6325,7 @@ const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
  * Null is intentionally distinct from omission for nullable targets. */
 export function validateExercisePrescription(
   value: Record<string, unknown>,
-  options: { partial?: boolean; modality?: string | null } = {},
+  options: { partial?: boolean; modality?: string | null; exerciseId?: string | null } = {},
 ): PrescriptionValidationError | null {
   const bad = new Set<string>();
   const has = (field: string) => Object.prototype.hasOwnProperty.call(value, field);
@@ -6349,6 +6357,12 @@ export function validateExercisePrescription(
         (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0)) bad.add(field);
   }
   if (has('is_warmup') && typeof value.is_warmup !== 'boolean' && value.is_warmup !== 0 && value.is_warmup !== 1) bad.add('is_warmup');
+  if (has('run_steps') && value.run_steps !== undefined && value.run_steps !== null) {
+    // Stored rows carry the text; callers send the array. Only a run has steps.
+    const steps = parseRunSteps(value.run_steps);
+    if (!steps.ok) for (const field of steps.fields) bad.add(field);
+    else if ((options.exerciseId ?? value.exercise_id) !== RUN_EXERCISE_ID) bad.add('run_steps');
+  }
   if (typeof value.target_reps === 'number' && typeof value.target_reps_max === 'number' && value.target_reps_max < value.target_reps) bad.add('target_reps_max');
   return bad.size === 0 ? null : { error: 'invalid_fields', fields: [...bad].sort() };
 }
@@ -6473,6 +6487,7 @@ export async function updatePlanTree(
     (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
       const invalid = validateExercisePrescription(exercise as unknown as Record<string, unknown>, {
         modality: resolvedModality.get(exercise.exercise),
+        exerciseId: resolved.get(exercise.exercise),
       });
       for (const field of invalid?.fields ?? []) invalidFields.add(`workouts.${dayIndex}.exercises.${exerciseIndex}.${field}`);
     });
@@ -6573,6 +6588,9 @@ export async function updatePlanTree(
   // A load unit follows the same positional match: a rebuild that omits
   // target_weight_unit must not relabel a 24 kg target as 24 lb.
   const oldUnitByDayExOcc = new Map<string, 'lb' | 'kg'>();
+  // Planned run steps a rebuild omits follow the same positional match, so a
+  // changed warm-up flag cannot drop them.
+  const oldRunStepsByDayExOcc = new Map<string, string | null>();
   {
     const occ = new Map<string, number>();
     for (const ot of oldTeRows.results) {
@@ -6583,6 +6601,7 @@ export async function updatePlanTree(
       occ.set(exKey, o + 1);
       oldIsWarmupByDayExOcc.set(`${exKey}:${o}`, ot.is_warmup);
       oldUnitByDayExOcc.set(`${exKey}:${o}`, ot.target_weight_unit ?? 'lb');
+      oldRunStepsByDayExOcc.set(`${exKey}:${o}`, ot.run_steps ?? null);
     }
   }
 
@@ -6606,6 +6625,9 @@ export async function updatePlanTree(
   const unitPerOccurrence: ('lb' | 'kg')[][] = input.workouts.map((d) =>
     (d.exercises ?? []).map(() => 'lb' as const),
   );
+  const runStepsPerOccurrence: (string | null)[][] = input.workouts.map((d) =>
+    (d.exercises ?? []).map(() => null),
+  );
   const newTeIdByClassOcc = new Map<string, string>();
   {
     const posOcc = new Map<string, number>(); // positional (exId) — inheritance lookup
@@ -6625,6 +6647,9 @@ export async function updatePlanTree(
               : 0;
         isWarmupPerOccurrence[di]![ei] = isWarmup;
         unitPerOccurrence[di]![ei] = e.target_weight_unit ?? oldUnitByDayExOcc.get(`${exKey}:${p}`) ?? 'lb';
+        runStepsPerOccurrence[di]![ei] = e.run_steps === undefined
+          ? oldRunStepsByDayExOcc.get(`${exKey}:${p}`) ?? null
+          : serializeRunSteps(e.run_steps);
         const classKey = `${exKey}:${isWarmup}`;
         const c = classOcc.get(classKey) ?? 0;
         classOcc.set(classKey, c + 1);
@@ -6757,8 +6782,8 @@ export async function updatePlanTree(
         db
           .prepare(
             `INSERT INTO template_exercises
-             (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds,target_weight_unit)
-             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?20,?21,?22,?23
+             (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds,target_weight_unit,run_steps)
+             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?20,?21,?22,?23,?24
               WHERE EXISTS (
                 SELECT 1 FROM plans
                  WHERE id = ?17 AND user_id = ?18 AND status = 'active' AND version = ?19
@@ -6771,7 +6796,7 @@ export async function updatePlanTree(
             e.progression == null ? null : JSON.stringify(e.progression),
             e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, -plan!.version,
             group.group_id, group.group_rest_seconds, group.group_transition_seconds,
-            unitPerOccurrence[di]![ei]!,
+            unitPerOccurrence[di]![ei]!, runStepsPerOccurrence[di]![ei]!,
           ),
       );
     });
@@ -7027,6 +7052,7 @@ const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
   'progression',
   'order_index',
   'is_warmup',
+  'run_steps',
 ]);
 
 export async function updateExercise(
@@ -7048,7 +7074,7 @@ export async function updateExercise(
       | 'order_index'
       | 'is_warmup'
     >
-  > & { progression?: unknown },
+  > & { progression?: unknown; run_steps?: unknown },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_exercise' },
   options: SlotEditOptions = {},
 ): Promise<SlotEditResult> {
@@ -7081,8 +7107,11 @@ export async function updateExercise(
     progression: patch.progression === undefined
       ? (slot.progression === null ? null : JSON.parse(slot.progression) as unknown)
       : patch.progression,
+    run_steps: patch.run_steps === undefined ? slot.run_steps ?? null : patch.run_steps,
   };
-  const invalid = validateExercisePrescription(merged as Record<string, unknown>, { modality: modality?.modality });
+  const invalid = validateExercisePrescription(merged as Record<string, unknown>, {
+    modality: modality?.modality, exerciseId: slot.exercise_id,
+  });
   if (invalid) return invalid;
   const groupSiblings = await exerciseGroupDayRows(db, slot.workout_id);
   const groupMoved = groupSiblings.map((row) => row.id === slot.id ? { ...row, ...merged } : row);
@@ -7108,7 +7137,9 @@ export async function updateExercise(
       ? (patch.progression == null ? null : JSON.stringify(patch.progression))
       : key === 'is_warmup'
         ? (patch.is_warmup ? 1 : 0)
-        : (patch as Record<string, unknown>)[key];
+        : key === 'run_steps'
+          ? serializeRunSteps(patch.run_steps)
+          : (patch as Record<string, unknown>)[key];
     assign(key, value);
   }
   const ts = now();
@@ -7183,6 +7214,7 @@ export async function updateExercise(
     ...slot,
     ...merged,
     progression: merged.progression == null ? null : JSON.stringify(merged.progression),
+    run_steps: patch.run_steps === undefined ? slot.run_steps ?? null : serializeRunSteps(patch.run_steps),
     is_warmup: merged.is_warmup ? 1 : 0,
     order_index: acknowledgedOrder,
     updated_at: ts,
@@ -7279,7 +7311,10 @@ export async function swapExercise(
   const destination = await resolveExercise(db, ref.to_exercise) as { id: string; modality: string } | null;
   if (!destination) return { error: 'invalid_fields', fields: ['to_exercise'] };
   const progression = slot.progression === null ? null : JSON.parse(slot.progression) as unknown;
-  const invalid = validateExercisePrescription({ ...slot, progression }, { modality: destination.modality });
+  // Steps stay on a run: swap a run with steps elsewhere only after clearing them.
+  const invalid = validateExercisePrescription({ ...slot, progression }, {
+    modality: destination.modality, exerciseId: destination.id,
+  });
   if (invalid) return invalid;
   const groupInvalid = validateExerciseGroups(await exerciseGroupDayRows(db, slot.workout_id));
   if (groupInvalid) return groupInvalid;

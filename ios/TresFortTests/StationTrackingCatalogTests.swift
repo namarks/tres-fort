@@ -4,7 +4,7 @@ import XCTest
 final class StationTrackingCatalogTests: XCTestCase {
     func testBundledAuditLoadsAndResolvesCandidatesAndFallbacks() {
         let catalog = StationTrackingCatalog.bundled
-        XCTAssertEqual(catalog.exerciseIDs.count, 280)
+        XCTAssertEqual(catalog.exerciseIDs.count, 281)
         XCTAssertEqual(catalog.entry(for: "ex_db_curl").trial, .curl)
         XCTAssertEqual(catalog.entry(for: "ex_plank").trial, .plank)
         XCTAssertEqual(catalog.entry(for: "ex_wall_sit").trial, .wallSit)

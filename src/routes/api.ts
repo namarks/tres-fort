@@ -624,6 +624,7 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     progression?: unknown;
     cues?: string | null;
     is_warmup?: boolean;
+    run_steps?: unknown;
   };
   const versionFields = invalidMutationFields(b, {}, { expected_version: isPositiveInteger });
   if (versionFields.length) return c.json({ error: 'invalid_fields', fields: versionFields }, 400);
@@ -660,6 +661,7 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
     is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
+    ...(b.run_steps === undefined ? {} : { run_steps: b.run_steps }),
   }, { actor: 'ios', operation: 'add_exercise', args: b }, { expectedVersion: b.expected_version });
   const response = slotEditResponse(row, 201);
   return c.json(response.body, response.status);
@@ -734,6 +736,7 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
     progression?: unknown;
     order_index?: number;
     is_warmup?: boolean;
+    run_steps?: unknown;
   };
   const versionFields = invalidMutationFields(b, {}, { expected_version: isPositiveInteger });
   if (versionFields.length) return c.json({ error: 'invalid_fields', fields: versionFields }, 400);

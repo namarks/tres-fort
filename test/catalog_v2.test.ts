@@ -102,15 +102,16 @@ describe('0020 demo_slug backfill', () => {
 });
 
 describe('0021 catalog v2 (bodyweight + unilateral expansion)', () => {
-  it('catalog grows to 280 rows after cardio, gymnastic-strength and loaded-conditioning seeds', async () => {
+  it('catalog grows to 281 rows after cardio, gymnastic-strength, loaded-conditioning and outdoor run seeds', async () => {
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
     // ex_kb_swing re-listed as INSERT OR IGNORE no-op — net 108 new at 0021.
     // Migrations apply cumulatively, so the absolute total also includes the
     // 8 erg/cardio rows seeded by 0026, 22 gymnastic-strength rows in 0033
-    // and 4 thruster / dumbbell push press / renegade row rows in 0049.
-    expect(count).toBe(280);
+    // 4 thruster / dumbbell push press / renegade row rows in 0049 and the
+    // outdoor run in 0058.
+    expect(count).toBe(281);
   });
 
   it('adds priority bodyweight at-home rows', async () => {

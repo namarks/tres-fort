@@ -76,3 +76,69 @@ struct PlannedRunCard: View {
         .accessibilityIdentifier("runRecorder.plannedRun")
     }
 }
+
+/// The step a recording run is on: what it asks for, what's left of it and
+/// what comes next, with a way to skip it.
+struct RunPlanStepBanner: View {
+    @ObservedObject var model: RunRecorderModel
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let steps = model.planSteps
+            let progress = model.run?.plan?.progress ?? RunPlanProgress()
+            let moving = model.run?.activeSeconds(at: context.date) ?? 0
+            let meters = model.run?.distanceMeters ?? 0
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if let current = model.currentPlanStep {
+                        Text(position(current, index: progress.stepIndex, count: steps.count))
+                            .font(Theme.mono(11, .bold)).tracking(1).foregroundStyle(Theme.accent)
+                        Text(RunPlanFormat.text(current.step, unit: model.unit))
+                            .font(Theme.mono(17, .bold)).foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            if let left = progress.remaining(steps, movingSeconds: moving, meters: meters,
+                                                             unit: model.unit) {
+                                Text(left).foregroundStyle(Theme.text).monospacedDigit()
+                            }
+                            if steps.indices.contains(progress.stepIndex + 1) {
+                                Text("Next: " + RunPlanFormat.text(steps[progress.stepIndex + 1].step,
+                                                                   unit: model.unit))
+                                    .foregroundStyle(Theme.muted).lineLimit(1)
+                            }
+                        }
+                        .font(Theme.mono(13))
+                    } else {
+                        Text("PLAN DONE")
+                            .font(Theme.mono(11, .bold)).tracking(1).foregroundStyle(Theme.accent)
+                        Text("Keep going or end the run.")
+                            .font(Theme.mono(15)).foregroundStyle(Theme.text)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                if model.currentPlanStep != nil {
+                    Button("Skip") { model.skipPlanStep() }
+                        .font(Theme.mono(14, .bold))
+                        .buttonStyle(.bordered)
+                        .tint(Theme.text)
+                        .frame(minHeight: 44)
+                        .accessibilityLabel("Skip this step")
+                        .accessibilityIdentifier("runRecorder.skipStep")
+                }
+            }
+            .padding(12)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("runRecorder.planStep")
+        }
+    }
+
+    /// "STEP 3 OF 10 · REP 2 OF 4".
+    private func position(_ step: RunPlan.ExpandedStep, index: Int, count: Int) -> String {
+        var text = "STEP \(index + 1) OF \(count)"
+        if let round = step.round, let rounds = step.rounds { text += " · REP \(round) OF \(rounds)" }
+        return text
+    }
+}

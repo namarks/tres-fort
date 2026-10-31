@@ -186,6 +186,9 @@ struct PlannedRun: Equatable, Identifiable {
     let workoutName: String
     /// Nil for a run the coach planned without steps.
     let plan: RunPlan?
+    /// The steps as the plan stores them; the recorder keeps this text in
+    /// the run's checkpoint.
+    var runSteps: String? = nil
     let durationSeconds: Int?
 }
 
@@ -204,6 +207,8 @@ extension TemplateExercise {
     }
 
     func plannedRun(in workoutName: String) -> PlannedRun {
-        PlannedRun(id: id, workoutName: workoutName, plan: runPlan, durationSeconds: target_duration_s)
+        let plan = runPlan
+        return PlannedRun(id: id, workoutName: workoutName, plan: plan,
+                          runSteps: plan == nil ? nil : run_steps, durationSeconds: target_duration_s)
     }
 }

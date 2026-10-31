@@ -46,6 +46,9 @@ struct RecordedRun: Codable, Equatable, Identifiable {
     var points: [RoutePoint]
     var heartRates: [HeartRateSample]
     var pauses: [Pause]
+    /// The planned run it follows and the step it's on. Nil for a run
+    /// started without a plan, and in runs saved before planned runs.
+    var plan: RunPlanFollowing? = nil
 
     /// The server compares UUIDs case-insensitively; send one stable spelling.
     var uploadID: String { id.uuidString.lowercased() }

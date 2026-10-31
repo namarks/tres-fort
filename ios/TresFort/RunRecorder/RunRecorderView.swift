@@ -18,6 +18,9 @@ struct RunRecorderView: View {
             Theme.background
             VStack(spacing: 16) {
                 header
+                if model.isRecording && !model.planSteps.isEmpty {
+                    RunPlanStepBanner(model: model)
+                }
                 if model.isRecording && model.showsGlance {
                     RunGlanceView(model: model)
                 } else {

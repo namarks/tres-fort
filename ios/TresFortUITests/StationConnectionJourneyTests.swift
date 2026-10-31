@@ -25,10 +25,11 @@ final class StationConnectionJourneyTests: XCTestCase {
         return app
     }
 
-    private func tap(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 10))
-        UITestScrolling.reveal(element, in: app, maxAttempts: 12)
-        element.tap()
+    private func tap(_ element: XCUIElement, in app: XCUIApplication,
+                     file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen), file: file, line: line)
+        UITestScrolling.reveal(element, in: app, maxAttempts: 12, file: file, line: line)
+        element.tapWhenReady(file: file, line: line)
     }
 
     private func capture(_ name: String) {
@@ -56,7 +57,7 @@ final class StationConnectionJourneyTests: XCTestCase {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone)
         let app = launch()
         tap(app.buttons["today.ipadDisplay"], in: app)
-        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
         capture("iphone-connect-ipad")
         // Looking at setup and dismissing does not opt in.
         app.navigationBars["iPad display"].buttons["Done"].tap()
@@ -69,18 +70,17 @@ final class StationConnectionJourneyTests: XCTestCase {
             predicate: NSPredicate(format: "label CONTAINS %@", "internet"),
             object: app.staticTexts["station.phoneStatus"])
         XCTAssertEqual(XCTWaiter.wait(for: [offline], timeout: 10), .completed)
-        app.navigationBars["iPad display"].buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        app.navigationBars["iPad display"].buttons["Done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
         tap(app.buttons["today.ipadDisplay"], in: app)
-        XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["station.phoneDisconnect"], in: app)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 5))
         app.navigationBars["iPad display"].buttons["Done"].tap()
         tap(app.buttons["today.startWorkout"], in: app)
         XCTAssertTrue(app.buttons["runner.logSet"].waitForExistence(timeout: 5))
         tap(app.buttons["today.ipadDisplay"], in: app)
-        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testPhoneSetupShortcutOpensConfirmationWithoutEnablingOrStartingWorkout() throws {
@@ -88,11 +88,10 @@ final class StationConnectionJourneyTests: XCTestCase {
         let app = launch(shortcut: true)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["station.phoneDisconnect"].exists)
-        app.navigationBars["iPad display"].buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        app.navigationBars["iPad display"].buttons["Done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
         tap(app.buttons["today.ipadDisplay"], in: app)
-        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testIPadSetupCodeRetryAndRememberedReconnectAreReachable() throws {
@@ -108,17 +107,18 @@ final class StationConnectionJourneyTests: XCTestCase {
         capture("ipad-scan-to-connect")
         tap(app.buttons["station.retryConnection"], in: app)
         XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: 5))
-        app.buttons["station.done"].tap()
+        app.buttons["station.done"].tap(until: app.buttons["today.station"])
         tap(app.buttons["today.station"], in: app)
-        XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: 5), "Reopening Station restores this account’s opt-in")
+        XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: UITestWait.screen),
+                      "Reopening Station restores this account’s opt-in")
         tap(app.buttons["ipadWorkout.options"], in: app)
         let reconnect = app.switches["station.link"]
         XCTAssertEqual(reconnect.value as? String, "1")
         tap(reconnect, in: app)
         XCTAssertEqual(reconnect.value as? String, "0")
-        app.buttons["station.done"].tap()
+        app.buttons["station.done"].tap(until: app.buttons["today.station"])
         tap(app.buttons["today.station"], in: app)
-        XCTAssertTrue(app.buttons["station.connectPhone"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.connectPhone"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.images["station.setupCode"].exists)
     }
 
@@ -126,7 +126,7 @@ final class StationConnectionJourneyTests: XCTestCase {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .pad)
         let app = launch(rememberedAccount: "another-member")
         tap(app.buttons["today.station"], in: app)
-        XCTAssertTrue(app.buttons["station.connectPhone"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.connectPhone"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.switches["station.link"].value as? String, "0")
         XCTAssertFalse(app.images["station.setupCode"].exists)
     }

@@ -26,11 +26,13 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         app.launch()
         orient(.landscapeLeft, in: app)
         let entry = app.buttons[linked == nil ? "today.startWorkout" : "today.station"]
-        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        XCTAssertTrue(entry.waitForExistence(timeout: UITestWait.screen))
         reveal(entry, in: app)
-        entry.tap()
+        // Starting a workout isn't safe to repeat, so this waits but never
+        // taps a second time.
+        entry.tapWhenReady()
         if linked != "disconnected" {
-            XCTAssertTrue(element("ipadWorkout.display", in: app).waitForExistence(timeout: 10))
+            XCTAssertTrue(element("ipadWorkout.display", in: app).waitForExistence(timeout: UITestWait.screen))
         }
         return app
     }
@@ -157,9 +159,8 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
 
     func testEditedValuesSurviveOutlineNavigationAndBecomeTheLoggedSet() {
         let app = launch()
-        app.buttons["runner.editValues"].tap()
         let editor = app.navigationBars["Next set"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        app.buttons["runner.editValues"].tap(until: editor)
         replace(app.textFields["Weight"], with: "140")
         replace(app.textFields["Reps"], with: "6")
         replace(app.textFields["—"], with: "8.5")
@@ -208,8 +209,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         let app = launch(largeText: true)
         orient(.portrait, in: app)
         let edit = app.buttons["runner.editValues"]
-        reveal(edit, in: app); edit.tap()
-        XCTAssertTrue(app.navigationBars["Next set"].waitForExistence(timeout: 5))
+        reveal(edit, in: app); edit.tap(until: app.navigationBars["Next set"])
         app.navigationBars["Next set"].buttons["Cancel"].tap()
         let log = app.buttons["runner.logSet"]
         reveal(log, in: app); log.tap()
@@ -222,8 +222,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         reveal(log, in: app)
         XCTAssertEqual(log.label, "LOG SET 2")
         let outline = app.buttons["runner.outline"]
-        reveal(outline, in: app); outline.tap()
-        XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
+        reveal(outline, in: app); outline.tap(until: app.navigationBars["Workout outline"])
         XCTAssertTrue(app.buttons["runner.outline.done"].isHittable)
     }
 
@@ -244,8 +243,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
             XCTAssertFalse(app.buttons["runner.editValues"].exists)
             XCTAssertFalse(app.buttons["rest.done"].exists)
             capture("ipad-display-linked-\(mode)")
-            app.buttons["station.done"].tap()
-            XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+            app.buttons["station.done"].tap(until: app.buttons["today.startWorkout"])
             app.terminate()
         }
     }
@@ -259,8 +257,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
         XCTAssertTrue(app.buttons["station.done"].isHittable)
         capture("ipad-display-linked-disconnected")
-        app.buttons["station.done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        app.buttons["station.done"].tap(until: app.buttons["today.startWorkout"])
     }
 
     func testLinkedControlsMoveTheIphoneWorkoutBesideItsOutlineAndClock() {
@@ -292,9 +289,8 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         expectLabel("READY FOR YOUR SET", on: phase)
         XCTAssertEqual(log.label, "LOG SET 2")
 
-        app.buttons["runner.editValues"].tap()
         let editor = app.navigationBars["Next set"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        app.buttons["runner.editValues"].tap(until: editor)
         replace(app.textFields["Reps"], with: "10")
         editor.buttons["Save"].tap()
         expectLabel("22.5 kg × 10 reps · RPE 8", on: element("ipadWorkout.target", in: app))
@@ -349,8 +345,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["runner.editValues"].isEnabled)
         XCTAssertFalse(app.buttons["ipadWorkout.outline.synthetic-control-goblet"].isEnabled)
         capture("ipad-display-linked-reconnecting")
-        app.buttons["station.done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        app.buttons["station.done"].tap(until: app.buttons["today.startWorkout"])
     }
 
     private func replace(_ field: XCUIElement, with text: String) {

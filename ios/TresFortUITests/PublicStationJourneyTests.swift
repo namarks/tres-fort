@@ -22,9 +22,7 @@ final class PublicStationJourneyTests: XCTestCase {
         if let partner { app.launchEnvironment["TRESFORT_UI_STATION_PARTNER"] = partner }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.buttons["today.station"].waitForExistence(timeout: 10))
-        app.buttons["today.station"].tap()
-        XCTAssertTrue(app.buttons["station.done"].waitForExistence(timeout: 5))
+        app.buttons["today.station"].tap(until: app.buttons["station.done"])
         assertNoMovementCamera(in: app)
         return app
     }
@@ -44,8 +42,7 @@ final class PublicStationJourneyTests: XCTestCase {
         XCTAssertEqual(connect.value as? String, "0")
         XCTAssertEqual(app.staticTexts["station.linkStatus"].label, "Connect when your iPhone is ready.")
         XCTAssertFalse(app.buttons["station.trainTogether"].isEnabled)
-        app.buttons["station.done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        app.buttons["station.done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
     }
 
@@ -57,8 +54,7 @@ final class PublicStationJourneyTests: XCTestCase {
         XCTAssertEqual(connect.value as? String, "0")
         assertNoMovementCamera(in: app)
         XCTAssertTrue(app.buttons["station.done"].isHittable)
-        app.buttons["station.done"].tap()
-        XCTAssertTrue(app.buttons["today.station"].waitForExistence(timeout: 5))
+        app.buttons["station.done"].tap(until: app.buttons["today.station"])
     }
 
     func testManualPartnerPanelShowsSeparateLoadsAndClosesWithoutPhoneWrites() {
@@ -68,10 +64,8 @@ final class PublicStationJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Casey"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "20 kg")).firstMatch.exists)
         XCTAssertFalse(app.staticTexts["partner.stationRest"].exists)
-        app.buttons["partner.stationClose"].tap()
-        XCTAssertTrue(app.staticTexts["station.manualSetup"].waitForExistence(timeout: 5))
-        app.buttons["station.done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        app.buttons["partner.stationClose"].tap(until: app.staticTexts["station.manualSetup"])
+        app.buttons["station.done"].tap(until: app.buttons["today.startWorkout"])
     }
 
     func testLargestTextSharedRestAdvancesThroughManualControl() {

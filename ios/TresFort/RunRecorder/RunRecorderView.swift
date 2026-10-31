@@ -153,7 +153,10 @@ struct RunRecorderView: View {
             }
             .pickerStyle(.segmented)
             .accessibilityIdentifier("runRecorder.unit")
-            Toggle("Announce each \(model.unit.spokenName)", isOn: $model.announcesSplits)
+            Toggle(model.plannedRun?.plan == nil
+                   ? "Announce each \(model.unit.spokenName)"
+                   : "Announce each \(model.unit.spokenName), step and target",
+                   isOn: $model.announcesSplits)
                 .font(.callout)
                 .foregroundStyle(Theme.text)
                 .tint(Theme.accent)

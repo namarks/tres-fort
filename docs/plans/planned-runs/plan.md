@@ -97,14 +97,24 @@ intervals.icu, which stays the store of completed runs.
     once a second, so a timed step ends on time.
   - Not covered: the Lock Screen still shows only time, distance and pace.
     Spoken step and target cues are P3.
-- [ ] **P3 — Spoken cues**
-  - Announce each step as it starts ("800 meters at 4:10 per kilometer").
-  - Say when pace or heart rate leaves the target range ("Speed up",
-    "Ease off", "Heart rate high") and when it returns.
-  - Cue from a smoothed value after a short delay, so GPS noise doesn't
-    chatter. Don't repeat a cue within about 30 seconds.
-  - Cues use the split speaker and its mute control, and work with the phone
-    locked.
+- [x] **P3 — Spoken cues**
+  - Each step is announced as it starts, including the first and a skipped
+    one: "Step 2 of 10. Rep 1 of 4. 800 meters at 6:34 to 6:50 per mile."
+    The end of the plan says "Plan complete."
+  - `RunTargetCoach` says when pace or heart rate leaves the step's target
+    ("Speed up", "Ease off", "Heart rate high. Ease off", "Heart rate low.
+    Pick it up") and when it's back ("On pace", "Heart rate on target").
+  - Pace is the recorder's 30-second current pace, used only while GPS
+    delivered a point in the last 10 seconds; heart rate is the 15-second
+    average. Leaving the range needs a margin (5 s/km, 2 bpm) and returning
+    needs none. Readings from a step's first 30 seconds don't count, so the
+    pace window holds only that step. A change must hold 10 seconds, and a
+    gap in readings starts the hold again. Cues are at least 30 seconds
+    apart, counting the step announcement. Staying on target says nothing.
+  - Cues use the split speaker and its mute control, so they duck music and
+    work with the phone locked. The start screen's toggle reads "Announce
+    each mile, step and target" for a planned run.
+  - The thresholds are first guesses to tune in P4.
 - [ ] **P4 — Verify on the owner's iPhone**
   - Run at least one interval session and one heart rate run that the coach
     planned.
@@ -121,11 +131,9 @@ intervals.icu, which stays the store of completed runs.
 
 ## Next step
 
-**Now (@agent):** P3, spoken step and on/off-target cues.
-
-To try P1 and P2 on a phone, the owner authorizes migration 0058, the
-Worker deploy and a TestFlight build; run-recorder P3's real runs can use
-the same build.
+**Now (@owner):** Authorize migration 0058, the Worker deploy and a
+TestFlight build, then run a planned interval session and a heart rate run
+(P4). Run-recorder P3's real runs can use the same build.
 
 P0's migration 0058 must be applied before a Worker that reads or writes
 `run_steps` serves traffic. Applying it and deploying need separate
@@ -149,6 +157,11 @@ authority.
   paused time not counting, a backdated auto-pause undoing a step but not a
   skip, skipping, the uploaded name, a slot without
   steps, and recovery at the saved step.
+- P3: `RunTargetCoachTests` covers the margins, settling, holding, a gap
+  in readings, stale GPS, the 30-second gap between cues, back-on-target and heart rate cues, a new step starting
+  fresh, and the spoken step wording in miles and kilometers.
+  `RunRecorderTests` covers a planned run speaking its first and next
+  steps, one heart rate cue, and the end of the plan.
 
 ## Notes / open questions
 

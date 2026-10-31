@@ -145,6 +145,10 @@ final class RunRecorderModel: ObservableObject {
     /// last skip, so a pause dated back to a GPS fix can undo a step that
     /// only ended because of the time the pause removes.
     private var planHistory: [RunPlanProgress] = []
+    /// Decides when to say the run is off or back on the step's target.
+    private var targetCoach = RunTargetCoach()
+    /// Heart rate cues use the average over this many seconds.
+    static let heartRateWindow: TimeInterval = 15
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -330,6 +334,7 @@ final class RunRecorderModel: ObservableObject {
         checkpoint(force: true)
         refreshLiveActivity(force: true)
         location.start()
+        announceStep()
     }
 
     /// A pause the member asked for stays paused until they resume.
@@ -604,6 +609,7 @@ final class RunRecorderModel: ObservableObject {
     private func follow(_ run: RecordedRun) {
         planSteps = run.plan.flatMap { RunPlan(json: $0.runSteps) }?.expandedSteps ?? []
         planHistory = []
+        targetCoach = RunTargetCoach()
         planTicker?.cancel()
         planTicker = nil
         guard !planSteps.isEmpty else { return }
@@ -629,13 +635,49 @@ final class RunRecorderModel: ObservableObject {
         let before = following.progress
         let stepEnded = following.progress.advance(planSteps, movingSeconds: run.activeSeconds(at: now()),
                                                    meters: run.distanceMeters)
-        guard following.progress != before else { return }
-        run.plan = following
-        self.run = run
+        if following.progress != before {
+            run.plan = following
+            self.run = run
+        }
         if stepEnded {
             planHistory.append(before)
             if planHistory.count > 50 { planHistory.removeFirst() }
             checkpoint(force: true)
+            announceStep()
+        } else {
+            coachTarget()
+        }
+    }
+
+    /// Says the step the run is now on, or that the plan is done, and starts
+    /// watching the new step's target.
+    private func announceStep() {
+        guard let run, let progress = run.plan?.progress, !planSteps.isEmpty else { return }
+        targetCoach.startStep(at: run.activeSeconds(at: now()))
+        if let step = currentPlanStep {
+            speak(RunPlanFormat.spoken(step, index: progress.stepIndex, count: planSteps.count, unit: unit))
+        } else {
+            speak("Plan complete. Keep going or end the run.")
+        }
+    }
+
+    /// Speaks when pace or heart rate leaves the step's target or comes back.
+    private func coachTarget() {
+        guard phase == .running, let run, let progress = run.plan?.progress,
+              let target = currentPlanStep?.step.target else { return }
+        let time = now()
+        let moving = run.activeSeconds(at: time)
+        let value: Double?
+        switch target {
+        case .pace:
+            value = RunPace.fresh(run, at: time, unit: .kilometers)
+        case .heartRate:
+            let recent = run.heartRates.filter { time.timeIntervalSince($0.timestamp) <= Self.heartRateWindow }
+            value = recent.isEmpty ? nil : recent.map(\.beatsPerMinute).reduce(0, +) / Double(recent.count)
+        }
+        if let cue = targetCoach.update(target: target, value: value,
+                                        stepSeconds: moving - progress.stepStartSeconds, movingSeconds: moving) {
+            speak(cue)
         }
     }
 
@@ -649,6 +691,7 @@ final class RunRecorderModel: ObservableObject {
         // A skip is the member's choice; a later pause never undoes it.
         planHistory = []
         checkpoint(force: true)
+        announceStep()
     }
 
     /// A pause dated back to the fix that triggered it removes moving time
@@ -664,9 +707,11 @@ final class RunRecorderModel: ObservableObject {
         }
         if let last = progress.lastSeconds, last > moving { progress.lastSeconds = moving }
         guard progress != following.progress else { return }
+        let stepUndone = progress.stepIndex != following.progress.stepIndex
         following.progress = progress
         run.plan = following
         self.run = run
+        if stepUndone { targetCoach.startStep(at: moving) }
     }
 
     // MARK: - Lock Screen and splits

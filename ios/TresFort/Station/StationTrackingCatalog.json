@@ -993,7 +993,8 @@
         "ex_treadmill",
         "ex_stairmaster",
         "ex_stationary_bike",
-        "ex_jump_rope"
+        "ex_jump_rope",
+        "ex_outdoor_run"
       ]
     },
     {

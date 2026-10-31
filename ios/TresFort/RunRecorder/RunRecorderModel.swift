@@ -61,10 +61,28 @@ final class RunRecorderModel: ObservableObject {
     @Published var announcesSplits: Bool {
         didSet { defaults.set(announcesSplits, forKey: Self.announceKey) }
     }
+    /// Pause when the runner stops and resume when they go again. On unless
+    /// the member turns it off.
+    @Published var autoPauses: Bool {
+        didSet { defaults.set(autoPauses, forKey: Self.autoPauseKey) }
+    }
+    /// The large-number running layout instead of the map.
+    @Published var showsGlance: Bool {
+        didSet { defaults.set(showsGlance, forKey: Self.glanceKey) }
+    }
+    /// The numbers the running layout shows, top to bottom.
+    @Published var glanceMetrics: [RunMetric] {
+        didSet { defaults.set(glanceMetrics.map(\.rawValue), forKey: Self.glanceMetricsKey) }
+    }
+    /// The current pause was started by auto-pause, so moving again resumes it.
+    @Published private(set) var isAutoPaused = false
     let heartRateMonitor: HeartRateMonitor
 
     static let unitKey = "runRecorder.distanceUnit"
     static let announceKey = "runRecorder.announceSplits"
+    static let autoPauseKey = "runRecorder.autoPause"
+    static let glanceKey = "runRecorder.glance"
+    static let glanceMetricsKey = "runRecorder.glanceMetrics"
 
     /// Seconds between checkpoints while route points arrive.
     static let checkpointInterval: TimeInterval = 10
@@ -73,6 +91,16 @@ final class RunRecorderModel: ObservableObject {
     static let liveActivityInterval: TimeInterval = 5
     /// A fix this precise means GPS has locked on and the run can start.
     static let gpsReadyAccuracy: CLLocationAccuracy = 20
+    /// Auto-pause: slower than walking pace (about 2.9 km/h) for this long
+    /// pauses, and faster than an easy walk for this long resumes.
+    static let autoPauseSpeed: CLLocationSpeed = 0.8
+    static let autoPauseDelay: TimeInterval = 5
+    static let autoResumeSpeed: CLLocationSpeed = 1.4
+    static let autoResumeDelay: TimeInterval = 2
+    /// A run shorter than either of these has nothing worth analyzing, so it
+    /// isn't saved or uploaded.
+    static let minimumSeconds: TimeInterval = 60
+    static let minimumMeters: Double = 100
 
     private let accountID: String?
     private let baseURL: URL?
@@ -100,6 +128,9 @@ final class RunRecorderModel: ObservableObject {
     private var lastActivityUpdate: Date?
     /// The recorder screen is showing.
     private var isOpen = false
+    /// When GPS speed first fell below, or rose above, the auto-pause speeds.
+    private var slowSince: Date?
+    private var fastSince: Date?
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -143,11 +174,22 @@ final class RunRecorderModel: ObservableObject {
         self.heartRateMonitor = heartRateMonitor ?? HeartRateMonitor(defaults: defaults, now: now)
         unit = defaults.string(forKey: RunRecorderModel.unitKey).flatMap(RunDistanceUnit.init(rawValue:)) ?? .miles
         announcesSplits = defaults.bool(forKey: RunRecorderModel.announceKey)
+        autoPauses = defaults.object(forKey: RunRecorderModel.autoPauseKey) as? Bool ?? true
+        showsGlance = defaults.bool(forKey: RunRecorderModel.glanceKey)
+        let metrics = (defaults.stringArray(forKey: RunRecorderModel.glanceMetricsKey) ?? [])
+            .compactMap(RunMetric.init(rawValue:))
+        glanceMetrics = metrics.isEmpty ? RunMetric.glanceDefault : metrics
     }
 
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
 
     var gpsReady: Bool { (gpsAccuracy ?? .infinity) <= Self.gpsReadyAccuracy }
+
+    /// Ending now would save nothing: under a minute or 100 m.
+    var isTooShortToSave: Bool {
+        guard let run else { return true }
+        return run.activeSeconds(at: now()) < Self.minimumSeconds || run.distanceMeters < Self.minimumMeters
+    }
 
     // MARK: - Opening and closing
 
@@ -267,29 +309,72 @@ final class RunRecorderModel: ObservableObject {
         location.start()
     }
 
-    func pause() {
+    /// A pause the member asked for stays paused until they resume.
+    func pause() { pause(auto: false) }
+
+    private func pause(auto: Bool) {
         guard phase == .running, var run else { return }
         run.pauses.append(.init(start: now(), end: nil))
         self.run = run
         phase = .paused
+        isAutoPaused = auto
+        slowSince = nil
+        fastSince = nil
         engine?.pause()
         checkpoint(force: true)
         refreshLiveActivity(force: true)
+        if auto { speak("Run paused.") }
     }
 
     func resume() {
         guard phase == .paused, var run else { return }
+        let wasAuto = isAutoPaused
         run.closePause(at: now())
         self.run = run
         phase = .running
+        isAutoPaused = false
+        slowSince = nil
+        fastSince = nil
         engine?.resume()
         checkpoint(force: true)
         refreshLiveActivity(force: true)
+        if wasAuto { speak("Run resumed.") }
+    }
+
+    /// Watches GPS speed while recording. Fixes without a speed don't count.
+    private func autoPauseIfDue(_ locations: [CLLocation]) {
+        guard autoPauses else { return }
+        for location in locations where location.speed >= 0 {
+            let time = location.timestamp
+            if phase == .running {
+                slowSince = location.speed < Self.autoPauseSpeed ? slowSince ?? time : nil
+                if let slowSince, time.timeIntervalSince(slowSince) >= Self.autoPauseDelay {
+                    return pause(auto: true)
+                }
+            } else if phase == .paused, isAutoPaused {
+                fastSince = location.speed > Self.autoResumeSpeed ? fastSince ?? time : nil
+                if let fastSince, time.timeIntervalSince(fastSince) >= Self.autoResumeDelay {
+                    return resume()
+                }
+            }
+        }
     }
 
     /// Saves the run to Health, keeps it for upload and sends it.
     func end() async {
         guard phase == .running || phase == .paused, var run else { return }
+        if isTooShortToSave {
+            // Nothing a provider could analyze; don't save a Health workout
+            // or leave an upload.
+            location?.stop()
+            engine?.discard()
+            unbind()
+            liveActivity.endAll()
+            try? store(creating: false)?.remove(id: run.id)
+            note = "Runs under a minute or 100 m aren’t saved."
+            phase = .finished
+            return
+        }
         phase = .ending
         let endedAt = now()
         location?.stop()
@@ -378,6 +463,9 @@ final class RunRecorderModel: ObservableObject {
         lastCheckpoint = nil
         lastActivityUpdate = nil
         gpsAccuracy = nil
+        isAutoPaused = false
+        slowSince = nil
+        fastSince = nil
         splits = nil
         RunRecorderControl.handler = nil
     }
@@ -429,6 +517,7 @@ final class RunRecorderModel: ObservableObject {
         if let last = locations.last {
             gpsAccuracy = last.horizontalAccuracy >= 0 ? last.horizontalAccuracy : nil
         }
+        if phase == .running || phase == .paused { autoPauseIfDue(locations) }
         guard phase == .running, var run else { return }
         var accepted: [CLLocation] = []
         for location in locations {
@@ -476,9 +565,15 @@ final class RunRecorderModel: ObservableObject {
         guard let run, var tracker = splits else { return }
         let split = tracker.update(meters: run.distanceMeters, movingSeconds: run.activeSeconds(at: now()))
         splits = tracker
-        guard let split, announcesSplits else { return }
+        guard let split else { return }
+        speak(split.spokenText)
+    }
+
+    /// Spoken only while announcements are on.
+    private func speak(_ text: String) {
+        guard announcesSplits else { return }
         if speaker == nil { speaker = makeSpeaker() }
-        speaker?.speak(split.spokenText)
+        speaker?.speak(text)
     }
 
     /// A Live Activity button. Only the run being recorded answers; a

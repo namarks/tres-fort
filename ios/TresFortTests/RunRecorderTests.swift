@@ -156,11 +156,20 @@ final class RunRecorderTests: XCTestCase {
     }
 
     /// About 30 m north of Pioneer Square per step.
-    private func fix(_ step: Int, seconds: TimeInterval, accuracy: CLLocationAccuracy = 5) -> CLLocation {
+    /// A negative speed means the fix carried none.
+    private func fix(_ step: Int, seconds: TimeInterval, accuracy: CLLocationAccuracy = 5,
+                     speed: CLLocationSpeed = -1) -> CLLocation {
         CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 45.5190 + Double(step) * 0.00027, longitude: -122.6793),
             altitude: 15, horizontalAccuracy: accuracy, verticalAccuracy: 3,
+            course: -1, speed: speed,
             timestamp: clock.addingTimeInterval(seconds))
+    }
+
+    /// Enough distance from the builder, and time, for a run worth saving.
+    private func coverGround(seconds: TimeInterval = 90) {
+        engine.onMetrics?(.init(distanceMeters: 300, movingSeconds: 0, heartRate: nil))
+        clock = clock.addingTimeInterval(seconds)
     }
 
     private func point(_ step: Int, seconds: TimeInterval, accuracy: Double = 5,
@@ -291,9 +300,9 @@ final class RunRecorderTests: XCTestCase {
         location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11), fix(2, seconds: 21, accuracy: 80)])
         XCTAssertEqual(model.run?.points.count, 2)
         XCTAssertEqual(engine.route.count, 2)
-        engine.onMetrics?(.init(distanceMeters: 31, movingSeconds: 11,
+        engine.onMetrics?(.init(distanceMeters: 310, movingSeconds: 11,
                                 heartRate: .init(timestamp: clock.addingTimeInterval(11), beatsPerMinute: 150)))
-        XCTAssertEqual(model.run?.distanceMeters, 31)
+        XCTAssertEqual(model.run?.distanceMeters, 310)
         XCTAssertEqual(model.latestHeartRate?.beatsPerMinute, 150)
 
         clock = clock.addingTimeInterval(30)
@@ -307,8 +316,8 @@ final class RunRecorderTests: XCTestCase {
         model.resume()
         XCTAssertEqual(model.phase, .running)
 
-        engine.finalMetrics = .init(distanceMeters: 64, movingSeconds: 40, heartRate: nil)
-        clock = clock.addingTimeInterval(20)
+        engine.finalMetrics = .init(distanceMeters: 640, movingSeconds: 70, heartRate: nil)
+        clock = clock.addingTimeInterval(40)
         await model.end()
 
         XCTAssertEqual(model.phase, .finished)
@@ -316,8 +325,8 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertFalse(location.running)
         let uploaded = try XCTUnwrap(api.uploaded.first)
         XCTAssertEqual(uploaded.id, id)
-        XCTAssertEqual(uploaded.distanceMeters, 64)
-        XCTAssertEqual(uploaded.movingSeconds, 40)
+        XCTAssertEqual(uploaded.distanceMeters, 640)
+        XCTAssertEqual(uploaded.movingSeconds, 70)
         XCTAssertEqual(uploaded.endedAt, clock)
         XCTAssertEqual(uploaded.pauses.count, 1)
         XCTAssertEqual(uploaded.heartRates.count, 1)
@@ -394,7 +403,7 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertTrue(resumed)
         XCTAssertEqual(model.phase, .running)
 
-        clock = clock.addingTimeInterval(20)
+        coverGround(seconds: 60)
         let finished = await handler(id, "finish")
         XCTAssertTrue(finished)
         XCTAssertEqual(model.phase, .finished)
@@ -526,6 +535,74 @@ final class RunRecorderTests: XCTestCase {
                        "A run that ends with the recorder closed lets the strap go")
     }
 
+    func testAutoPausePausesWhenTheRunnerStopsAndResumesWhenTheyGo() async throws {
+        let model = makeModel()
+        XCTAssertTrue(model.autoPauses, "On by default")
+        model.announcesSplits = true
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1, speed: 3), fix(1, seconds: 4, speed: 3)])
+        location.onLocations?([fix(2, seconds: 10, speed: 0.3), fix(2, seconds: 13, speed: 0.2)])
+        XCTAssertEqual(model.phase, .running, "Not slow for five seconds yet")
+        location.onLocations?([fix(2, seconds: 15, speed: 0.1)])
+        XCTAssertEqual(model.phase, .paused)
+        XCTAssertTrue(model.isAutoPaused)
+        XCTAssertEqual(engine.calls.last, "pause")
+        XCTAssertEqual(model.run?.pauses.count, 1)
+
+        location.onLocations?([fix(2, seconds: 30, speed: 2.5)])
+        XCTAssertEqual(model.phase, .paused, "One quick fix isn't enough")
+        location.onLocations?([fix(3, seconds: 32, speed: 2.6)])
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertFalse(model.isAutoPaused)
+        XCTAssertEqual(engine.calls.last, "resume")
+        XCTAssertEqual(speaker.spoken, ["Run paused.", "Run resumed."])
+    }
+
+    func testAPauseTheRunnerAskedForWaitsForThem() async throws {
+        let model = makeModel()
+        await model.start()
+        model.pause()
+        location.onLocations?([fix(0, seconds: 1, speed: 3), fix(1, seconds: 5, speed: 3)])
+        XCTAssertEqual(model.phase, .paused)
+        XCTAssertFalse(model.isAutoPaused)
+    }
+
+    func testAutoPauseCanBeTurnedOff() async throws {
+        let model = makeModel()
+        model.autoPauses = false
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1, speed: 0), fix(0, seconds: 20, speed: 0)])
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertFalse(makeModel().autoPauses, "The choice is kept on this iPhone")
+    }
+
+    func testARunTooShortToAnalyzeIsNotSaved() async throws {
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        engine.onMetrics?(.init(distanceMeters: 40, movingSeconds: 0, heartRate: nil))
+        clock = clock.addingTimeInterval(90)
+        XCTAssertTrue(model.isTooShortToSave, "Under 100 m")
+        await model.end()
+        XCTAssertEqual(model.phase, .finished)
+        XCTAssertEqual(engine.calls, ["authorize", "start", "discard"], "No Health workout is saved")
+        XCTAssertEqual(api.uploaded.count, 0)
+        XCTAssertEqual(try store().all(), [])
+        XCTAssertEqual(liveActivity.endCount, 1)
+        XCTAssertNotNil(model.note)
+    }
+
+    func testTheRunningLayoutChoicesAreKept() {
+        let model = makeModel()
+        XCTAssertFalse(model.showsGlance)
+        XCTAssertEqual(model.glanceMetrics, RunMetric.glanceDefault)
+        model.showsGlance = true
+        model.glanceMetrics = [.heartRate, .time]
+        let reopened = makeModel()
+        XCTAssertTrue(reopened.showsGlance)
+        XCTAssertEqual(reopened.glanceMetrics, [.heartRate, .time])
+    }
+
     func testRefusedLocationLeavesWarmUpToStartToExplain() async throws {
         location.access = .denied
         let model = makeModel()
@@ -553,13 +630,13 @@ final class RunRecorderTests: XCTestCase {
         await model.start()
         location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
         engine.endError = RunWorkoutEngineError.notStarted
-        clock = clock.addingTimeInterval(20)
+        coverGround()
         await model.end()
         XCTAssertEqual(model.phase, .finished)
         XCTAssertNotNil(model.note)
         let uploaded = try XCTUnwrap(api.uploaded.first)
         // No builder total: moving time falls back to the clock.
-        XCTAssertEqual(uploaded.movingSeconds, 20)
+        XCTAssertEqual(uploaded.movingSeconds, 90)
     }
 
     func testARunWithNoRouteLeavesNothingToUpload() async throws {
@@ -577,7 +654,7 @@ final class RunRecorderTests: XCTestCase {
         let model = makeModel()
         await model.start()
         location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
-        clock = clock.addingTimeInterval(20)
+        coverGround()
         await model.end()
         XCTAssertEqual(model.uploadStatus, .waiting)
         XCTAssertEqual(unauthorized, 1)
@@ -593,7 +670,7 @@ final class RunRecorderTests: XCTestCase {
         let model = makeModel(jwt: nil)
         await model.start()
         location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
-        clock = clock.addingTimeInterval(20)
+        coverGround()
         await model.end()
         XCTAssertEqual(model.uploadStatus, .waiting)
         XCTAssertEqual(try store().pendingUploads().count, 1)

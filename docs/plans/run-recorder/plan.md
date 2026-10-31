@@ -115,13 +115,22 @@ within the agreed tolerance of a Garmin watch on the same run.
     the builder, splits and Lock Screen agree. A manual pause stays paused
     until the member resumes it. The resume and pause are spoken when
     announcements are on.
-  - A glanceable running layout: two or three large numbers chosen by the
-    member (time, distance, current pace, average pace, heart rate), high
-    contrast, with the map behind a swipe. Keep the screen awake while it
-    shows, if the member chooses that.
+  - A glanceable running layout: a few large numbers chosen by the member
+    (time, distance, current pace, average pace, heart rate), in place of
+    the map. Keep the screen awake while it shows.
   - Don't upload a run too short to analyze (under a minute or 100 m): ask to
     discard it instead. The first P3 session left a zero-length run on
     intervals.icu.
+  - Delivered in the repository: "Pause when I stop" (on by default) pauses
+    after 5 seconds under 0.8 m/s of GPS speed and resumes after 2 seconds
+    over 1.4 m/s, saying "Run paused." and "Run resumed." when announcements
+    are on; the title reads "Auto-paused". A header button swaps the map for
+    four large numbers (pace, distance, time and heart rate by default); a
+    tap on a number picks what it shows, and the choices stay on the
+    device. The screen stays on while that layout shows during a run. End
+    on a run under a minute or 100 m offers only Discard, and a Lock Screen
+    Finish on one discards it without a Health workout or upload. Awaiting
+    an authorized TestFlight build to try on a run.
 
 ## Execution frontier
 
@@ -179,6 +188,10 @@ the scene delegate is left to P3's force-quit check.
   ending it on discard, launch and a lost run, reattaching it on recovery,
   Lock Screen controls for this run only, and split announcements with the
   persisted unit and toggle, with fake activity and speech.
+- P4: `RunRecorderTests` covers auto-pause and resume from GPS speed with
+  their spoken cues, a manual pause that moving doesn't resume, turning
+  auto-pause off and keeping that choice, a run too short to save (no Health
+  workout, upload or checkpoint), and the kept running-layout choices.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

@@ -83,7 +83,9 @@ intervals.icu, which stays the store of completed runs.
     time or distance is done. Paused time doesn't count. A step that ends
     between two updates ends where steady running between them would have
     crossed it, in time and distance, so a late update doesn't shorten or
-    stretch the next step.
+    stretch the next step. When a late GPS batch dates an auto-pause back
+    to the fix where the runner stopped, a step that only ended in the
+    time the pause removes starts again. A skip is never undone.
   - While recording, a banner above the map or large numbers shows the
     step and repeat ("STEP 3 OF 10 · REP 2 OF 4"), its target, what's left
     and the next step, with a Skip button. After the last step it says the
@@ -144,7 +146,8 @@ authority.
   steps, steps ended between two updates (including several at once), skipping, the end of the plan,
   what's left in miles or kilometers, and the checkpoint with and without a
   plan. `RunRecorderTests` covers a planned run moving through its steps,
-  paused time not counting, skipping, the uploaded name, a slot without
+  paused time not counting, a backdated auto-pause undoing a step but not a
+  skip, skipping, the uploaded name, a slot without
   steps, and recovery at the saved step.
 
 ## Notes / open questions

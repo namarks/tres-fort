@@ -141,6 +141,10 @@ final class RunRecorderModel: ObservableObject {
     /// Moves the plan on once a second, so a timed step ends on time even
     /// when no new distance or heart rate arrives.
     private var planTicker: Task<Void, Never>?
+    /// The progress before each step the plan ended on its own since the
+    /// last skip, so a pause dated back to a GPS fix can undo a step that
+    /// only ended because of the time the pause removes.
+    private var planHistory: [RunPlanProgress] = []
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -343,6 +347,7 @@ final class RunRecorderModel: ObservableObject {
         phase = .paused
         slowSince = nil
         fastSince = nil
+        if start < time { reconcilePlan() }
         engine?.pause()
         checkpoint(force: true)
         refreshLiveActivity(force: true)
@@ -503,6 +508,7 @@ final class RunRecorderModel: ObservableObject {
         splits = nil
         planTicker?.cancel()
         planTicker = nil
+        planHistory = []
         RunRecorderControl.handler = nil
     }
 
@@ -597,6 +603,7 @@ final class RunRecorderModel: ObservableObject {
     /// Reads the steps a run follows and starts moving through them.
     private func follow(_ run: RecordedRun) {
         planSteps = run.plan.flatMap { RunPlan(json: $0.runSteps) }?.expandedSteps ?? []
+        planHistory = []
         planTicker?.cancel()
         planTicker = nil
         guard !planSteps.isEmpty else { return }
@@ -625,7 +632,11 @@ final class RunRecorderModel: ObservableObject {
         guard following.progress != before else { return }
         run.plan = following
         self.run = run
-        if stepEnded { checkpoint(force: true) }
+        if stepEnded {
+            planHistory.append(before)
+            if planHistory.count > 50 { planHistory.removeFirst() }
+            checkpoint(force: true)
+        }
     }
 
     /// The member moves on to the next step before this one is done.
@@ -635,7 +646,27 @@ final class RunRecorderModel: ObservableObject {
         following.progress.skip(planSteps, movingSeconds: run.activeSeconds(at: now()), meters: run.distanceMeters)
         run.plan = following
         self.run = run
+        // A skip is the member's choice; a later pause never undoes it.
+        planHistory = []
         checkpoint(force: true)
+    }
+
+    /// A pause dated back to the fix that triggered it removes moving time
+    /// the plan may already have counted. Undo any step that started after
+    /// the run's corrected moving time; the run's next update ends it again
+    /// if its distance was really done.
+    private func reconcilePlan() {
+        guard var run, var following = run.plan else { return }
+        let moving = run.activeSeconds(at: now())
+        var progress = following.progress
+        while progress.stepStartSeconds > moving, let previous = planHistory.popLast() {
+            progress = previous
+        }
+        if let last = progress.lastSeconds, last > moving { progress.lastSeconds = moving }
+        guard progress != following.progress else { return }
+        following.progress = progress
+        run.plan = following
+        self.run = run
     }
 
     // MARK: - Lock Screen and splits

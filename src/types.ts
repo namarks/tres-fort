@@ -182,6 +182,9 @@ export interface TemplateExerciseRow {
    *  set_logs.duration_s (the *logged* counterpart). Added in 0010. */
   target_duration_s: number | null;
   progression: string | null;
+  /** Planned run steps as canonical JSON text (src/runSteps.ts), only on the
+   *  outdoor run exercise. NULL → no steps. Added in migration 0058. */
+  run_steps?: string | null;
   cues: string | null;
   /** 1 = this slot is a PRESCRIBED warm-up (erg, mobility, ramp-up): renders
    *  in a warm-up section, its logged sets default to is_warmup=1, and it is

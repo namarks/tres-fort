@@ -139,9 +139,17 @@ CREATE TABLE template_exercises (
   progression      TEXT,                        -- JSON, see below
   cues             TEXT,                        -- form-cue reminders Claude sets
   is_warmup        INTEGER NOT NULL DEFAULT 0,  -- 1 = prescribed warm-up slot (erg, mobility); migration 0026
+  run_steps        TEXT,                        -- JSON planned run steps, only on ex_outdoor_run; migration 0058
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
+-- run_steps JSON example (src/runSteps.ts validates and canonicalizes it):
+-- [{"kind":"warmup","duration_s":600},
+--  {"repeat":4,"steps":[{"kind":"work","distance_m":800,
+--    "target":{"type":"pace","fastest_s_per_km":245,"slowest_s_per_km":255}},
+--   {"kind":"recovery","duration_s":120}]},
+--  {"kind":"cooldown","duration_s":600}]
+-- A target may instead be {"type":"heart_rate","min_bpm":130,"max_bpm":145}.
 -- progression JSON example:
 -- {"type":"double","increment":5,"unit":"lb",
 --  "rule":"top_set_reps >= target_reps_max for 2 consecutive sessions"}

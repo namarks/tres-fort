@@ -20,6 +20,8 @@ export interface PlanSnapshotExercise {
   progression: string | null;
   cues: string | null;
   is_warmup: number;
+  /** Absent in documents written before migration 0058; those had no steps. */
+  run_steps?: string | null;
 }
 
 export interface PlanSnapshotWorkout {
@@ -87,6 +89,7 @@ export function serializePlanSnapshot(tree: PlanTree): PlanSnapshotDocument {
         group_id: slot.group_id ?? null,
         group_rest_seconds: slot.group_rest_seconds ?? null,
         group_transition_seconds: slot.group_transition_seconds ?? null,
+        run_steps: slot.run_steps ?? null,
       })),
     })),
   };
@@ -107,12 +110,13 @@ export function parsePlanSnapshot(raw: string): PlanSnapshotDocument {
     day.archived_at ??= null;
   }
   // Pre-group snapshots remain writable and compare as explicitly ungrouped;
-  // pre-unit snapshots were authored in lb.
+  // pre-unit snapshots were authored in lb; pre-step snapshots had no steps.
   for (const day of doc.workouts) for (const slot of day.exercises) {
     slot.target_weight_unit ??= 'lb';
     slot.group_id ??= null;
     slot.group_rest_seconds ??= null;
     slot.group_transition_seconds ??= null;
+    slot.run_steps ??= null;
   }
   return doc as PlanSnapshotDocument;
 }

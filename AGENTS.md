@@ -123,7 +123,10 @@ design and dictates how you mutate things:
   `template_exercises.is_warmup` (migration `0026`) marks a slot a
   prescribed warm-up, excluded from working-set rollups; `cardio` is a
   `modality` for erg/treadmill/bike slots logged by duration via the same
-  timed-set runner. Never mutate the plan tree without going through one of
+  timed-set runner. `template_exercises.run_steps` (migration `0058`) holds
+  a planned run's steps and pace or heart rate targets as canonical JSON
+  text, only on the `ex_outdoor_run` slot; `src/runSteps.ts` owns the format
+  and both snapshot serializers carry it. Never mutate the plan tree without going through one of
   these paths. Migration `0040` adds full-document `plan_snapshots`. Shared
   writers commit mutation/order, version, audit, required MCP note and snapshot
   in one D1 batch using `preparePlanWriteStart` / `preparePlanWriteFinish`.

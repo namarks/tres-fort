@@ -230,6 +230,24 @@ const obj = (props: Json, required: string[] = []): Json => ({
   additionalProperties: false,
 });
 
+const RUN_STEPS_DESCRIPTION =
+  'Planned run steps, only on the "Outdoor Run" exercise; null clears them. An ordered array of steps and repeat groups. ' +
+  'A step is {kind: "warmup"|"work"|"recovery"|"cooldown", duration_s OR distance_m (exactly one), optional target}. ' +
+  'A target is {type: "pace", fastest_s_per_km, slowest_s_per_km} (whole seconds per km, 120 to 1200, fastest ≤ slowest) ' +
+  'or {type: "heart_rate", min_bpm, max_bpm} (40 to 230, min ≤ max). ' +
+  'A repeat group is {repeat: 1-50, steps: [1-10 plain steps]}; groups do not nest. ' +
+  'At most 50 items and 200 steps once repeats are expanded. Example, 4 × 800 m: ' +
+  '[{"kind":"warmup","duration_s":600},{"repeat":4,"steps":[{"kind":"work","distance_m":800,' +
+  '"target":{"type":"pace","fastest_s_per_km":245,"slowest_s_per_km":255}},{"kind":"recovery","duration_s":120}]},' +
+  '{"kind":"cooldown","duration_s":600}]. Plan readers return the steps as JSON text in run_steps.';
+
+const RUN_STEPS_SCHEMA = {
+  type: ['array', 'null'],
+  description: RUN_STEPS_DESCRIPTION,
+  items: { type: 'object' },
+  maxItems: 50,
+};
+
 function addWorkoutTool(): Tool {
   const tool: Tool = {
     description: 'Create a reusable workout in the active plan. Scheduling is optional; the workout can stay on demand. Creates a plan if none exists.',
@@ -327,7 +345,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_current_plan: {
     description:
-      'Get the active training plan: reusable workouts with optional recurring scheduling, exercises, target sets/reps/RPE, rest, progression rules, and form cues. Every weight carries its own unit: each template exercise has `target_weight_unit` (`lb` or `kg`). Units are per exercise, not per plan — a plan can mix lb and kg slots.',
+      'Get the active training plan: reusable workouts with optional recurring scheduling, exercises, target sets/reps/RPE, rest, progression rules, and form cues. Every weight carries its own unit: each template exercise has `target_weight_unit` (`lb` or `kg`). Units are per exercise, not per plan — a plan can mix lb and kg slots. A planned run is an "Outdoor Run" slot whose `run_steps` holds its steps and pace or heart rate targets as JSON text (null when it has none).',
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const tree = await getPlanTree(env.DB, userId);
@@ -1172,7 +1190,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Each exercise slot carries its own `target_weight_unit` (`lb`|`kg`, default `lb`); weights are read with their own unit, never reinterpreted across units. A rebuilt slot that omits it keeps the unit of the slot it replaces. Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled.',
+      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Each exercise slot carries its own `target_weight_unit` (`lb`|`kg`, default `lb`); weights are read with their own unit, never reinterpreted across units. A rebuilt slot that omits it keeps the unit of the slot it replaces. An "Outdoor Run" slot can carry `run_steps` (see add_exercise); a rebuilt slot that omits it keeps the steps of the slot it replaces, and null clears them. Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled.',
     inputSchema: obj(
       {
         name: { type: 'string' },
@@ -1287,7 +1305,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_exercise: {
     description:
-      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_weight_unit (`lb`|`kg`), target_duration_s, cues, progression, order_index, is_warmup. Each slot carries its own target_weight_unit — units are per exercise, not per plan. Group columns are changed only through group_exercises/ungroup_exercises; grouped order and target_sets are group-owned. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
+      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_weight_unit (`lb`|`kg`), target_duration_s, cues, progression, order_index, is_warmup, run_steps (an array of planned run steps on an "Outdoor Run" slot, in the format add_exercise describes; null clears them). Each slot carries its own target_weight_unit — units are per exercise, not per plan. Group columns are changed only through group_exercises/ungroup_exercises; grouped order and target_sets are group-owned. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
     inputSchema: obj(
       {
         expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
@@ -1320,7 +1338,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   swap_exercise: {
-    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday), preserving its targets, order, warm-up flag, and slot identity. Carried targets must be valid for the destination modality. Historical sets keep their original exercise. Both names must match the closed catalog — use list_exercises to discover valid names.',
+    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday), preserving its targets, order, warm-up flag, and slot identity. Carried targets must be valid for the destination modality, and planned run steps stay on an "Outdoor Run": clear them before swapping that slot to another exercise. Historical sets keep their original exercise. Both names must match the closed catalog — use list_exercises to discover valid names.',
     inputSchema: obj(
       {
         expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
@@ -1348,7 +1366,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   add_exercise: {
-    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s. For bodyweight or timed work, target_weight is external load relative to bodyweight: positive for added load, zero for strict bodyweight, and negative for assistance; never store body mass. For AMRAP, use target_reps as the minimum, leave target_reps_max unset, and put "AMRAP" in cues.',
+    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s. For bodyweight or timed work, target_weight is external load relative to bodyweight: positive for added load, zero for strict bodyweight, and negative for assistance; never store body mass. For AMRAP, use target_reps as the minimum, leave target_reps_max unset, and put "AMRAP" in cues. For a planned run, add "Outdoor Run" with target_sets 1, target_reps 1 and run_steps.',
     inputSchema: obj(
       {
         expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
@@ -1372,6 +1390,7 @@ const TOOLS: Record<string, Tool> = {
         progression: { type: 'object' },
         order_index: { type: 'integer' },
         is_warmup: { type: 'boolean', description: 'Mark this slot a prescribed warm-up (excluded from working-set rollups / session RPE).' },
+        run_steps: RUN_STEPS_SCHEMA,
       },
       ['day', 'exercise', 'target_sets', 'target_reps'],
     ),
@@ -1415,6 +1434,7 @@ const TOOLS: Record<string, Tool> = {
         progression: a.progression == null ? null : JSON.stringify(a.progression),
         cues: null,
         is_warmup: a.is_warmup === undefined ? 0 : a.is_warmup as boolean,
+        ...(a.run_steps === undefined ? {} : { run_steps: a.run_steps }),
       }, {
         actor: 'mcp', operation: 'add_exercise', args: a,
         note: `Added ${a.exercise} to ${a.day}.`,

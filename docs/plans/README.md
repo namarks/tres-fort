@@ -185,7 +185,8 @@ integration or social breadth.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach plans runs with steps and pace or heart rate
   targets in the Tres Fort plan, and the recorder follows them with spoken
-  on/off-target cues. Completed runs still upload to intervals.icu.
+  on/off-target cues. Completed runs still upload to intervals.icu. P0's
+  step format, migration 0058 and MCP tools are in the repository.
 
 ### Platform (`platform`)
 

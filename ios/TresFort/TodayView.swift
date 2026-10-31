@@ -192,6 +192,9 @@ struct TodayView: View {
     /// Opens the run recorder MainTabView hosts. Nil where recording isn't
     /// supported (before iOS 26, iPad, the App Store build).
     var onRecordRun: (() -> Void)? = nil
+    /// Opens the run recorder with a planned run from the plan. Nil where
+    /// recording isn't supported.
+    var onStartRun: ((PlannedRun) -> Void)? = nil
     var isWorkoutFocused = true
     var onMinimizeWorkout: (() -> Void)? = nil
     var onResumeWorkout: (() -> Void)? = nil
@@ -584,7 +587,10 @@ struct TodayView: View {
                 .padding(20)
             }
         } else if sync.running {
-            RunnerView(sync: sync, auth: auth, stationLink: stationLink, onExpandRest: { restExpanded = true })
+            RunnerView(sync: sync, auth: auth, stationLink: stationLink, onExpandRest: { restExpanded = true },
+                       onStartRun: onStartRun.map { start -> (TemplateExercise) -> Void in
+                           { ex in start(ex.plannedRun(in: sync.selectedDay?.name ?? "Planned run")) }
+                       })
         } else if sync.plan == nil && !sync.canCreateRoutine {
             PlanLoadRecoveryView(sync: sync)
         } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
@@ -654,8 +660,12 @@ struct TodayView: View {
                             Text(sync.hasResumableWorkout ? "In progress" : "Scheduled for today")
                                 .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
-                            Text("\(workout.exercises.count) \(workout.exercises.count == 1 ? "exercise" : "exercises")")
-                                .font(.subheadline).foregroundStyle(Theme.muted)
+                            if let run = soloPlannedRun(workout) {
+                                PlannedRunPrescription(exercise: run)
+                            } else {
+                                Text("\(workout.exercises.count) \(workout.exercises.count == 1 ? "exercise" : "exercises")")
+                                    .font(.subheadline).foregroundStyle(Theme.muted)
+                            }
                             let actionsLayout = dynamicTypeSize.isAccessibilitySize
                                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
                                 : AnyLayout(HStackLayout())
@@ -670,28 +680,35 @@ struct TodayView: View {
                                         .frame(minHeight: 44).accessibilityIdentifier("today.changeWorkout")
                                 }
                             }
-                            Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
-                                #if DEBUG && targetEnvironment(simulator)
-                                UIFixtureStartTrace.record(.todayStartAction)
-                                #endif
-                                prepareNewWorkout {
-                                    if sync.hasResumableWorkout {
-                                        #if DEBUG && targetEnvironment(simulator)
-                                        UIFixtureStartTrace.record(.todayResumeSelected)
-                                        #endif
-                                        sync.resumeWorkout()
-                                    } else {
-                                        #if DEBUG && targetEnvironment(simulator)
-                                        UIFixtureStartTrace.record(.todayStartSelected)
-                                        #endif
-                                        sync.startToday()
+                            if let run = soloPlannedRun(workout), let onStartRun, !sync.hasResumableWorkout {
+                                // A run on its own starts in the recorder, not the set runner.
+                                Button("Start run") { onStartRun(run.plannedRun(in: workout.name)) }
+                                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                                    .accessibilityIdentifier("today.startRun")
+                            } else {
+                                Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
+                                    #if DEBUG && targetEnvironment(simulator)
+                                    UIFixtureStartTrace.record(.todayStartAction)
+                                    #endif
+                                    prepareNewWorkout {
+                                        if sync.hasResumableWorkout {
+                                            #if DEBUG && targetEnvironment(simulator)
+                                            UIFixtureStartTrace.record(.todayResumeSelected)
+                                            #endif
+                                            sync.resumeWorkout()
+                                        } else {
+                                            #if DEBUG && targetEnvironment(simulator)
+                                            UIFixtureStartTrace.record(.todayStartSelected)
+                                            #endif
+                                            sync.startToday()
+                                        }
                                     }
                                 }
+                                .buttonStyle(WorkoutPrimaryButtonStyle())
+                                .accessibilityIdentifier("today.startWorkout")
+                                .disabled(workout.exercises.isEmpty || isPreparingWorkoutStart
+                                    || (sync.blocksNewWorkoutStart && !sync.hasResumableWorkout))
                             }
-                            .buttonStyle(WorkoutPrimaryButtonStyle())
-                            .accessibilityIdentifier("today.startWorkout")
-                            .disabled(workout.exercises.isEmpty || isPreparingWorkoutStart
-                                || (sync.blocksNewWorkoutStart && !sync.hasResumableWorkout))
                         }
                         .padding(20).background(Theme.surface)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -721,6 +738,11 @@ struct TodayView: View {
             }
             .refreshable { await sync.load() }
         }
+    }
+
+    /// A workout that is one outdoor run and nothing else.
+    private func soloPlannedRun(_ workout: Workout) -> TemplateExercise? {
+        workout.exercises.count == 1 && workout.exercises[0].isOutdoorRun ? workout.exercises[0] : nil
     }
 
     private var weekSection: some View {
@@ -934,6 +956,9 @@ private struct RunnerView: View {
     @ObservedObject var auth: AuthModel
     @ObservedObject var stationLink: StationLinkController
     var onExpandRest: (() -> Void)? = nil
+    /// Opens the run recorder for an outdoor run slot. Nil where recording
+    /// isn't supported; the slot then keeps the timed controls.
+    var onStartRun: ((TemplateExercise) -> Void)? = nil
 
     /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
     /// the in-flight edit string (`""` while the sheet is open and the user
@@ -1169,13 +1194,39 @@ private struct RunnerView: View {
                 StationLinkRunnerPanel(sync: sync, link: stationLink, ex: ex)
                 #endif
             }
-            RunnerSetAction(sync: sync, ex: ex)
+            RunnerSetAction(sync: sync, ex: ex,
+                            onStartRun: ex.isOutdoorRun ? onStartRun.map { start -> () -> Void in { start(ex) } } : nil)
         }
         .padding(.horizontal, 20).padding(.vertical, 8)
         .background(Theme.bg)
     }
 
-    private func setEntry(_ ex: TemplateExercise) -> some View {
+    @ViewBuilder private func setEntry(_ ex: TemplateExercise) -> some View {
+        if ex.isOutdoorRun && onStartRun != nil {
+            runEntry(ex)
+        } else {
+            setValuesEntry(ex)
+        }
+    }
+
+    /// An outdoor run records in the run recorder, so the runner shows its
+    /// plan instead of set values.
+    private func runEntry(_ ex: TemplateExercise) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("PLANNED RUN").font(Theme.mono(12, .bold)).tracking(1).foregroundStyle(Theme.accent)
+            PlannedRunPrescription(exercise: ex)
+            Text("Start the run to record it with GPS. It uploads to intervals.icu when you save it.")
+                .font(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .accessibilityIdentifier("runner.plannedRun")
+    }
+
+    private func setValuesEntry(_ ex: TemplateExercise) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if !sync.isFreestyle {
                 Text("Target · " + ex.prescriptionLabel(in: weightUnit))
@@ -1597,12 +1648,24 @@ private struct TimedSetView: View {
 private struct RunnerSetAction: View {
     @ObservedObject var sync: SyncModel
     let ex: TemplateExercise
+    /// Set for an outdoor run on a phone that can record it.
+    var onStartRun: (() -> Void)? = nil
     var body: some View {
         let displayedSetNumber = sync.currentPhysicalSetNumber
         let physicalSetNumber = sync.currentPhysicalSetNumber
         let resting = sync.restEndDate != nil
         VStack(spacing: 6) {
-            if ex.isTimed && sync.timedActive {
+            if let onStartRun, !sync.timedActive {
+                Button(action: onStartRun) {
+                    Text("START RUN")
+                        .font(Theme.display(24)).tracking(1.2)
+                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                        .contentShape(Rectangle())
+                }
+                .background(Theme.accent).foregroundStyle(.black)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .accessibilityIdentifier("runner.startRun")
+            } else if ex.isTimed && sync.timedActive {
                 Button {
                     Task { await sync.stopTimedSet() }
                 } label: {

@@ -180,6 +180,8 @@ struct TodayWeekSection: View {
 private struct UpcomingDayRow: View {
     @ObservedObject var sync: SyncModel
     let day: SyncModel.UpcomingDay
+    @AppStorage(RunDistanceUnit.preferenceKey) private var runUnitRaw = RunDistanceUnit.miles.rawValue
+    private var runUnit: RunDistanceUnit { RunDistanceUnit(rawValue: runUnitRaw) ?? .miles }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -194,19 +196,22 @@ private struct UpcomingDayRow: View {
             .frame(width: 58)
             VStack(alignment: .leading, spacing: 6) {
                 if day.hasWorkout {
+                    let isRun = day.workout.map { !$0.exercises.isEmpty && $0.exercises.allSatisfy(\.isOutdoorRun) } ?? false
                     HStack(spacing: 8) {
-                        Image(systemName: "dumbbell.fill")
+                        Image(systemName: isRun ? "figure.run" : "dumbbell.fill")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(WorkoutCategory.lift.color)
+                            .foregroundStyle(isRun ? WorkoutCategory.endurance.color : WorkoutCategory.lift.color)
                             .frame(width: 16)
                         Text(day.workout?.name ?? "Workout scheduled")
                             .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
                             .lineLimit(1)
                     }
                     if let workout = day.workout, !workout.exercises.isEmpty {
-                        Text(workout.exercises.map(\.exercise_name).joined(separator: " · "))
+                        // A planned run reads as its steps, a lift as its exercises.
+                        Text(workout.exercises.map { $0.isOutdoorRun ? $0.runPrescriptionLabel(in: runUnit) : $0.exercise_name }
+                            .joined(separator: " · "))
                             .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                            .lineLimit(1)
+                            .lineLimit(isRun ? 2 : 1)
                             .padding(.leading, 24)
                     }
                 }

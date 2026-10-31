@@ -53,11 +53,29 @@ intervals.icu, which stays the store of completed runs.
   - Not covered: partner workouts copy slots without steps, and the runner's
     per-set target snapshot doesn't include them. Neither path records
     runs.
-- [ ] **P1 — Planned runs in the app**
-  - Today, the week strip and the workout view show a planned run's steps
-    and targets. Starting it opens the run recorder with that plan.
-  - Weight and rep editing doesn't apply to run slots. The iOS editor shows
-    them read-only until a later phase adds step editing.
+- [x] **P1 — Planned runs in the app**
+  - The app reads `run_steps` from `/api/state` (`RunPlan.swift`). Steps it
+    can't read, such as a format a newer server adds, show the slot as a
+    plain run instead of failing the plan.
+  - Steps read in the recorder's miles-or-kilometers choice: "10 min
+    warm-up", "800 m at 4:05–4:15 /km", "40 min at 130–145 bpm". Repeats show
+    as a count with their steps indented under it.
+  - Today shows the steps of a workout that is only a run, and its button
+    starts the run recorder with that plan instead of a lifting session. The
+    week strip marks a run day with a running icon and its steps, and the
+    workout view lists them.
+  - In a mixed workout the runner shows the planned run and a Start run
+    button that opens the recorder. Where recording isn't supported (iPad,
+    the App Store build, before iOS 26) the run slot keeps its timed
+    controls.
+  - The recorder's start screen shows the plan it was opened with. A run
+    started from the toolbar has no plan, and a run already recording
+    keeps the plan it started with.
+  - The workout editor shows a run's steps read-only: it doesn't open the
+    sets and load editor, and a run with steps can't be replaced. Removing
+    the slot still works.
+  - Not covered: a recorded run doesn't mark the planned workout done, and
+    the iPad runner and partner workouts show run slots as before.
 - [ ] **P2 — Follow the plan while recording**
   - The recorder moves through the steps by time or distance. It shows the
     current step, its target range and what's left in it. The member can
@@ -88,8 +106,9 @@ intervals.icu, which stays the store of completed runs.
 
 ## Next step
 
-**Now (@agent):** Show planned runs and their steps in the app (P1): Today,
-the week strip and the workout view, read-only in the editor.
+**Now (@agent):** P2, follow the plan while recording. Its dependency,
+run-recorder P3's device check, still needs about two more runs on the
+owner's iPhone beside the Forerunner.
 
 P0's migration 0058 must be applied before a Worker that reads or writes
 `run_steps` serves traffic. Applying it and deploying need separate
@@ -102,6 +121,10 @@ authority.
   audit row and note, the run-only rule including swap, `update_plan`
   inheritance and clearing, snapshot parity in both serializers, a pre-0058
   snapshot comparing unchanged, and restore.
+- P1: `ios/TresFortTests/RunPlanTests.swift` covers reading steps, repeats
+  and both targets, rejecting text the app can't read, the step, summary,
+  pace (per km and per mile), distance and duration wording, run slot
+  labels and the shared unit preference.
 
 ## Notes / open questions
 

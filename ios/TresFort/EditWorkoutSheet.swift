@@ -315,12 +315,12 @@ struct EditWorkoutSheet: View {
                     if let label { Text(label).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent) }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(ex.exercise_name).font(Theme.mono(15, .bold)).foregroundStyle(Theme.text)
-                        Text(ex.group_id == nil ? "\(ex.targetLabel) · \(ex.rest_seconds)s rest" : ex.targetLabel)
+                        Text(slotSummary(ex))
                             .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                     }
                     if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                     if ex.isWarmup { WarmupTag() }
-                    if !reordering && !selectingGroup && !dynamicTypeSize.isAccessibilitySize {
+                    if !reordering && !selectingGroup && !dynamicTypeSize.isAccessibilitySize && !ex.isOutdoorRun {
                         Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.dim)
                     }
                 }
@@ -328,15 +328,19 @@ struct EditWorkoutSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(selectingGroup || reordering)
+            // Sets and loads don't apply to a run; its steps come from the coach.
+            .disabled(selectingGroup || reordering || ex.isOutdoorRun)
             .accessibilityIdentifier("editor.slot.\(ex.id)")
             if !selectingGroup && !reordering {
                 Menu {
-                    Button("Replace with…", systemImage: "arrow.triangle.2.circlepath") {
-                        guard let plan = sync.plan,
-                              let current = plan.workouts.first(where: { $0.id == dayID })?
-                                .exercises.first(where: { $0.id == ex.id }) else { return }
-                        replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
+                    // Steps stay on a run, so a run with steps can't become another exercise.
+                    if ex.run_steps == nil {
+                        Button("Replace with…", systemImage: "arrow.triangle.2.circlepath") {
+                            guard let plan = sync.plan,
+                                  let current = plan.workouts.first(where: { $0.id == dayID })?
+                                    .exercises.first(where: { $0.id == ex.id }) else { return }
+                            replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
+                        }
                     }
                     Button("Remove exercise", role: .destructive) {
                         removingExercise = ExerciseEditTarget(exercise: ex, version: sync.plan?.version ?? 0)
@@ -348,6 +352,12 @@ struct EditWorkoutSheet: View {
                 .accessibilityLabel("Options for \(ex.exercise_name)")
             }
         }
+    }
+
+    /// Targets and rest for a lift; a run's steps, which only the coach edits.
+    private func slotSummary(_ ex: TemplateExercise) -> String {
+        if ex.isOutdoorRun { return ex.runPrescriptionLabel(in: .preferred()) }
+        return ex.group_id == nil ? "\(ex.targetLabel) · \(ex.rest_seconds)s rest" : ex.targetLabel
     }
 
     private func removeSlot(_ id: String, expectedVersion: Int) {

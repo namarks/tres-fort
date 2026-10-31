@@ -109,7 +109,15 @@ struct MainTabView: View {
                       auth: auth,
                       stationLink: models.stationLink,
                       onLogActivity: { showActivitySheet = true },
-                      onRecordRun: RunRecorderModel.isSupported ? { showRunRecorder = true } : nil,
+                      onRecordRun: RunRecorderModel.isSupported ? {
+                          models.runs.plannedRun = nil
+                          showRunRecorder = true
+                      } : nil,
+                      onStartRun: RunRecorderModel.isSupported ? { run in
+                          // A run already recording keeps the plan it started with.
+                          if !models.runs.isRecording { models.runs.plannedRun = run }
+                          showRunRecorder = true
+                      } : nil,
                       isWorkoutFocused: isWorkoutFocused,
                       onMinimizeWorkout: { isWorkoutFocused = false },
                       onResumeWorkout: resumeWorkout,

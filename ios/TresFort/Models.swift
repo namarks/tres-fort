@@ -76,6 +76,9 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     var group_id: String? = nil
     var group_rest_seconds: Int? = nil
     var group_transition_seconds: Int? = nil
+    /// A planned run's steps as JSON text, only on the outdoor run slot
+    /// (migration 0058). Read it through `runPlan`.
+    var run_steps: String? = nil
 
     /// A prescribed warm-up slot (erg, mobility). Renders in a warm-up style
     /// and its logged sets are flagged is_warmup.

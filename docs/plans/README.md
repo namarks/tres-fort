@@ -187,8 +187,9 @@ integration or social breadth.
   targets in the Tres Fort plan, and the recorder follows them with spoken
   on/off-target cues. Completed runs still upload to intervals.icu. P0's
   step format, migration 0058 and MCP tools, P1's display in the app
-  with a Start run button, and P2's step-by-step guidance while recording
-  are in the repository.
+  with a Start run button, P2's step-by-step guidance while recording,
+  and P3's spoken step and target cues are in the repository; P4 is the
+  owner's real runs.
 
 ### Platform (`platform`)
 

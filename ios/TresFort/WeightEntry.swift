@@ -27,6 +27,8 @@ extension TemplateExercise {
     /// Two-dumbbell targets are stored per hand; conversion keeps that meaning.
     /// The load converts from the slot's own `target_weight_unit`.
     func prescriptionLabel(in unit: WeightUnit) -> String {
+        // A run has steps and paces, not sets and loads.
+        if isOutdoorRun { return runPrescriptionLabel(in: .preferred()) }
         var parts = [targetLabel]
         if showsLoadControl, let weight = target_weight {
             let value = WeightUnit.text(targetWeightUnit.convert(abs(weight), to: unit))

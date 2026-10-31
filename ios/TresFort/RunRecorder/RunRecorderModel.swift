@@ -46,6 +46,9 @@ final class RunRecorderModel: ObservableObject {
     /// Horizontal accuracy of the latest GPS fix, in meters, while the
     /// recorder is open or recording.
     @Published private(set) var gpsAccuracy: CLLocationAccuracy?
+    /// The plan slot the recorder was opened for, if any. It stays through
+    /// the run and clears when the member closes the recorder.
+    @Published var plannedRun: PlannedRun?
     /// Per-device choices, kept between runs.
     @Published var unit: RunDistanceUnit {
         didSet {
@@ -76,7 +79,7 @@ final class RunRecorderModel: ObservableObject {
     }
     let heartRateMonitor: HeartRateMonitor
 
-    static let unitKey = "runRecorder.distanceUnit"
+    static let unitKey = RunDistanceUnit.preferenceKey
     static let announceKey = "runRecorder.announceSplits"
     static let autoPauseKey = "runRecorder.autoPause"
     static let glanceKey = "runRecorder.glance"
@@ -441,6 +444,7 @@ final class RunRecorderModel: ObservableObject {
         run = nil
         note = nil
         latestHeartRate = nil
+        plannedRun = nil
         phase = .idle
     }
 

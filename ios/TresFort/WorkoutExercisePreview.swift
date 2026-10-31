@@ -72,9 +72,13 @@ struct WorkoutExercisePreview: View {
                 .font(.headline).foregroundStyle(Theme.text)
                 .fixedSize(horizontal: false, vertical: true)
             if exercise.isWarmup { WarmupTag() }
-            Text(exercise.prescriptionLabel(in: weightUnit))
-                .font(Theme.mono(13)).foregroundStyle(Theme.muted)
-                .fixedSize(horizontal: false, vertical: true)
+            if exercise.isOutdoorRun {
+                PlannedRunPrescription(exercise: exercise)
+            } else {
+                Text(exercise.prescriptionLabel(in: weightUnit))
+                    .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let cues = exercise.cues, !cues.isEmpty {
                 Text(cues).font(.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)

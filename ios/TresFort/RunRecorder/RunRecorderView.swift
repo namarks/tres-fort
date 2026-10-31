@@ -24,6 +24,9 @@ struct RunRecorderView: View {
                     map
                     stats
                 }
+                if let plannedRun = model.plannedRun, !model.isRecording, model.phase != .finished {
+                    PlannedRunCard(run: plannedRun, unit: model.unit)
+                }
                 if model.phase == .idle || isFailed {
                     gpsStatus
                     heartRateStatus

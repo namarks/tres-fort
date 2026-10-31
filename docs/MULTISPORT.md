@@ -572,7 +572,10 @@ M5 only when a real pain point justifies the API coupling.
   on-watch guided intervals. Exception (owner decision, 2026-10-30): the
   [iPhone run recorder](plans/run-recorder/plan.md) records outdoor runs in
   the app and uploads them to intervals.icu as files, so intervals stays the
-  store of record.
+  store of record. Second exception (owner decision, 2026-10-31):
+  [planned runs](plans/planned-runs/plan.md) carry structured steps with pace
+  or heart rate targets in the Tres Fort plan, and the recorder follows them.
+  Completed runs still go only to intervals.icu.
 - **A second writable cardio store.** Endurance truth stays in intervals;
   tres-fort mirrors read-only. Never invert this.
 - **A materialized weeks/calendar table.** The calendar is derived; only the

@@ -1,84 +1,89 @@
 # Planned runs with pace and heart rate targets
 
-Slug: planned-runs · Status: planned · Updated: 2026-10-31 · Theme: connected-training
+Slug: planned-runs · Status: active · Updated: 2026-10-31 · Theme: connected-training
 
 ## Goal
 
-The coach can plan a run with steps and targets (for example a 10-minute
-warm-up, 4 × 800 m at 4:10/km with 2-minute jogs, and a cool-down, or 40
-minutes in heart rate zone 2). The member sees today's planned run in the app,
-starts it in the run recorder, and hears where they are: each step as it
-starts, and whether they are on, above or below the target pace or heart
-rate. The planned run lives in intervals.icu, so the same workout can also run
-on a Garmin, and the recorded run is uploaded there as usual.
+The coach can plan a run with steps and targets, such as a 10-minute warm-up,
+then 4 × 800 m at 4:10/km with 2-minute jogs, then a cool-down. A simpler
+plan might be 40 minutes in heart rate zone 2. The run is part of the Tres
+Fort plan, next to the lifting days, and it is scheduled the same way. The
+member sees today's run in the app and starts it in the run recorder. The app
+announces each step as it starts and says whether the member is on, above or
+below the target pace or heart rate. The recorded run still uploads to
+intervals.icu, which stays the store of completed runs.
 
 ## Phases
 
-- [ ] **P0 — Prove a planned run round-trips through intervals.icu**
-  - Write one planned Run as an intervals.icu `WORKOUT` event, with steps in
-    intervals.icu's own workout text (durations or distances, with pace or
-    heart rate targets), against the owner's account.
-  - Confirm intervals.icu parses it into structured steps (`workout_doc`)
-    with targets resolved from the member's pace and heart rate settings, and
-    that it reaches the Forerunner through Garmin Connect.
-  - Record the request and response shapes this plan relies on. MULTISPORT
-    R1 still lists the run `POST /events` shape as unverified.
-- [ ] **P1 — The coach plans runs**
-  - An MCP tool writes, changes and removes planned runs on the member's
-    intervals.icu calendar, with a `tresfort:planned:` marker, and mirrors
-    each one into `external_events` straight away. That follows MULTISPORT
-    §5.2's write-through design, and the existing hourly sync and webhook
-    pick up edits made in intervals.icu.
-  - Every accepted write records an audit row and a coach note like other
-    MCP mutations. Provider failure is an error with no local copy.
-- [ ] **P2 — Follow a planned run in the recorder**
-  - The Worker serves today's planned runs with their parsed steps. The
-    Today screen shows the planned run, and the recorder can start it.
-  - The recorder steps through the plan by time or distance, shows the
-    current step, its target range and what's left in it, and moves on by
-    itself. The member can skip a step. A run started without a plan works
-    as it does now.
+- [ ] **P0 — Runs in the plan document**
+  - Define the step format:
+    - Ordered steps, each a warm-up, work, recovery or cool-down step.
+    - Each step ends after a duration or a distance.
+    - Each step has an optional target: a pace range (seconds per km) or a
+      heart rate range (bpm).
+    - Repeat groups cover intervals.
+  - Store the steps on a run slot of a plan workout. Use a new numbered
+    migration and an outdoor Run catalog exercise with the `cardio`
+    modality.
+  - Validate the steps on every write: bounded count and nesting, positive
+    durations and distances, and target ranges where min ≤ max.
+  - The steps travel with the versioned plan:
+    - `plans.version` changes when they change.
+    - They appear in snapshots and restore, and in `/api/state`.
+    - The SQL and TypeScript writable-document serializers stay in parity.
+  - The MCP tools that add and update exercises, and `update_plan`, accept and
+    return steps. Accepted writes are audited and noted like other plan edits.
+  - Record the MULTISPORT §11 exception for planned run steps.
+- [ ] **P1 — Planned runs in the app**
+  - Today, the week strip and the workout view show a planned run's steps
+    and targets. Starting it opens the run recorder with that plan.
+  - Weight and rep editing doesn't apply to run slots. The iOS editor shows
+    them read-only until a later phase adds step editing.
+- [ ] **P2 — Follow the plan while recording**
+  - The recorder moves through the steps by time or distance. It shows the
+    current step, its target range and what's left in it. The member can
+    skip a step.
+  - The uploaded run's name says which planned run it was. A run started
+    without a plan works as it does now.
 - [ ] **P3 — Spoken cues**
   - Announce each step as it starts ("800 meters at 4:10 per kilometer").
   - Say when pace or heart rate leaves the target range ("Speed up",
-    "Ease off", "Heart rate high") and when it returns. Use a smoothed value
-    and a short delay before speaking, so GPS noise doesn't chatter, and
-    don't repeat a cue within about 30 seconds.
-  - The cues use the existing split speaker and its mute control, with the
-    phone locked too.
+    "Ease off", "Heart rate high") and when it returns.
+  - Cue from a smoothed value after a short delay, so GPS noise doesn't
+    chatter. Don't repeat a cue within about 30 seconds.
+  - Cues use the split speaker and its mute control, and work with the phone
+    locked.
 - [ ] **P4 — Verify on the owner's iPhone**
-  - Run at least one interval session and one heart rate run from a
-    coach-planned workout. Check step timing, the cues' timing and
-    usefulness, and that the uploaded run lines up with the planned steps in
-    intervals.icu.
+  - Run at least one interval session and one heart rate run that the coach
+    planned.
+  - Check step timing and how useful and well-timed the cues are. Check that
+    the uploaded run in intervals.icu lines up with the plan.
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | gated_by | external:owner-planned-runs-scope | MULTISPORT §11 rules out structured workout steps; the owner must approve this exception and the plan's activation. |
 | P2 | blocked_by | plan:run-recorder#P3 | Steps and cues build on a recorder whose accuracy has been checked on a real device. |
-| P2 | coordinates_with | plan:run-recorder#P4 | Both change the recorder's screen and pause handling. |
+| P2 | coordinates_with | plan:run-recorder#P4 | Both change the recorder's screen and its pause handling. |
+| P4 | gated_by | external:owner-planned-runs-device-verification | Real runs on the owner's iPhone need an authorized TestFlight build. |
 
 ## Next step
 
-**Now (@owner):** Decide whether planned runs live in intervals.icu (this
-plan's design) and approve the MULTISPORT §11 exception for structured run
-steps, then activate the plan. P0 is a small spike against the owner's
-intervals.icu account.
+**Now (@agent):** Write the step format and its validation (P0), with the
+migration, serializer parity and MCP tool changes, as one PR.
 
 ## Notes / open questions
 
 - Asked for by the owner on 2026-10-30 after the first recorded run: plan
-  run types by pace or heart rate, with audio cues for on or off pace.
-- Why intervals.icu: MULTISPORT §11 keeps endurance truth in intervals.icu
-  and forbids a second writable cardio store, and intervals.icu already
-  turns workout text into structured steps with targets and sends them to
-  Garmin. Tres Fort reads its parsed steps rather than inventing its own
-  step format, so a planned run can be followed on the iPhone or the watch.
-- Targets come from the member's intervals.icu settings (threshold pace,
-  heart rate zones). A member without them set needs absolute targets
-  (min/km, bpm) in the workout text; P0 checks both.
-- Out of scope: treadmill runs, which have no GPS pace (cues by heart rate
-  could still work), and watch-side execution beyond what Garmin already
-  does with the synced workout.
+  run types by pace or heart rate, with spoken cues for on or off pace.
+- Storage decision (owner, 2026-10-31): planned runs live in the Tres Fort
+  plan, not as intervals.icu calendar events. The alternative would have
+  synced the workout to the Garmin, and the owner chose not to take it. This
+  is an exception to MULTISPORT §11's "no structured-step workout DSL".
+  Completed runs still go only to intervals.icu, so §11's single store for
+  endurance results holds.
+- Targets are absolute (min/km, bpm) in P0. Zones relative to threshold pace
+  or maximum heart rate need the member's values stored somewhere; that's
+  left open.
+- Treadmill runs have no GPS pace. Heart rate cues could still work there,
+  but they are out of scope until outdoor runs work.

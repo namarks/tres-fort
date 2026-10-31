@@ -183,9 +183,9 @@ integration or social breadth.
   is checked on the owner's iPhone. P4 adds auto-pause and a glanceable
   running display.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
-  **planned**; the coach plans runs with steps and pace or heart rate
-  targets in intervals.icu, and the recorder follows them with spoken
-  on/off-target cues. Waiting on the owner's scope decision.
+  **active**; the coach plans runs with steps and pace or heart rate
+  targets in the Tres Fort plan, and the recorder follows them with spoken
+  on/off-target cues. Completed runs still upload to intervals.icu.
 
 ### Platform (`platform`)
 

@@ -31,29 +31,47 @@ final class RunPlanProgressTests: XCTestCase {
 
         XCTAssertTrue(progress.advance(steps, movingSeconds: 601, meters: 1_910))
         XCTAssertEqual(progress.stepIndex, 1)
-        // The warm-up's exact end starts the interval, so a late update
-        // doesn't shorten the next step's time.
+        // The warm-up ended at 600 s, halfway between the two updates, so the
+        // interval starts there and at the distance run by then.
         XCTAssertEqual(progress.stepStartSeconds, 600)
-        XCTAssertEqual(progress.stepStartMeters, 1_910)
-        XCTAssertEqual(progress.remaining(steps, movingSeconds: 640, meters: 2_100, unit: .kilometers), "210 m left")
+        XCTAssertEqual(progress.stepStartMeters, 1_905)
+        XCTAssertEqual(progress.remaining(steps, movingSeconds: 640, meters: 2_100, unit: .kilometers), "205 m left")
 
-        XCTAssertFalse(progress.advance(steps, movingSeconds: 680, meters: 2_309))
-        XCTAssertTrue(progress.advance(steps, movingSeconds: 690, meters: 2_315))
+        XCTAssertFalse(progress.advance(steps, movingSeconds: 680, meters: 2_300))
+        XCTAssertTrue(progress.advance(steps, movingSeconds: 690, meters: 2_310))
         XCTAssertEqual(progress.stepIndex, 2)
-        XCTAssertEqual(progress.stepStartMeters, 2_310)
-        XCTAssertEqual(progress.stepStartSeconds, 690)
-        XCTAssertEqual(progress.remaining(steps, movingSeconds: 700, meters: 2_340, unit: .miles), "1:20 left")
+        // 400 m were done at 2,305 m, reached at 685 s.
+        XCTAssertEqual(progress.stepStartMeters, 2_305)
+        XCTAssertEqual(progress.stepStartSeconds, 685)
+        XCTAssertEqual(progress.remaining(steps, movingSeconds: 700, meters: 2_340, unit: .miles), "1:15 left")
     }
 
-    func testALateUpdateCanFinishSeveralSteps() {
+    /// A 400 m interval and a 30 s recovery, with updates at 99 s and 140 s:
+    /// at a steady 4 m/s the interval ended at 100 s and the recovery at
+    /// 130 s, so the next interval has already started.
+    func testALateUpdateEndsStepsWhereTheyWereCrossed() {
+        let steps = RunPlan(items: [
+            .step(.init(kind: .work, durationSeconds: nil, distanceMeters: 400, target: nil)),
+            .step(.init(kind: .recovery, durationSeconds: 30, distanceMeters: nil, target: nil)),
+            .step(.init(kind: .work, durationSeconds: nil, distanceMeters: 400, target: nil)),
+        ]).expandedSteps
+        var progress = RunPlanProgress()
+        XCTAssertFalse(progress.advance(steps, movingSeconds: 99, meters: 396))
+        XCTAssertTrue(progress.advance(steps, movingSeconds: 140, meters: 560))
+        XCTAssertEqual(progress.stepIndex, 2)
+        XCTAssertEqual(progress.stepStartSeconds, 130, accuracy: 0.001)
+        XCTAssertEqual(progress.stepStartMeters, 520, accuracy: 0.001)
+        XCTAssertEqual(progress.remaining(steps, movingSeconds: 140, meters: 560, unit: .kilometers), "360 m left")
+    }
+
+    func testWithoutAnEarlierUpdateTheStepStartAnchorsTheEstimate() {
         let steps = plan.expandedSteps
         var progress = RunPlanProgress()
-        // Warm-up done at 600 s; the first 400 m ends at 400 m past the warm-up.
-        XCTAssertTrue(progress.advance(steps, movingSeconds: 700, meters: 500))
+        // A recovered run's first update: steady from the step's start.
+        XCTAssertTrue(progress.advance(steps, movingSeconds: 700, meters: 700))
         XCTAssertEqual(progress.stepIndex, 1)
-        XCTAssertTrue(progress.advance(steps, movingSeconds: 800, meters: 900))
-        XCTAssertEqual(progress.stepIndex, 2)
-        XCTAssertEqual(progress.stepStartMeters, 900)
+        XCTAssertEqual(progress.stepStartMeters, 600, accuracy: 0.001)
+        XCTAssertEqual(progress.stepStartSeconds, 600)
     }
 
     func testSkipStartsTheNextStepNowAndThePlanEnds() {

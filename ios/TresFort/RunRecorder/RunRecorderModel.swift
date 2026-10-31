@@ -619,11 +619,13 @@ final class RunRecorderModel: ObservableObject {
     /// Ends every step the run has finished, by moving time or distance.
     func advancePlan() {
         guard phase == .running, var run, var following = run.plan, !planSteps.isEmpty else { return }
-        guard following.progress.advance(planSteps, movingSeconds: run.activeSeconds(at: now()),
-                                         meters: run.distanceMeters) else { return }
+        let before = following.progress
+        let stepEnded = following.progress.advance(planSteps, movingSeconds: run.activeSeconds(at: now()),
+                                                   meters: run.distanceMeters)
+        guard following.progress != before else { return }
         run.plan = following
         self.run = run
-        checkpoint(force: true)
+        if stepEnded { checkpoint(force: true) }
     }
 
     /// The member moves on to the next step before this one is done.

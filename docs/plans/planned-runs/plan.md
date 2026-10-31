@@ -80,9 +80,10 @@ intervals.icu, which stays the store of completed runs.
   - A run started from a planned slot keeps its steps in the run's
     checkpoint (`RecordedRun.plan`), so a recovered run picks up at the same
     step. `RunPlanProgress` unrolls repeats and ends a step when its moving
-    time or distance is done. Paused time doesn't count, and a finished
-    step's exact end starts the next one, so a late update doesn't shorten
-    it.
+    time or distance is done. Paused time doesn't count. A step that ends
+    between two updates ends where steady running between them would have
+    crossed it, in time and distance, so a late update doesn't shorten or
+    stretch the next step.
   - While recording, a banner above the map or large numbers shows the
     step and repeat ("STEP 3 OF 10 · REP 2 OF 4"), its target, what's left
     and the next step, with a Skip button. After the last step it says the
@@ -140,7 +141,7 @@ authority.
   pace (per km and per mile), distance and duration wording, run slot
   labels and the shared unit preference.
 - P2: `RunPlanProgressTests` covers unrolling repeats, timed and distance
-  steps, several steps in one late update, skipping, the end of the plan,
+  steps, steps ended between two updates (including several at once), skipping, the end of the plan,
   what's left in miles or kilometers, and the checkpoint with and without a
   plan. `RunRecorderTests` covers a planned run moving through its steps,
   paused time not counting, skipping, the uploaded name, a slot without

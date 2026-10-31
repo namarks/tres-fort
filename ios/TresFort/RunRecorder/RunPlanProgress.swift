@@ -35,34 +35,60 @@ struct RunPlanProgress: Codable, Equatable {
     /// The run's moving seconds and meters when the current step started.
     var stepStartSeconds: Double = 0
     var stepStartMeters: Double = 0
+    /// The moving seconds and meters of the previous update, so a step's end
+    /// that falls between two updates can be placed between them.
+    var lastSeconds: Double? = nil
+    var lastMeters: Double? = nil
 
     func isComplete(_ steps: [RunPlan.ExpandedStep]) -> Bool { stepIndex >= steps.count }
 
     /// Moves past every step the run has finished. Returns true when the
-    /// step changed. A finished step's exact end becomes the next step's
-    /// start, so a late update doesn't shorten the next step.
+    /// step changed. A step that ended between this update and the previous
+    /// one ends where steady running between them would have crossed it, in
+    /// both time and distance, so a late update doesn't shorten or stretch
+    /// the next step.
     mutating func advance(_ steps: [RunPlan.ExpandedStep], movingSeconds: Double, meters: Double) -> Bool {
+        // The last known point on the run, no earlier than the step's start.
+        var fromSeconds = min(max(lastSeconds ?? stepStartSeconds, stepStartSeconds), movingSeconds)
+        var fromMeters = min(max(lastMeters ?? stepStartMeters, stepStartMeters), meters)
+        lastSeconds = movingSeconds
+        lastMeters = meters
         var changed = false
         while stepIndex < steps.count {
             let step = steps[stepIndex].step
             if let duration = step.durationSeconds {
                 let end = stepStartSeconds + Double(duration)
                 guard movingSeconds >= end else { break }
+                let at = Self.between(end, from: fromSeconds, to: movingSeconds,
+                                      values: fromMeters, meters)
                 stepStartSeconds = end
-                stepStartMeters = meters
+                stepStartMeters = at
             } else if let distance = step.distanceMeters {
                 let end = stepStartMeters + distance
                 guard meters >= end else { break }
+                let at = Self.between(end, from: fromMeters, to: meters,
+                                      values: fromSeconds, movingSeconds)
                 stepStartMeters = end
-                stepStartSeconds = movingSeconds
+                stepStartSeconds = at
             } else {
                 stepStartSeconds = movingSeconds
                 stepStartMeters = meters
             }
+            fromSeconds = max(fromSeconds, stepStartSeconds)
+            fromMeters = max(fromMeters, stepStartMeters)
             stepIndex += 1
             changed = true
         }
         return changed
+    }
+
+    /// The value at `point` on a straight line from (`from`, `low`) to
+    /// (`to`, `high`), kept within the two.
+    private static func between(_ point: Double, from: Double, to: Double,
+                                values low: Double, _ high: Double) -> Double {
+        guard to > from else { return high }
+        let fraction = min(max((point - from) / (to - from), 0), 1)
+        return low + (high - low) * fraction
     }
 
     /// Ends the current step now and starts the next.
@@ -71,6 +97,8 @@ struct RunPlanProgress: Codable, Equatable {
         stepIndex += 1
         stepStartSeconds = movingSeconds
         stepStartMeters = meters
+        lastSeconds = movingSeconds
+        lastMeters = meters
     }
 
     /// What's left of the current step: "2:15 left", "420 m left" or

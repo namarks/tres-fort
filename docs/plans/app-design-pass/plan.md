@@ -18,7 +18,7 @@ one visual system. The owner asked for the whole ranked list from the
     and clearer finish copy. The exercise editor sets target weight, its unit
     and RPE, which before only the coach could change.
   - Merged in PR #287 with model tests and CI.
-- [ ] **P1 — Today and the set runner**
+- [x] **P1 — Today and the set runner**
   - Today shows unplanned training directly: a freestyle lift, a run to record
     and an activity to log, on idle, rest and completed days. The + menu keeps
     the same choices and the occasional ones.
@@ -31,8 +31,8 @@ one visual system. The owner asked for the whole ranked list from the
     have something to show, so the inputs keep that room.
   - Finish workout before the last set lands on the same finish screen as the
     last set, with the same summary, feedback and Finish action.
-  - Verify with UI journeys for the Today shortcuts, the iPad display entry,
-    the exercise menu, the footer and both finish routes.
+  - Merged in PR #288 with UI journeys for the Today shortcuts, the iPad
+    display entry, the exercise menu, the footer and both finish routes.
 - [ ] **P2 — Workout navigation**
   - Library, workout details, editing and adding an exercise use one
     navigation stack with Back, and Edit is a mode of the details screen.
@@ -51,8 +51,8 @@ one visual system. The owner asked for the whole ranked list from the
 
 ## Next step
 
-**Now (@agent):** Take P1 through CI and Codex review to ready to merge, then
-start P2.
+**Now (@agent):** Take P2 through CI and Codex review to ready to merge, then
+open P3 and P4, which are built and apply cleanly on top of it.
 
 ## Notes / open questions
 

@@ -23,7 +23,8 @@ private struct AccountExportDocument: FileDocument {
 }
 
 /// The "Profile" tab — one place to manage your setup: account, the AI
-/// coach connection, integrations, and your groups. Server connection state
+/// coach connection, integrations and preferences. Groups live on the Group
+/// tab. Server connection state
 /// comes from GET /api/me; Apple Health reflects the device's local opt-ins.
 struct ProfileView: View {
     @ObservedObject var groupModel: GroupModel
@@ -32,8 +33,6 @@ struct ProfileView: View {
     var sync: SyncModel? = nil
     var runs: RunRecorderModel? = nil
 
-    @State private var showJoin = false
-    @State private var showCreate = false
     @State private var showTrainingOverview = false
     @State private var showTrainingProfile = false
     @State private var showNameEditor = false
@@ -68,7 +67,7 @@ struct ProfileView: View {
                 } else {
                 coachSection
                 integrationsSection
-                groupsSection
+                // Joining, creating and switching groups live on the Group tab.
                 Section {
                     NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
                 }
@@ -87,11 +86,9 @@ struct ProfileView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showJoin) { JoinGroupSheet(groupModel: groupModel) }
         .sheet(isPresented: $showTrainingProfile) {
             TrainingSetupView(auth: auth, showStarters: false) { showTrainingProfile = false }
         }
-        .sheet(isPresented: $showCreate) { CreateGroupSheet(groupModel: groupModel) }
         .sheet(isPresented: $showTrainingOverview) {
             if let sync { CoachingContextView(sync: sync) }
         }
@@ -356,47 +353,6 @@ struct ProfileView: View {
                 ProfileConnectionsLabel(groupModel: groupModel, health: health, weight: health.weight)
             }
             .accessibilityIdentifier("profile.connections")
-        }
-    }
-
-    // MARK: - Groups
-
-    @ViewBuilder
-    private var groupsSection: some View {
-        Section {
-            if groupModel.groups.isEmpty {
-                Text("You're not in a group yet.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            } else {
-                ForEach(groupModel.groups) { g in
-                    Button {
-                        groupModel.selectGroup(g.id)
-                    } label: {
-                        HStack {
-                            Image(systemName: g.id == groupModel.selectedGroupID
-                                  ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(g.id == groupModel.selectedGroupID
-                                                 ? Theme.accent : Theme.muted)
-                            Text(g.name).foregroundStyle(.primary)
-                            Spacer()
-                            Text("\(g.member_count)")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            Button { showJoin = true } label: {
-                Label("Join with code", systemImage: "person.badge.plus")
-            }
-            Button { showCreate = true } label: {
-                Label("Create group", systemImage: "plus.circle")
-            }
-        } header: {
-            Text("Groups")
-        } footer: {
-            Text(groupModel.groups.count > 1
-                 ? "Tap a group to make it active — it's shown in the Group tab."
-                 : "Friends-and-family groups cheer each other on in the Group tab.")
         }
     }
 }

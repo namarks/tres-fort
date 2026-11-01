@@ -32,6 +32,9 @@ struct EditWorkoutSheet: View {
     @ObservedObject var sync: SyncModel
     let dayID: String
     var onDone: (() -> Void)? = nil
+    /// Pushed from workout details or the library: edit is a mode of that
+    /// stack, so Done pops back to it instead of closing a sheet.
+    var isPushed = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var adding = false
@@ -50,109 +53,115 @@ struct EditWorkoutSheet: View {
     private var day: Workout? { sync.workout(id: dayID) }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if day != nil {
-                    Text("Edits apply to this saved workout whenever you use it. Completed records stay unchanged.")
-                        .font(.footnote).foregroundStyle(Theme.muted)
-                        .padding(.horizontal, 16).padding(.vertical, 10)
-                }
-                if day == nil || sync.workoutEditorRefreshNeeded {
-                    refreshError(sync.loadError)
-                }
-                Group {
-                    if let day, !day.exercises.isEmpty {
-                        list(day)
-                    } else {
-                        emptyState
-                    }
-                }
-                .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking)
+        if isPushed {
+            editor.navigationBarBackButtonHidden(true)
+        } else {
+            NavigationStack { editor }
+        }
+    }
+
+    private var editor: some View {
+        VStack(spacing: 0) {
+            if day != nil {
+                Text("Edits apply to this saved workout whenever you use it. Completed records stay unchanged.")
+                    .font(.footnote).foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
             }
-            .background(Theme.background)
-            .navigationTitle(reordering ? "Reorder exercises" : day.map { "Edit \($0.name)" } ?? "Workout unavailable")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if !reordering {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { if let onDone { onDone() } else { dismiss() } }.foregroundStyle(Theme.accent)
-                    }
+            if day == nil || sync.workoutEditorRefreshNeeded {
+                refreshError(sync.loadError)
+            }
+            Group {
+                if let day, !day.exercises.isEmpty {
+                    list(day)
+                } else {
+                    emptyState
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if reordering {
-                        Button("Done") { reordering = false }
-                            .accessibilityLabel("Done reordering")
-                            .accessibilityIdentifier("editor.doneReordering")
-                    } else {
-                        Menu {
-                            Button { addPresetWarmup = false; adding = true } label: {
-                                Label("Add exercise", systemImage: "plus")
-                            }
-                            Button { addPresetWarmup = true; adding = true } label: {
-                                Label("Add warm-up", systemImage: "flame")
-                            }
-                            Button {
-                                selectedSlots = []
-                                selectingGroup = true
-                            } label: {
-                                Label("Group exercises", systemImage: "checkmark.circle")
-                            }
-                            Button {
-                                reordering = true
-                            } label: {
-                                Label("Reorder exercises", systemImage: "arrow.up.arrow.down")
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle").foregroundStyle(Theme.accent)
+            }
+            .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking)
+        }
+        .background(Theme.background)
+        .navigationTitle(reordering ? "Reorder exercises" : day.map { "Edit \($0.name)" } ?? "Workout unavailable")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !reordering {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { if let onDone { onDone() } else { dismiss() } }.foregroundStyle(Theme.accent)
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if reordering {
+                    Button("Done") { reordering = false }
+                        .accessibilityLabel("Done reordering")
+                        .accessibilityIdentifier("editor.doneReordering")
+                } else {
+                    Menu {
+                        Button { addPresetWarmup = false; adding = true } label: {
+                            Label("Add exercise", systemImage: "plus")
                         }
-                        .accessibilityLabel("Workout actions")
-                        .accessibilityIdentifier("editor.actions")
-                        .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking || selectingGroup)
+                        Button { addPresetWarmup = true; adding = true } label: {
+                            Label("Add warm-up", systemImage: "flame")
+                        }
+                        Button {
+                            selectedSlots = []
+                            selectingGroup = true
+                        } label: {
+                            Label("Group exercises", systemImage: "checkmark.circle")
+                        }
+                        Button {
+                            reordering = true
+                        } label: {
+                            Label("Reorder exercises", systemImage: "arrow.up.arrow.down")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").foregroundStyle(Theme.accent)
                     }
+                    .accessibilityLabel("Workout actions")
+                    .accessibilityIdentifier("editor.actions")
+                    .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking || selectingGroup)
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .sheet(isPresented: $adding) {
-                AddExerciseSheet(sync: sync, dayID: dayID, presetWarmup: addPresetWarmup)
+        }
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .sheet(isPresented: $adding) {
+            AddExerciseSheet(sync: sync, dayID: dayID, presetWarmup: addPresetWarmup)
+        }
+        .sheet(item: $editingExercise) { target in
+            NavigationStack {
+                EditExerciseTargetView(
+                    sync: sync,
+                    dayID: dayID,
+                    slot: target.exercise, expectedVersion: target.version)
             }
-            .sheet(item: $editingExercise) { target in
-                NavigationStack {
-                    EditExerciseTargetView(
-                        sync: sync,
-                        dayID: dayID,
-                        slot: target.exercise, expectedVersion: target.version)
-                }
+        }
+        .sheet(item: $planningRun) { target in
+            NavigationStack {
+                RunPlanEditorView(
+                    sync: sync,
+                    dayID: dayID,
+                    slot: target.exercise, expectedVersion: target.version)
             }
-            .sheet(item: $planningRun) { target in
-                NavigationStack {
-                    RunPlanEditorView(
-                        sync: sync,
-                        dayID: dayID,
-                        slot: target.exercise, expectedVersion: target.version)
-                }
-                .preferredColorScheme(.dark)
-            }
-            .sheet(item: $replacingExercise) { target in
-                ReplaceExerciseSheet(sync: sync, dayID: dayID, target: target)
-            }
-            .sheet(item: $editingGroup) { target in
-                EditExerciseGroupSheet(sync: sync, dayID: dayID, target: target)
-            }
-            .alert("Remove \(removingExercise?.exercise.exercise_name ?? "exercise")?",
-                   isPresented: Binding(get: { removingExercise != nil }, set: { if !$0 { removingExercise = nil } }),
-                   presenting: removingExercise) { target in
-                Button("Remove exercise", role: .destructive) { removeSlot(target.id, expectedVersion: target.version) }
-                Button("Cancel", role: .cancel) {}
-            } message: { _ in
-                Text("This removes the exercise from this saved workout. Previously logged sets stay in your history.")
-            }
-            .safeAreaInset(edge: .bottom) {
-                if selectingGroup { selectionBar }
-            }
-            .onChange(of: sync.plan?.version) {
-                selectedSlots = []
-                selectingGroup = false
-            }
+            .preferredColorScheme(.dark)
+        }
+        .sheet(item: $replacingExercise) { target in
+            ReplaceExerciseSheet(sync: sync, dayID: dayID, target: target)
+        }
+        .sheet(item: $editingGroup) { target in
+            EditExerciseGroupSheet(sync: sync, dayID: dayID, target: target)
+        }
+        .alert("Remove \(removingExercise?.exercise.exercise_name ?? "exercise")?",
+               isPresented: Binding(get: { removingExercise != nil }, set: { if !$0 { removingExercise = nil } }),
+               presenting: removingExercise) { target in
+            Button("Remove exercise", role: .destructive) { removeSlot(target.id, expectedVersion: target.version) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes the exercise from this saved workout. Previously logged sets stay in your history.")
+        }
+        .safeAreaInset(edge: .bottom) {
+            if selectingGroup { selectionBar }
+        }
+        .onChange(of: sync.plan?.version) {
+            selectedSlots = []
+            selectingGroup = false
         }
         .preferredColorScheme(.dark)
     }
@@ -649,6 +658,7 @@ private struct ConfigureExerciseView: View {
     @State private var working = false
     @State private var expectedVersion: Int?
     @State private var targetMode: TargetMode
+    @State private var load: SlotLoadDraft
 
     init(sync: SyncModel, dayID: String, exercise: ExerciseCatalog,
          presetWarmup: Bool, onDone: @escaping () -> Void) {
@@ -660,6 +670,11 @@ private struct ConfigureExerciseView: View {
         self.onDone = onDone
         _isWarmup = State(initialValue: presetWarmup)
         _targetMode = State(initialValue: exercise.modality == "timed" ? .hold : .reps)
+        // A new slot starts in the member's lb/kg choice with no target.
+        let unit = WeightUnit(rawValue: UserDefaults.standard.string(forKey: WeightUnit.preferenceKey) ?? "") ?? .lb
+        _load = State(initialValue: SlotLoadDraft(
+            weight: nil, unit: unit, rpe: nil,
+            allowsAssistance: exercise.modality == "bw" || exercise.modality == "timed"))
     }
 
     /// Cardio ergs (rowing/bike/ski, treadmill) are logged by minutes.
@@ -733,6 +748,11 @@ private struct ConfigureExerciseView: View {
                 }
             }
 
+            if !isCardio {
+                SlotLoadSection(load: $load, allowsAssistance: load.allowsAssistance,
+                                isPerHand: exercise.load_mode == "per_hand", defaultRPE: 8)
+            }
+
             Section("Rest between sets") {
                 Stepper("\(restSeconds)s", value: $restSeconds, in: 0...600, step: 15)
             }
@@ -753,7 +773,9 @@ private struct ConfigureExerciseView: View {
                             targetReps: isCardio ? 1 : (isHold ? seconds : reps),
                             targetRepsMax: targetRepsMax,
                             restSeconds: restSeconds,
-                            targetDurationS: durationS, expectedVersion: expectedVersion)
+                            targetDurationS: durationS,
+                            load: isCardio ? [:] : load.changedFields,
+                            expectedVersion: expectedVersion)
                         working = false
                         if saved { onDone() }
                     }
@@ -762,7 +784,7 @@ private struct ConfigureExerciseView: View {
                         .font(Theme.mono(15, .bold))
                         .frame(maxWidth: .infinity)
                 }
-                .disabled(working)
+                .disabled(working || (!isCardio && !load.isValid))
             }
 
             if let error = sync.loadError {
@@ -954,41 +976,9 @@ private struct EditExerciseTargetView: View {
         .tint(Theme.accent)
     }
 
-    /// Target weight (in the slot's own lb or kg) and target effort, so a
-    /// member can prescribe a load without the coach.
     private var loadSection: some View {
-        Section {
-            HStack(spacing: 12) {
-                TextField("No target", text: $load.text)
-                    .keyboardType(slot.allowsAssistance ? .numbersAndPunctuation : .decimalPad)
-                    .accessibilityLabel("Target weight in \(load.unit.rawValue)")
-                    .accessibilityIdentifier("slot.targetWeight")
-                WeightUnitPicker(selection: Binding(get: { load.unit }, set: { load.select($0) }),
-                                 identifier: "slot.weightUnit")
-                    .fixedSize()
-            }
-            if !load.isValid {
-                Text(slot.allowsAssistance ? "Enter a number, such as 20 or -20." : "Enter a weight of 0 or more.")
-                    .font(.footnote).foregroundStyle(Theme.danger)
-            }
-            Toggle("Target effort (RPE)", isOn: Binding(
-                get: { load.rpe != nil },
-                set: { load.rpe = $0 ? (slot.target_rpe ?? 8) : nil }))
-                .tint(Theme.accent)
-                .accessibilityIdentifier("slot.targetEffort")
-            if let rpe = load.rpe {
-                Stepper("RPE \(SetValueFormatter.number(rpe))",
-                        value: Binding(get: { rpe }, set: { load.rpe = $0 }),
-                        in: 1...10, step: 0.5)
-                    .accessibilityIdentifier("slot.targetRPE")
-            }
-        } header: {
-            Text(slot.isPerHand ? "Weight · each hand" : "Weight")
-        } footer: {
-            Text(slot.allowsAssistance
-                 ? "Enter 0 for bodyweight, added load as a positive number and assistance as a negative one. Leave it empty to start from your last set."
-                 : "Each set starts at this weight. Leave it empty to start from your last set.")
-        }
+        SlotLoadSection(load: $load, allowsAssistance: slot.allowsAssistance,
+                        isPerHand: slot.isPerHand, defaultRPE: slot.target_rpe ?? 8)
     }
 
     private func save() {
@@ -1010,6 +1000,50 @@ private struct EditExerciseTargetView: View {
                 expectedVersion: expectedVersion)
             working = false
             if saved { dismiss() }
+        }
+    }
+}
+
+/// Target weight (in the slot's own lb or kg) and target effort, so a member
+/// can prescribe a load without the coach, when adding or editing an exercise.
+private struct SlotLoadSection: View {
+    @Binding var load: SlotLoadDraft
+    let allowsAssistance: Bool
+    let isPerHand: Bool
+    let defaultRPE: Double
+
+    var body: some View {
+        Section {
+            HStack(spacing: 12) {
+                TextField("No target", text: $load.text)
+                    .keyboardType(allowsAssistance ? .numbersAndPunctuation : .decimalPad)
+                    .accessibilityLabel("Target weight in \(load.unit.rawValue)")
+                    .accessibilityIdentifier("slot.targetWeight")
+                WeightUnitPicker(selection: Binding(get: { load.unit }, set: { load.select($0) }),
+                                 identifier: "slot.weightUnit")
+                    .fixedSize()
+            }
+            if !load.isValid {
+                Text(allowsAssistance ? "Enter a number, such as 20 or -20." : "Enter a weight of 0 or more.")
+                    .font(.footnote).foregroundStyle(Theme.danger)
+            }
+            Toggle("Target effort (RPE)", isOn: Binding(
+                get: { load.rpe != nil },
+                set: { load.rpe = $0 ? defaultRPE : nil }))
+                .tint(Theme.accent)
+                .accessibilityIdentifier("slot.targetEffort")
+            if let rpe = load.rpe {
+                Stepper("RPE \(SetValueFormatter.number(rpe))",
+                        value: Binding(get: { rpe }, set: { load.rpe = $0 }),
+                        in: 1...10, step: 0.5)
+                    .accessibilityIdentifier("slot.targetRPE")
+            }
+        } header: {
+            Text(isPerHand ? "Weight · each hand" : "Weight")
+        } footer: {
+            Text(allowsAssistance
+                 ? "Enter 0 for bodyweight, added load as a positive number and assistance as a negative one. Leave it empty to start from your last set."
+                 : "Each set starts at this weight. Leave it empty to start from your last set.")
         }
     }
 }

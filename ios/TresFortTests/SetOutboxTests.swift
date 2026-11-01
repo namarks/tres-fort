@@ -295,6 +295,7 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
         targetRepsMax: Int?,
         restSeconds: Int,
         targetDurationS: Int?,
+        load: [String: Any],
         expectedVersion: Int, jwt: String
     ) async throws -> APIClient.SlotIDRow {
         slotEditVersions.append(expectedVersion)

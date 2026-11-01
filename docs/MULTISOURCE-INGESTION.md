@@ -23,6 +23,9 @@ Worker deployment and client rollout; provider expansion below remains a proposa
 >   (`src/db.ts`): client-UUID-idempotent push into `external_activities` with
 >   `source='healthkit'`. `training_load` left NULL (no per-user HR anchor to
 >   derive hrTSS — not fabricated). Tests in `test/healthkit.test.ts`.
+>   *Update 2026-11:* member thresholds now give these rows a computed
+>   `effective_load` (migration `0060`; see
+>   [endurance training load](plans/endurance-training-load/plan.md)).
 > - **Phase 1 — remaining:** (a) **group-feed opt-in gating** so HealthKit
 >   activities aren't shown cross-user without consent (Open Decision #5 —
 >   opt-in granularity); (b) **cross-source dedup** logic using the `0027`

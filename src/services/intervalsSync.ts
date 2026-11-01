@@ -161,6 +161,8 @@ interface IntervalsSyncDependencies {
   todayInTz(tz: string | null | undefined): string;
   dedupeHealthKitAgainstIntervals(db: D1Database, userId: string, window?: ActivityDedupeWindow,
     expectedIntervalsFence?: { generation: number; attempt: number }): Promise<number>;
+  /** Recompute effective training load after provider rows changed. */
+  refreshActivityLoads(db: D1Database, userId: string, window?: { fromDate?: string; toDate?: string }): Promise<number>;
 }
 
 /** Identity selection and cross-source matching stay with their existing
@@ -168,7 +170,7 @@ interface IntervalsSyncDependencies {
 export function createIntervalsSyncService({
   getUserIntervalsCreds, findOwnerRow, userHasTouchedIntervalsCreds,
   seedOwnerIntervalsCredsFromEnv, ensureOwnerUser, getIntervalsConnectionStatus,
-  getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals,
+  getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals, refreshActivityLoads,
 }: IntervalsSyncDependencies) {
   function intervalsSyncAttemptColumn(cache: IntervalsCache): string {
     return cache === 'events'
@@ -1395,9 +1397,16 @@ export function createIntervalsSyncService({
                (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
                 moving_time_sec,elapsed_time_sec,distance_m,average_watts,
                 weighted_avg_watts,average_hr,max_hr,training_load,intensity,
-                calories,elevation_gain_m,raw,synced_at,deleted_at,start_date_utc_ms)
+                calories,elevation_gain_m,raw,synced_at,deleted_at,start_date_utc_ms,
+                effective_load,effective_intensity,load_method)
              SELECT ?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                    ?15,?16,?17,?18,?19,?20,NULL,?23
+                    ?15,?16,?17,?18,?19,?20,NULL,?23,
+                    -- A provider load is the effective load as it stands
+                    -- (migration 0060); rows without one are filled by
+                    -- refreshActivityLoads after this batch.
+                    CASE WHEN ?15 >= 0 THEN ROUND(?15) END,
+                    CASE WHEN ?15 >= 0 AND ?16 > 0 THEN ROUND(?16, 1) END,
+                    CASE WHEN ?15 >= 0 THEN 'provider' END
               WHERE EXISTS (
                     SELECT 1 FROM users
                      WHERE id = ?2 AND intervals_credential_generation = ?21
@@ -1423,6 +1432,21 @@ export function createIntervalsSyncService({
                max_hr=excluded.max_hr,
                training_load=excluded.training_load,
                intensity=excluded.intensity,
+               effective_load=CASE
+                 WHEN excluded.load_method = 'provider' THEN excluded.effective_load
+                 WHEN external_activities.load_method = 'provider' THEN NULL
+                 ELSE external_activities.effective_load
+               END,
+               effective_intensity=CASE
+                 WHEN excluded.load_method = 'provider' THEN excluded.effective_intensity
+                 WHEN external_activities.load_method = 'provider' THEN NULL
+                 ELSE external_activities.effective_intensity
+               END,
+               load_method=CASE
+                 WHEN excluded.load_method = 'provider' THEN 'provider'
+                 WHEN external_activities.load_method = 'provider' THEN NULL
+                 ELSE external_activities.load_method
+               END,
                calories=excluded.calories,
                elevation_gain_m=excluded.elevation_gain_m,
                raw=CASE WHEN
@@ -1582,6 +1606,8 @@ export function createIntervalsSyncService({
         attempt: attempts.activitiesAttempt,
       },
     );
+    // Provider rows in the window may have new loads or summaries.
+    await refreshActivityLoads(db, userId, { fromDate: oldest, toDate: today });
 
     const cnt = await db
       .prepare(

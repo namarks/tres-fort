@@ -343,6 +343,11 @@ export interface ExternalActivityRow {
   // non-canonical row at an external activity or `session:<native UUID>`.
   canonical: number; // 0 | 1
   duplicate_of: string | null;
+  // Load Tres Fort shows (migration 0060): the provider's figure, or one
+  // computed from the member's thresholds; NULL when no usable data.
+  effective_load: number | null;
+  effective_intensity: number | null;
+  load_method: string | null;
 }
 
 /** A normalized completed activity as returned by the intervals.icu fetcher. */

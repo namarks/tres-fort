@@ -1817,7 +1817,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_recent_activities: {
     description:
-      'Get COMPLETED endurance activities recorded in intervals.icu (rides, runs, swims) with their actuals: duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
+      'Get COMPLETED endurance activities recorded in intervals.icu (rides, runs, swims) with their actuals: duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `training_load` is the figure from the provider; `load` (with `load_intensity` and `load_method`: provider, power, power_summary, heart_rate, heart_rate_average or pace) is the load Tres Fort shows, computed from the member thresholds when the provider has none, and null when there is no usable data. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
     inputSchema: obj(
       {
         range: { type: 'integer', minimum: 1, maximum: 365, description: 'days back (default 30)' },
@@ -1848,6 +1848,9 @@ const TOOLS: Record<string, Tool> = {
           max_hr: x.max_hr,
           training_load: x.training_load,
           intensity: x.intensity,
+          load: x.effective_load,
+          load_intensity: x.effective_intensity,
+          load_method: x.load_method,
           calories: x.calories,
           elevation_gain_m: x.elevation_gain_m,
         })),
@@ -2005,6 +2008,8 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
       average_watts: a.average_watts,
       average_hr: a.average_hr,
       training_load: a.training_load,
+      load: a.effective_load,
+      load_method: a.load_method,
     })),
   };
   return [

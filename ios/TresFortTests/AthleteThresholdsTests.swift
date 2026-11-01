@@ -291,4 +291,18 @@ final class ActivityLoadDisplayTests: XCTestCase {
         XCTAssertTrue(summary.hasLoad)
         XCTAssertEqual(summary.unscoredCount, 1)
     }
+
+    func testAWeekOfOnlyUnscoredActivitiesHasUnknownLoadNotZero() {
+        let summary = EnduranceProgress(activities: [
+            activity(load: nil, method: nil, date: "2026-11-03"),
+            activity(load: 100, method: "pace", date: "2026-10-28"),
+            activity(load: nil, method: nil, date: "2026-10-21"),
+        ], today: "2026-11-04", weekCount: 4)
+        // Oldest first: an empty week, an unscored week, a scored week, this week.
+        XCTAssertEqual(summary.weeks.map(\.load), [0, nil, 100, nil])
+        XCTAssertNil(summary.thisWeekLoad)
+        // The unscored week stays out of the average instead of counting as 0.
+        XCTAssertEqual(summary.averageWeekLoad, 50)
+        XCTAssertEqual(EnduranceProgress(activities: [], today: "2026-11-04", weekCount: 2).thisWeekLoad, 0)
+    }
 }

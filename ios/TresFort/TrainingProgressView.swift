@@ -429,13 +429,16 @@ struct EnduranceHistoryView: View {
                 EnduranceStats(summary: summary)
                 EnduranceWeeksChart(weeks: summary.weeks).frame(height: 180)
                 if summary.hasLoad {
+                    let week = summary.thisWeekLoad.map { "\($0)" } ?? "unknown"
+                    let average = summary.averageWeekLoad.map { " · avg \($0)" } ?? ""
                     LabeledContent {
-                        Text("\(summary.thisWeekLoad) · avg \(summary.averageWeekLoad)").monospacedDigit()
+                        Text(week + average).monospacedDigit()
                     } label: {
                         Label("Training load", systemImage: "gauge.with.dots.needle.67percent")
                     }
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Training load \(summary.thisWeekLoad) this week, \(summary.averageWeekLoad) a week on average")
+                    .accessibilityLabel("Training load \(week) this week"
+                        + (summary.averageWeekLoad.map { ", \($0) a week on average" } ?? ""))
                 }
                 ForEach(summary.thisWeek) { total in
                     let duration = EnduranceProgress.duration(total.seconds)
@@ -465,9 +468,7 @@ struct EnduranceHistoryView: View {
             Section("By week") {
                 ForEach(summary.weeks.reversed()) { week in
                     LabeledContent {
-                        Text(week.load > 0
-                             ? "\(EnduranceProgress.duration(week.seconds)) · load \(week.load)"
-                             : EnduranceProgress.duration(week.seconds))
+                        Text(weekLine(week))
                             .monospacedDigit()
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -487,6 +488,13 @@ struct EnduranceHistoryView: View {
         .navigationTitle("Endurance")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await sync.load() }
+    }
+
+    /// "3h 10m · load 210", or just the time when the week has no known load.
+    private func weekLine(_ week: EnduranceProgress.Week) -> String {
+        let duration = EnduranceProgress.duration(week.seconds)
+        guard let load = week.load, load > 0 else { return duration }
+        return "\(duration) · load \(load)"
     }
 }
 

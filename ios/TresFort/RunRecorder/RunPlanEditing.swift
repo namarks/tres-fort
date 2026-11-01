@@ -261,3 +261,31 @@ enum RunDistanceInput: String, CaseIterable, Identifiable {
         return (unit, text)
     }
 }
+
+/// A step's distance while the member edits it. The text shows a rounded
+/// value, so until the member changes the text or unit, the step keeps the
+/// exact distance it had.
+struct RunDistanceEntry {
+    var text: String
+    var unit: RunDistanceInput
+    private let original: (meters: Double, text: String, unit: RunDistanceInput)?
+
+    init(meters: Double?, preferred: RunDistanceUnit) {
+        if let meters {
+            let shown = RunDistanceInput.display(meters, preferred: preferred)
+            unit = shown.0
+            text = shown.1
+            original = (meters, shown.1, shown.0)
+        } else {
+            unit = preferred == .miles ? .miles : .kilometers
+            text = "1"
+            original = nil
+        }
+    }
+
+    /// Meters for the step, or nil when the text isn't a distance.
+    var meters: Double? {
+        if let original, text == original.text, unit == original.unit { return original.meters }
+        return unit.meters(text)
+    }
+}

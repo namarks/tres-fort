@@ -216,8 +216,7 @@ struct RunStepEditorView: View {
     @State private var ending: Ending
     @State private var minutes: Int
     @State private var seconds: Int
-    @State private var distanceText: String
-    @State private var distanceUnit: RunDistanceInput
+    @State private var distance: RunDistanceEntry
     @State private var targetChoice: TargetChoice
     @State private var fastestText: String
     @State private var slowestText: String
@@ -232,11 +231,7 @@ struct RunStepEditorView: View {
         let duration = step.durationSeconds ?? 600
         _minutes = State(initialValue: duration / 60)
         _seconds = State(initialValue: duration % 60)
-        let shown = RunDistanceInput.display(step.distanceMeters ?? (unit == .miles ? 1_609.344 : 1_000),
-                                             preferred: unit)
-        let defaultUnit: RunDistanceInput = unit == .miles ? .miles : .kilometers
-        _distanceUnit = State(initialValue: step.distanceMeters == nil ? defaultUnit : shown.0)
-        _distanceText = State(initialValue: shown.1)
+        _distance = State(initialValue: RunDistanceEntry(meters: step.distanceMeters, preferred: unit))
         switch step.target {
         case .pace(let fastest, let slowest)?:
             _targetChoice = State(initialValue: .pace)
@@ -266,7 +261,7 @@ struct RunStepEditorView: View {
         case .time:
             step.durationSeconds = minutes * 60 + seconds
         case .distance:
-            guard let meters = distanceUnit.meters(distanceText) else {
+            guard let meters = distance.meters else {
                 return .failure(StepInputError("Enter a distance, such as 800 m or 1.5 km."))
             }
             step.distanceMeters = meters
@@ -315,10 +310,10 @@ struct RunStepEditorView: View {
                     Stepper("\(seconds) s", value: $seconds, in: 0...55, step: 5)
                 } else {
                     HStack {
-                        TextField("Distance", text: $distanceText)
+                        TextField("Distance", text: $distance.text)
                             .keyboardType(.decimalPad)
                             .accessibilityIdentifier("runStep.distance")
-                        Picker("Unit", selection: $distanceUnit) {
+                        Picker("Unit", selection: $distance.unit) {
                             ForEach(RunDistanceInput.allCases) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
@@ -340,9 +335,12 @@ struct RunStepEditorView: View {
                     paceField("Fastest", text: $fastestText, identifier: "runStep.fastest")
                     paceField("Slowest", text: $slowestText, identifier: "runStep.slowest")
                 case .heartRate:
-                    Stepper("From \(lowBPM) bpm", value: $lowBPM, in: RunPlanLimits.heartRate)
-                    Stepper("Up to \(max(lowBPM, highBPM)) bpm",
-                            value: Binding(get: { max(lowBPM, highBPM) }, set: { highBPM = max(lowBPM, $0) }),
+                    // Raising the low end past the high end carries the high
+                    // end with it, so the range shown is the range saved.
+                    Stepper("From \(lowBPM) bpm",
+                            value: Binding(get: { lowBPM }, set: { lowBPM = $0; highBPM = max(highBPM, $0) }),
+                            in: RunPlanLimits.heartRate)
+                    Stepper("Up to \(highBPM) bpm", value: $highBPM,
                             in: lowBPM...RunPlanLimits.heartRate.upperBound)
                 }
             } header: {

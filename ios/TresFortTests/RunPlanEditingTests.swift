@@ -154,4 +154,25 @@ final class RunPlanEditingTests: XCTestCase {
         XCTAssertEqual(RunDistanceInput.display(1_609.344, preferred: .miles).0, .miles)
         XCTAssertEqual(RunDistanceInput.display(1_609.344, preferred: .miles).1, "1")
     }
+
+    func testAnUntouchedDistanceKeepsItsExactMeters() {
+        // 5 km reads as 3.11 mi; reading that back would give 5,005 m.
+        var entry = RunDistanceEntry(meters: 5_000, preferred: .miles)
+        XCTAssertEqual(entry.unit, .miles)
+        XCTAssertEqual(entry.text, "3.11")
+        XCTAssertEqual(entry.meters, 5_000)
+        let longest = RunDistanceEntry(meters: RunPlanLimits.distanceMeters, preferred: .miles)
+        XCTAssertEqual(longest.meters, RunPlanLimits.distanceMeters)
+
+        entry.text = "3"
+        XCTAssertEqual(entry.meters ?? 0, 3 * 1_609.344, accuracy: 0.001)
+        entry.text = "3.11"
+        XCTAssertEqual(entry.meters, 5_000, "Typing the shown value back keeps the exact distance")
+        entry.unit = .kilometers
+        XCTAssertEqual(entry.meters ?? 0, 3_110, accuracy: 0.001)
+
+        let fresh = RunDistanceEntry(meters: nil, preferred: .kilometers)
+        XCTAssertEqual(fresh.unit, .kilometers)
+        XCTAssertEqual(fresh.meters, 1_000)
+    }
 }

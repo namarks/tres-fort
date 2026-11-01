@@ -152,7 +152,10 @@ final class AthleteThresholdsModelTests: XCTestCase {
             adder: { _, _ in throw APIError.http(401, "{}") },
             remover: { _, _ in XCTFail("nothing to remove") },
             onChanged: { changes += 1 },
-            onUnauthorized: { unauthorized += 1 })
+            onUnauthorized: { refused in
+                XCTAssertEqual(refused, "jwt")
+                unauthorized += 1
+            })
         var draft = ThresholdDraft(sport: .run, metric: .heartRate, today: Date())
         draft.text = "170"
 
@@ -163,6 +166,51 @@ final class AthleteThresholdsModelTests: XCTestCase {
         XCTAssertEqual(changes, 0)
         XCTAssertEqual(unauthorized, 1)
         XCTAssertEqual(model.errorMessage, "Nothing was saved. Sign in again to continue.")
+    }
+
+    func testRetryingAnUnconfirmedSaveReusesItsID() async {
+        var ids: [String] = []
+        var failNext = true
+        let model = AthleteThresholdsModel(
+            jwt: { "jwt" },
+            loader: { _ in [] },
+            adder: { input, _ in
+                ids.append(input.id)
+                if failNext { failNext = false; throw URLError(.networkConnectionLost) }
+                return savedRow(input)
+            },
+            remover: { _, _ in })
+        var draft = ThresholdDraft(sport: .ride, metric: .ftp, today: Date())
+        draft.text = "250"
+
+        let first = await model.save(draft, unit: .miles)
+        XCTAssertFalse(first)
+        XCTAssertEqual(model.errorMessage, "It may not have been saved. Check your connection and try again.")
+        let second = await model.save(draft, unit: .miles)
+        XCTAssertTrue(second)
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(ids[0], ids[1], "the retry must hit the Worker's idempotent path")
+
+        // A different value is a new row with its own id.
+        draft.text = "255"
+        _ = await model.save(draft, unit: .miles)
+        XCTAssertEqual(ids.count, 3)
+        XCTAssertNotEqual(ids[2], ids[1])
+    }
+
+    func testARefusedSaveDoesNotPinItsID() async {
+        var ids: [String] = []
+        let model = AthleteThresholdsModel(
+            jwt: { "jwt" },
+            loader: { _ in [] },
+            adder: { input, _ in ids.append(input.id); throw APIError.http(409, #"{"error":"id_conflict"}"#) },
+            remover: { _, _ in })
+        var draft = ThresholdDraft(sport: .ride, metric: .ftp, today: Date())
+        draft.text = "250"
+        _ = await model.save(draft, unit: .miles)
+        _ = await model.save(draft, unit: .miles)
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertNotEqual(ids[0], ids[1])
     }
 
     func testRemoveDropsTheRowAndRefreshes() async {

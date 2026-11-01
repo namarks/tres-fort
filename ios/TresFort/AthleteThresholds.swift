@@ -220,6 +220,12 @@ struct AthleteThresholdInput: Equatable {
     let value: Double
     let effective_date: String
 
+    /// The same value from the same date, whatever its id.
+    func isRetry(of other: AthleteThresholdInput) -> Bool {
+        sport == other.sport && metric == other.metric && value == other.value
+            && effective_date == other.effective_date
+    }
+
     /// Exactly the fields POST /api/me/thresholds accepts; it rejects others.
     var body: [String: Any] {
         ["id": id, "sport": sport.rawValue, "metric": metric.rawValue,
@@ -267,14 +273,19 @@ final class AthleteThresholdsModel: ObservableObject {
     private let adder: (AthleteThresholdInput, String) async throws -> AthleteThreshold
     private let remover: (String, String) async throws -> Void
     private let onChanged: () -> Void
-    private let onUnauthorized: () -> Void
+    /// Called with the bearer a request was refused with, so the owner can
+    /// ignore a 401 that predates a renewed sign-in.
+    private let onUnauthorized: (String) -> Void
+    /// The last value that failed to save. Saving the same value again reuses
+    /// its id, so a POST that committed but lost its answer is not added twice.
+    private var unconfirmed: AthleteThresholdInput?
 
     init(jwt: @escaping () -> String?,
          loader: ((String) async throws -> [AthleteThreshold])? = nil,
          adder: ((AthleteThresholdInput, String) async throws -> AthleteThreshold)? = nil,
          remover: ((String, String) async throws -> Void)? = nil,
          onChanged: @escaping () -> Void = {},
-         onUnauthorized: @escaping () -> Void = {}) {
+         onUnauthorized: @escaping (String) -> Void = { _ in }) {
         let api = APIClient()
         self.jwt = jwt
         if let loader {
@@ -305,8 +316,10 @@ final class AthleteThresholdsModel: ObservableObject {
                 return auth.featureJWT
             },
             onChanged: { [weak auth] in auth?.noteAccountStatePersisted(for: accountID) },
-            onUnauthorized: { [weak auth] in
-                guard let auth, auth.userID == accountID else { return }
+            onUnauthorized: { [weak auth] refused in
+                // Only the bearer that was refused may end the session; a
+                // renewed or re-signed-in bearer stays.
+                guard let auth, auth.userID == accountID, auth.featureJWT == refused else { return }
                 auth.requireReauthentication()
             })
     }
@@ -318,7 +331,7 @@ final class AthleteThresholdsModel: ObservableObject {
             thresholds = try await loader(token)
             phase = .ready
         } catch {
-            handle(error)
+            handle(error, token: token)
             if thresholds.isEmpty { phase = .failed }
         }
     }
@@ -326,12 +339,14 @@ final class AthleteThresholdsModel: ObservableObject {
     /// Adds the draft's value, then removes the row it corrects. Returns true
     /// when the new value was saved.
     func save(_ draft: ThresholdDraft, unit: RunDistanceUnit) async -> Bool {
-        guard !isSaving, let input = draft.input(unit: unit), let token = jwt() else { return false }
+        guard !isSaving, let fresh = draft.input(unit: unit), let token = jwt() else { return false }
+        let input = unconfirmed.map { $0.isRetry(of: fresh) ? $0 : fresh } ?? fresh
         isSaving = true
         defer { isSaving = false }
         errorMessage = nil
         do {
             let saved = try await adder(input, token)
+            unconfirmed = nil
             thresholds.removeAll { $0.id == saved.id }
             thresholds.append(saved)
             if let old = draft.replacing {
@@ -339,13 +354,16 @@ final class AthleteThresholdsModel: ObservableObject {
                     try await remover(old.id, token)
                     thresholds.removeAll { $0.id == old.id }
                 } catch {
-                    handle(error, prefix: "The new value was saved, but the old one wasn’t removed")
+                    handle(error, token: token, prefix: "The new value was saved, but the old one wasn’t removed")
                 }
             }
             onChanged()
             return true
         } catch {
-            handle(error, prefix: "Nothing was saved")
+            // A refusal stored nothing; anything else may have committed.
+            unconfirmed = Self.isRejection(error) ? nil : input
+            handle(error, token: token, prefix: Self.isRejection(error)
+                   ? "Nothing was saved" : "It may not have been saved")
             return false
         }
     }
@@ -360,14 +378,20 @@ final class AthleteThresholdsModel: ObservableObject {
             thresholds.removeAll { $0.id == row.id }
             onChanged()
         } catch {
-            handle(error, prefix: "It wasn’t removed")
+            handle(error, token: token, prefix: "It wasn’t removed")
         }
     }
 
-    private func handle(_ error: Error, prefix: String? = nil) {
-        if case let APIError.http(code, _) = error, code == 401 { onUnauthorized() }
+    private func handle(_ error: Error, token: String, prefix: String? = nil) {
+        if case let APIError.http(code, _) = error, code == 401 { onUnauthorized(token) }
         let reason = Self.reason(error)
         errorMessage = prefix.map { "\($0). \(reason)" } ?? reason
+    }
+
+    /// The Worker answered and refused, so the row was not stored.
+    static func isRejection(_ error: Error) -> Bool {
+        if case let APIError.http(code, _) = error { return (400..<500).contains(code) }
+        return false
     }
 
     static func reason(_ error: Error) -> String {

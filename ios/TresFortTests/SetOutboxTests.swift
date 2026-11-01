@@ -4655,6 +4655,58 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.plan?.workouts[0].exercises[0].target_reps, ex.target_reps)
     }
 
+    func testRunStepsSaveSendsTheSteps() async throws {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.updateHandler = { APIClient.SlotIDRow(id: ex.id) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        let steps = RunPlan(items: [
+            .step(.init(kind: .warmup, durationSeconds: 600, distanceMeters: nil, target: nil)),
+            .repeated(times: 4, steps: [
+                .init(kind: .work, durationSeconds: nil, distanceMeters: 800,
+                      target: .pace(fastestSecondsPerKm: 245, slowestSecondsPerKm: 255)),
+            ]),
+        ])
+
+        let saved = await model.updateRunSteps(dayID: "day-a", teID: ex.id, steps: steps, expectedVersion: 7)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(editor.slotEditVersions, [7])
+        XCTAssertEqual(Array(editor.updatedFields.keys), ["run_steps"])
+        let sent = try XCTUnwrap(editor.updatedFields["run_steps"] as? [[String: Any]])
+        let text = try XCTUnwrap(String(data: JSONSerialization.data(withJSONObject: sent), encoding: .utf8))
+        XCTAssertEqual(RunPlan(json: text), steps)
+    }
+
+    func testClearingRunStepsSendsNull() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.updateHandler = { APIClient.SlotIDRow(id: ex.id) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+
+        let cleared = await model.updateRunSteps(dayID: "day-a", teID: ex.id, steps: nil, expectedVersion: 8)
+
+        XCTAssertTrue(cleared)
+        XCTAssertEqual(editor.slotEditVersions, [8])
+        XCTAssertTrue(editor.updatedFields["run_steps"] is NSNull)
+    }
+
     func testTargetSaveRefreshFailureCanReconcileNewerStateWithoutSecondWrite() async {
         let defaults = defaults()
         let original = exercise(targetSets: 3)

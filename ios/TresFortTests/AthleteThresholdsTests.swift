@@ -37,6 +37,11 @@ final class AthleteThresholdsTests: XCTestCase {
         XCTAssertEqual(value(on: "2026-09-01"), 290, "a later entry on the same date wins")
         XCTAssertEqual(value(on: "2026-11-01"), 290)
         XCTAssertEqual(AthleteThresholdHistory.upcoming(rows, sport: .run, metric: .pace, after: "2026-11-01")?.id, "d")
+        // Two later dates, two entries on the sooner one: the newest entry on
+        // the soonest date takes over next, as on the Worker.
+        let later = rows + [row("e", value: 270, date: "2026-12-01", created: 5),
+                            row("f", value: 260, date: "2027-01-01", created: 9)]
+        XCTAssertEqual(AthleteThresholdHistory.upcoming(later, sport: .run, metric: .pace, after: "2026-11-01")?.id, "e")
         XCTAssertNil(AthleteThresholdHistory.upcoming(rows, sport: .run, metric: .pace, after: "2026-12-01"))
         XCTAssertNil(AthleteThresholdHistory.inEffect(rows, sport: .run, metric: .heartRate, on: "2026-11-01"))
     }

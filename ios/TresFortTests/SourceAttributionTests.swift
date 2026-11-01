@@ -44,6 +44,38 @@ final class SourceAttributionTests: XCTestCase {
         XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.external_activities.first?.source_attribution, "Garmin Edge 840")
     }
 
+    func testCacheFromBeforeTrainingLoadReloadsActivitiesOnce() throws {
+        let name = "SourceAttributionTests.\(UUID().uuidString)"
+        let defaults = LocalPersistence(suiteName: name)!
+        defer {
+            defaults.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: defaults.trainingStore.directory)
+        }
+        let attributed = try activity(["source_attribution": "Garmin Edge 840", "attribution_version": 1])
+        let state = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],
+            external_events: [], external_activities: [attributed], activities: [],
+            server_time: 100_000, externalSyncCursorsVersion: 2, planGroupsVersion: 1)
+        let first = try XCTUnwrap(StateSnapshotStore.reserveFullStateRequest(userID: "user-a", defaults: defaults))
+        XCTAssertNotNil(StateSnapshotStore.commitStateResponse(state, ticket: first, defaults: defaults))
+        XCTAssertEqual(try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
+            .watermarks.activitiesSince, 40_000, "a full reload by this app is current")
+
+        // Rewrite the snapshot as an app without the marker left it: its
+        // activities dropped the load fields behind an advanced cursor.
+        let key = StateSnapshotStore.scopedKey(userID: "user-a")
+        let stored = try XCTUnwrap(StateSnapshotStore.decodedEnvelope(try XCTUnwrap(defaults.data(forKey: key))))
+        var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: stored) as? [String: Any])
+        XCTAssertEqual(envelope.removeValue(forKey: "activityRepresentation") as? Int, 1)
+        XCTAssertTrue(defaults.set(try JSONSerialization.data(withJSONObject: envelope), forKey: key))
+
+        let upgrade = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(upgrade.watermarks.activitiesSince, 0)
+        XCTAssertEqual(upgrade.watermarks.eventsSince, 40_000)
+        XCTAssertNotNil(StateSnapshotStore.commitStateResponse(state, ticket: upgrade, defaults: defaults))
+        let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(next.watermarks.activitiesSince, 40_000)
+    }
+
     func testGroupAttributionFollowsVisibleRangeAndSurvivesDailyBucketing() throws {
         let series = try JSONDecoder().decode(MemberActivitySeries.self, from: Data(#"{"user_id":"a","days":[{"date":"2026-09-01","sessions":0,"rides":1,"activities":{},"source_attribution":"Includes Garmin device-sourced data"}]}"#.utf8))
         let today = try XCTUnwrap(CalendarProjection.date(from: "2026-09-12"))

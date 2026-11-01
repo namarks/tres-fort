@@ -44,7 +44,16 @@ enum StateSnapshotStore {
         /// Keep separate from StateResponse's wire claim: decoding cached data
         /// must never upgrade a former sequential compatibility projection.
         var planGroupsVersion: Int? = nil
+        /// The activity representation `state.external_activities` was last
+        /// fully reloaded with. An older app dropped load fields it did not
+        /// know (migration 0060) while still advancing the activity cursor,
+        /// so a cache below the current version reloads activities once.
+        var activityRepresentation: Int? = nil
     }
+
+    /// Bump when `ExternalActivity` gains server fields that unchanged rows
+    /// behind the delta cursor must deliver. 1 = effective training load.
+    static let activityRepresentationVersion = 1
 
     /// One live envelope, shared by models using the same defaults object.
     /// Always compare persisted bytes first: another defaults instance/process,
@@ -148,7 +157,11 @@ enum StateSnapshotStore {
             storedWatermarks, certifiedVersion: current.planGroupsVersion)
         // Older snapshots predate source attribution. Re-fetch this collection
         // once even when unchanged provider rows sit behind the delta cursor.
-        if current.state?.external_activities.contains(where: { ($0.attribution_version ?? 0) < 1 }) == true {
+        // Likewise, a cache written before this app knew a newer activity
+        // representation (training load) reloads activities once.
+        if current.state?.external_activities.contains(where: { ($0.attribution_version ?? 0) < 1 }) == true
+            || (current.state != nil
+                && (current.activityRepresentation ?? 0) < activityRepresentationVersion) {
             watermarks = StateSyncWatermarks(
                 planVersion: watermarks.planVersion, setsSince: watermarks.setsSince,
                 eventsSince: watermarks.eventsSince, activitiesSince: 0,
@@ -197,7 +210,8 @@ enum StateSnapshotStore {
             mutationGeneration: current.mutationGeneration ?? 0,
             watermarks: current.watermarks,
             setsCommittedThrough: current.setsCommittedThrough,
-            planGroupsVersion: current.planGroupsVersion)
+            planGroupsVersion: current.planGroupsVersion,
+            activityRepresentation: current.activityRepresentation)
         guard write(reserved, userID: userID, defaults: defaults) else {
             return nil
         }
@@ -288,7 +302,9 @@ enum StateSnapshotStore {
             mutationGeneration: ticket.mutationGeneration,
             watermarks: nextWatermarks,
             setsCommittedThrough: response.server_time,
-            planGroupsVersion: planGroupsVersion)
+            planGroupsVersion: planGroupsVersion,
+            activityRepresentation: ticket.watermarks.activitiesSince == 0
+                ? activityRepresentationVersion : current.activityRepresentation)
         guard write(stored, userID: ticket.userID, defaults: defaults) else { return nil }
         return load(userID: ticket.userID, defaults: defaults)
     }
@@ -336,7 +352,8 @@ enum StateSnapshotStore {
                 groupAwareWatermarks($0, certifiedVersion: planGroupsVersion)
             },
             setsCommittedThrough: current.setsCommittedThrough,
-            planGroupsVersion: planGroupsVersion)
+            planGroupsVersion: planGroupsVersion,
+            activityRepresentation: current.activityRepresentation)
         guard write(stored, userID: userID, defaults: defaults) else {
             return nil
         }
@@ -621,7 +638,8 @@ enum StateSnapshotStore {
                 latestFullRequestRevision: stored.latestFullRequestRevision,
                 mutationGeneration: stored.mutationGeneration,
                 watermarks: nil, setsCommittedThrough: stored.setsCommittedThrough,
-                planGroupsVersion: stored.planGroupsVersion)
+                planGroupsVersion: stored.planGroupsVersion,
+                activityRepresentation: stored.activityRepresentation)
         }
         guard defaults.set(data, forKey: scopedKey(userID: userID)) else { return false }
         decodedCache = DecodedCache(defaults: defaults, userID: userID, data: data, stored: live)

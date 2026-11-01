@@ -112,10 +112,13 @@ enum AthleteThresholdHistory {
         return mine.first { $0.effective_date <= date } ?? mine.last
     }
 
-    /// The next row that takes over after `date`, if one is already set.
+    /// The next row that takes over after `date`, if one is already set: the
+    /// soonest later date, and the newest entry on that date.
     static func upcoming(_ all: [AthleteThreshold], sport: ThresholdSport,
                          metric: ThresholdMetric, after date: String) -> AthleteThreshold? {
-        rows(all, sport: sport, metric: metric).last { $0.effective_date > date }
+        let later = rows(all, sport: sport, metric: metric).filter { $0.effective_date > date }
+        guard let soonest = later.map(\.effective_date).min() else { return nil }
+        return later.first { $0.effective_date == soonest }
     }
 }
 

@@ -4,10 +4,13 @@ Durable repository guidance for coding agents working in this repository.
 
 ## What this is
 
-An AI-coached lifting system. The user chooses an external AI app (Codex,
-Claude, or another compatible MCP client) to adapt the training plan; members can also author reusable workouts and workout dates in
-the native iOS gym executor; a single
-Cloudflare Worker + D1 database is the source of truth both sides read/write.
+A multi-discipline training platform: lifting, runs, rides, swims and other
+activities on one plan, executed in the native iOS app (set-by-set runner, run
+recorder, iPad Station) and shared in private groups. Members author workouts,
+schedules and dates in the app; every feature must work without AI. Optionally,
+an external AI app (Codex, Claude, or another compatible MCP client) reads and
+adapts the same plan. A single Cloudflare Worker + D1 database is the source of
+truth both sides read/write.
 The backend contains **no AI** — it is pure data. Full rationale, schema, and
 the API/MCP surface live in `docs/DESIGN.md` (read it before non-trivial
 backend work).

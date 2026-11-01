@@ -1,16 +1,29 @@
 # tres-fort
 
-An AI-coached lifting system. **Bring your own AI coach** — connect Codex, Claude,
-or another compatible AI app to adapt your training plan through MCP. A **native iOS app** is the gym
-executor: you run the workout and log sets there. A **Cloudflare Worker + D1**
-is the single source of truth that both your AI coach and the app read and write.
+**Everything you train. One plan.** Très Fort is a training platform for people
+who lift *and* run, ride, swim or do anything else. Strength workouts, endurance
+sessions and imported activities share one plan and one calendar; a **native iOS
+app** guides every set and every planned run; private groups and the iPad
+Station let you train with other people. A **Cloudflare Worker + D1** is the
+single source of truth.
 
-The app has no in-app chat. Members can create routines, edit workouts and
-assign workout/rest dates directly; your AI coach can also build, adjust and analyze
-training through MCP. Both clients use the same versioned plan writers.
+Every feature works in the app on its own. AI is optional: connect Claude,
+Codex or another MCP app and it reads and edits the same plan through the same
+versioned writers, with every change recorded and reversible.
+
+- **Lifting:** reusable workouts, a guided set-by-set runner, rest timers on the
+  Lock Screen, supersets and circuits, timed holds, warm-ups, history and charts.
+- **Endurance:** an iPhone run recorder with planned pace and heart-rate steps
+  (beta), runs, rides and swims typed in by hand, and activities imported from
+  Apple Health (which Garmin Connect, Strava and others write to) or
+  intervals.icu.
+- **Planning:** a weekly schedule, one-off swaps and skips, trips, races and
+  phases, with full plan version history and restore.
+- **Together:** private groups with a shared feed, and the iPad Station where
+  two people train one workout, each logging to their own phone.
 
 ```
-   Your AI app               iOS app (SwiftUI)
+   Your AI app (optional)    iOS app (SwiftUI)
         │  MCP                      │  REST + Sign in with Apple
         ▼                           ▼
         └────────► Cloudflare Worker + D1 ◄────────┘
@@ -122,7 +135,7 @@ then all three Workers/D1 shards in sequence, stopping on the first failure.
 No secrets are committed; they live only as Cloudflare Worker secrets.
 `wrangler.jsonc` carries non-sensitive config (D1 id, bundle id).
 
-## Connect your AI coach
+## Connect an AI app (optional)
 
 Open the iOS app → **Profile → Coach → Set up your AI coach**. Choose Codex,
 Claude, or Other compatible app, review the data-sharing disclosure, and generate

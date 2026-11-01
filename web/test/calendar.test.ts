@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { StateResponse } from '../src/api';
+import type { StateActivity, StateResponse } from '../src/api';
 import {
+  activityLoad,
+  activityLoads,
   calendarInputs,
+  describeDistance,
   describeRunSteps,
   describeSlot,
+  itemLoad,
   localToday,
   monthWeeks,
   orderedSlots,
@@ -129,9 +133,26 @@ describe('workout details', () => {
       'Warm up 10:00',
       '4 × (Run 800 m at 4:00–4:10 /km, Recover 2:00 at 120–140 bpm)',
     ]);
-    expect(describeRunSteps(raw, true)[1]).toBe('4 × (Run 0.5 mi at 6:26–6:42 /mi, Recover 2:00 at 120–140 bpm)');
+    expect(describeRunSteps(raw, true)[1]).toBe('4 × (Run 800 m at 6:26–6:42 /mi, Recover 2:00 at 120–140 bpm)');
+    const single = JSON.stringify([{ kind: 'work', duration_s: 2400, target: { type: 'heart_rate', min_bpm: 140, max_bpm: 140 } }]);
+    expect(describeRunSteps(single, false)).toEqual(['Run 40:00 at 140 bpm']);
     expect(describeRunSteps('not json', true)).toEqual([]);
     expect(describeRunSteps(null, true)).toEqual([]);
+  });
+
+  it('reads distances as the app does: meters under a kilometer, else up to two decimals', () => {
+    expect(describeDistance(50, true)).toBe('50 m');
+    expect(describeDistance(400, true)).toBe('400 m');
+    expect(describeDistance(999.6, false)).toBe('1000 m');
+    expect(describeDistance(1000, false)).toBe('1 km');
+    expect(describeDistance(1250, false)).toBe('1.25 km');
+    expect(describeDistance(1609.344, true)).toBe('1 mi');
+    expect(describeDistance(5000, true)).toBe('3.11 mi');
+    expect(describeDistance(1500, true)).toBe('0.93 mi');
+  });
+
+  it('keeps two decimals of a load', () => {
+    expect(describeSlot(slot({ target_weight: 21.25, target_weight_unit: 'kg', rest_seconds: 0 }))).toBe('3 × 5 @ 21.25 kg');
   });
 
   it('uses miles for US and UK locales only', () => {
@@ -139,5 +160,48 @@ describe('workout details', () => {
     expect(prefersMiles('en-GB')).toBe(true);
     expect(prefersMiles('fr-FR')).toBe(false);
     expect(prefersMiles('de')).toBe(false);
+  });
+});
+
+describe('activity load', () => {
+  function activity(overrides: Partial<StateActivity>): StateActivity {
+    return {
+      id: 'intervals:a1', user_id: 'u1', source: 'intervals', external_id: 'a1', date: '2026-10-30', kind: 'run',
+      name: 'Easy run', moving_time_sec: 2400, elapsed_time_sec: 2500, distance_m: 7000, average_watts: null,
+      weighted_avg_watts: null, average_hr: 140, max_hr: 160, training_load: null, intensity: null, calories: null,
+      elevation_gain_m: null, raw: null, synced_at: 0, deleted_at: null, canonical: 1, duplicate_of: null,
+      ...overrides,
+    } as StateActivity;
+  }
+
+  it('shows the effective load and its method, not the provider figure alone', () => {
+    expect(activityLoad(activity({ training_load: null, effective_load: 42, load_method: 'heart_rate' })))
+      .toEqual({ load: 42, method: 'heart_rate' });
+    expect(activityLoad(activity({ training_load: 60, effective_load: 60, load_method: 'provider' })))
+      .toEqual({ load: 60, method: 'provider' });
+  });
+
+  it('leaves missing data unknown', () => {
+    expect(activityLoad(activity({ training_load: null, effective_load: null, load_method: null }))).toBeNull();
+    expect(activityLoad(activity({ training_load: null }))).toBeNull();
+  });
+
+  it('falls back to the provider load from an API without effective loads', () => {
+    expect(activityLoad(activity({ training_load: 55 }))).toEqual({ load: 55, method: 'provider' });
+  });
+
+  it('carries completed loads through the calendar and keeps planned events their own', () => {
+    const s = state({
+      external_activities: [activity({ id: 'intervals:a1', training_load: null, effective_load: 42, load_method: 'pace' })],
+      external_events: [{
+        id: 'intervals:e1', user_id: 'u1', source: 'intervals', external_id: 'e1', date: '2026-11-03', kind: 'ride',
+        title: 'Endurance ride', description: null, planned_duration_sec: 3600, training_load: 50, intensity: null,
+        raw: null, synced_at: 0, deleted_at: null,
+      }],
+    });
+    const cells = projectRange(calendarInputs(s)!, '2026-10-30', '2026-11-03', '2026-11-01');
+    const loads = activityLoads(s);
+    expect(itemLoad(cells.get('2026-10-30')!.items[0]!, loads)).toEqual({ load: 42, method: 'pace' });
+    expect(itemLoad(cells.get('2026-11-03')!.items[0]!, loads)).toEqual({ load: 50, method: null });
   });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchMe, fetchState, signOut, SignedOutError, type Me, type StateResponse } from './api';
 import {
+  activityLoads,
   calendarInputs,
   describeRunSteps,
   describeSlot,
@@ -8,6 +9,8 @@ import {
   formatClock,
   formatLongDate,
   formatMonth,
+  itemLoad,
+  LOAD_METHOD_LABELS,
   localToday,
   monthOf,
   monthWeeks,
@@ -19,6 +22,7 @@ import {
   tripOn,
   WEEKDAY_LABELS,
   type CalendarCell,
+  type ShownLoad,
   type Workout,
 } from './model';
 import { WEEKDAYS, type WeeklySchedule } from '../../src/types';
@@ -100,6 +104,7 @@ function Planner({ me, state, onSignedOut }: { me: Me; state: StateResponse; onS
     [cells, inputs, selected, today],
   );
   const workouts = useMemo(() => new Map((plan?.workouts ?? []).map((w) => [w.id, w])), [plan]);
+  const loads = useMemo(() => activityLoads(state), [state]);
 
   async function handleSignOut() {
     await signOut();
@@ -162,6 +167,7 @@ function Planner({ me, state, onSignedOut }: { me: Me; state: StateResponse; onS
             workout={workoutFor(selectedCell, workouts)}
             trip={tripOn(selected, plan.trips ?? [])}
             miles={miles}
+            loads={loads}
           />
         </main>
       )}
@@ -227,8 +233,9 @@ function DayDetail(props: {
   workout: Workout | undefined;
   trip: ReturnType<typeof tripOn>;
   miles: boolean;
+  loads: Map<string, ShownLoad | null>;
 }) {
-  const { date, cell, workout, trip, miles } = props;
+  const { date, cell, workout, trip, miles, loads } = props;
   return (
     <aside className="detail" aria-labelledby="detail-title">
       <h2 id="detail-title">{formatLongDate(date)}</h2>
@@ -269,16 +276,20 @@ function DayDetail(props: {
         <section>
           <h3>Endurance</h3>
           <ul className="slots">
-            {cell.items.map((item) => (
-              <li key={item.id}>
-                <div className="slot-name">{item.title ?? ENDURANCE_LABELS[item.kind] ?? 'Activity'}</div>
-                <div className="muted">
-                  {ENDURANCE_LABELS[item.kind] ?? 'Activity'} · {item.completed ? 'Done' : 'Planned'}
-                  {item.planned_duration_sec ? ` · ${formatClock(item.planned_duration_sec)}` : ''}
-                  {item.training_load ? ` · load ${Math.round(item.training_load)}` : ''}
-                </div>
-              </li>
-            ))}
+            {cell.items.map((item) => {
+              const load = itemLoad(item, loads);
+              const method = load?.method ? LOAD_METHOD_LABELS[load.method] : undefined;
+              return (
+                <li key={item.id}>
+                  <div className="slot-name">{item.title ?? ENDURANCE_LABELS[item.kind] ?? 'Activity'}</div>
+                  <div className="muted">
+                    {ENDURANCE_LABELS[item.kind] ?? 'Activity'} · {item.completed ? 'Done' : 'Planned'}
+                    {item.planned_duration_sec ? ` · ${formatClock(item.planned_duration_sec)}` : ''}
+                    {load ? ` · load ${Math.round(load.load)}${method ? ` (${method})` : ''}` : ''}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </section>
       ) : null}

@@ -13,7 +13,7 @@ import {
 import { coachGroupSlots } from '../../src/exerciseGroupViews';
 import { parseRunSteps, type RunPlanItem, type RunStep, type RunStepTarget } from '../../src/runSteps';
 import { WEEKDAYS, type EnrichedTemplateExercise, type Trip, type Weekday } from '../../src/types';
-import type { StatePlan, StateResponse } from './api';
+import type { StateActivity, StatePlan, StateResponse } from './api';
 
 export type { CalendarCell };
 export type Workout = StatePlan['workouts'][number];
@@ -69,6 +69,45 @@ export function projectRange(
 ): Map<string, CalendarCell> {
   return new Map(projectCalendarWindow(inputs, from, to, today).map((cell) => [cell.date, cell]));
 }
+
+export interface ShownLoad {
+  load: number;
+  /** How the load was worked out (`load_method`), or null for a planned event. */
+  method: string | null;
+}
+
+/**
+ * The load a completed activity shows: `effective_load` and its
+ * `load_method`, never the provider's raw `training_load` alone (AGENTS.md).
+ * An API Worker without migration 0060 sends no effective load; its provider
+ * load is then shown as such. Missing data stays unknown.
+ */
+export function activityLoad(activity: StateActivity): ShownLoad | null {
+  if (activity.effective_load !== undefined) {
+    return activity.effective_load === null ? null : { load: activity.effective_load, method: activity.load_method ?? null };
+  }
+  return activity.training_load === null ? null : { load: activity.training_load, method: 'provider' };
+}
+
+/** Shown loads of completed activities by id, for the day panel. */
+export function activityLoads(state: StateResponse): Map<string, ShownLoad | null> {
+  return new Map(state.external_activities.map((a) => [a.id, activityLoad(a)]));
+}
+
+/** A calendar item's load: a completed activity's shown load, or a planned event's own. */
+export function itemLoad(item: CalendarCell['items'][number], loads: Map<string, ShownLoad | null>): ShownLoad | null {
+  if (item.completed) return loads.get(item.id) ?? null;
+  return item.training_load === null ? null : { load: item.training_load, method: null };
+}
+
+export const LOAD_METHOD_LABELS: Record<string, string> = {
+  provider: 'from the provider',
+  power: 'from power',
+  power_summary: 'from average power',
+  heart_rate: 'from heart rate',
+  heart_rate_average: 'from average heart rate',
+  pace: 'from pace',
+};
 
 export function tripOn(date: string, trips: Trip[]): Trip | null {
   return trips.find((trip) => trip.start <= date && date <= trip.end) ?? null;
@@ -138,8 +177,9 @@ export function describeSlot(slot: Slot): string {
   return parts.join(' · ');
 }
 
+/** Up to two decimals without trailing zeros: "225", "22.5", "1.25". */
 function trimNumber(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
+  return String(Math.round(value * 100) / 100);
 }
 
 /** Whether to show distances and paces in miles (US, UK, Liberia, Myanmar). */
@@ -154,25 +194,32 @@ export function prefersMiles(locale: string = typeof navigator === 'undefined' ?
 
 const METERS_PER_MILE = 1609.344;
 
+function range(low: string, high: string): string {
+  return low === high ? low : `${low}–${high}`;
+}
+
 function describeTarget(target: RunStepTarget, miles: boolean): string {
-  if (target.type === 'heart_rate') return `${target.min_bpm}–${target.max_bpm} bpm`;
+  if (target.type === 'heart_rate') return `${range(String(target.min_bpm), String(target.max_bpm))} bpm`;
   const scale = miles ? METERS_PER_MILE / 1000 : 1;
   const fast = formatClock(Math.round(target.fastest_s_per_km * scale));
   const slow = formatClock(Math.round(target.slowest_s_per_km * scale));
-  return `${fast}–${slow} /${miles ? 'mi' : 'km'}`;
+  return `${range(fast, slow)} /${miles ? 'mi' : 'km'}`;
+}
+
+/**
+ * As the app's RunPlan reads them: under a kilometer in meters, as track
+ * intervals are planned; otherwise up to two decimals of a mile or km.
+ */
+export function describeDistance(meters: number, miles: boolean): string {
+  if (meters < 1000) return `${Math.round(meters)} m`;
+  return `${trimNumber(meters / (miles ? METERS_PER_MILE : 1000))} ${miles ? 'mi' : 'km'}`;
 }
 
 function describeStep(step: RunStep, miles: boolean): string {
   const kind = { warmup: 'Warm up', work: 'Run', recovery: 'Recover', cooldown: 'Cool down' }[step.kind];
   let amount = '';
   if (step.duration_s !== undefined) amount = formatClock(step.duration_s);
-  else if (step.distance_m !== undefined) {
-    amount = miles
-      ? `${trimNumber(Math.round((step.distance_m / METERS_PER_MILE) * 100) / 100)} mi`
-      : step.distance_m >= 1000
-        ? `${trimNumber(Math.round(step.distance_m / 10) / 100)} km`
-        : `${step.distance_m} m`;
-  }
+  else if (step.distance_m !== undefined) amount = describeDistance(step.distance_m, miles);
   const target = step.target ? ` at ${describeTarget(step.target, miles)}` : '';
   return `${kind}${amount ? ` ${amount}` : ''}${target}`;
 }

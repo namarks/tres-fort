@@ -15,12 +15,17 @@ export type StatePlan = PlanTree & {
   workouts: (PlanTree['workouts'][number] & { exercises: EnrichedTemplateExercise[] })[];
 };
 
+type LoadFields = 'effective_load' | 'effective_intensity' | 'load_method';
+
+/** A completed activity; an API Worker without migration 0060 omits the load fields. */
+export type StateActivity = Omit<ExternalActivityRow, LoadFields> & Partial<Pick<ExternalActivityRow, LoadFields>>;
+
 export interface StateResponse {
   plan: StatePlan | null;
   plan_version: number;
   sessions: SessionRow[];
   external_events: ExternalEventRow[];
-  external_activities: ExternalActivityRow[];
+  external_activities: StateActivity[];
 }
 
 export interface Me {

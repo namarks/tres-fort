@@ -340,6 +340,33 @@ final class TodayNavigationJourneyTests: XCTestCase {
         capture("calendar-continued-workout")
     }
 
+    func testPlanTabContinuesTheRunningWorkoutAndBlocksAnother() {
+        let app = launch()
+        openCalendar(in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        tap(app.buttons["calendar.startWorkout"], in: app)
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        let exerciseName = app.staticTexts["runner.exerciseTitle"].label
+        tap(app.buttons["LOG SET 1"], in: app)
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        tap(app.buttons["runner.minimize"], in: app)
+
+        tap(app.tabBars.buttons["Plan"], in: app)
+        tap(app.buttons["library.workout.strength-b"], in: app)
+        XCTAssertTrue(app.navigationBars["Strength B"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["workoutDetails.start"].isEnabled,
+                       "Another workout must not replace the one in progress")
+        tap(app.navigationBars["Strength B"].backButton, in: app)
+
+        tap(app.buttons["library.workout.synthetic-day"], in: app)
+        let start = app.buttons["workoutDetails.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertEqual(start.label, "Continue workout")
+        tap(start, in: app)
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, exerciseName)
+    }
+
     func testCalendarStartPreparesRestNotificationsBeforeLogging() {
         let app = launch(restCues: true)
         openCalendar(in: app)

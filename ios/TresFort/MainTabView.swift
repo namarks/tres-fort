@@ -279,8 +279,11 @@ struct MainTabView: View {
     /// it on Today, where the runner lives. Details disable Start when today
     /// is already completed or another workout blocks a new one.
     private func startFromPlan(_ id: String) {
+        guard !continueRunner(id) else { return }
         Task { @MainActor in
             await RestCue.requestNotificationPermissionIfNeeded()
+            // The permission prompt can outlast a start from elsewhere.
+            guard !continueRunner(id) else { return }
             if sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == id {
                 sync.resumeWorkout()
             } else {
@@ -288,5 +291,14 @@ struct MainTabView: View {
             }
             resumeWorkout()
         }
+    }
+
+    /// A workout already on the runner carries on as it is: starting it again
+    /// would reset its progress, and another can't replace it. Returns
+    /// whether the runner was busy.
+    private func continueRunner(_ id: String) -> Bool {
+        guard sync.running else { return false }
+        if sync.selectedDayID == id { resumeWorkout() }
+        return true
     }
 }

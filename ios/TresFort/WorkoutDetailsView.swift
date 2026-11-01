@@ -17,7 +17,13 @@ struct WorkoutDetailsView: View {
     @State private var refreshing = false
 
     private var workout: Workout? { sync.workout(id: workoutID) }
-    private var canResume: Bool { sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == workoutID }
+    /// The workout on the runner (open or minimized) continues from here; it
+    /// is never restarted. Another workout can't replace it until it ends.
+    private var isOnRunner: Bool { sync.running && sync.selectedDayID == workoutID }
+    private var anotherIsRunning: Bool { sync.running && !isOnRunner }
+    private var canResume: Bool {
+        isOnRunner || (sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == workoutID)
+    }
 
     var body: some View {
         Group {
@@ -89,10 +95,12 @@ struct WorkoutDetailsView: View {
             if let onStart {
                 Button(canResume ? "Continue workout" : "Start this workout") { onStart(workout.id) }
                     .buttonStyle(WorkoutPrimaryButtonStyle())
-                    .disabled(workout.exercises.isEmpty || (sync.blocksNewWorkoutStart && !canResume)
+                    .disabled(workout.exercises.isEmpty || anotherIsRunning
+                        || (sync.blocksNewWorkoutStart && !canResume)
                         || sync.todayIsCompleted || sync.isRoutineMutationInFlight)
                     .accessibilityIdentifier("workoutDetails.start")
-                Text("Today only. Weekly schedule unchanged.")
+                Text(anotherIsRunning ? "Finish the workout in progress before starting another."
+                     : "Today only. Weekly schedule unchanged.")
                     .font(.footnote).foregroundStyle(Theme.muted)
             } else if let date {
                 Button(saving ? "Saving…" : "Schedule for " + DateLabel.long(date)) {

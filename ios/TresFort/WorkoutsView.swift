@@ -135,7 +135,11 @@ struct WorkoutsView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .sheet(isPresented: $addingDay) {
                 CreateWorkoutView(sync: sync, onStart: onStart.map { start in
-                    { id in dismiss(); start(id) }
+                    { id in
+                        // The tab stays put and only its sheet closes.
+                        if isTabRoot { addingDay = false } else { dismiss() }
+                        start(id)
+                    }
                 })
             }
             .alert("Rename workout", isPresented: Binding(

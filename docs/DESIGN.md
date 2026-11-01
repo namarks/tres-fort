@@ -1,8 +1,9 @@
 # tres-fort — Design Doc
 
-> The user chooses their AI coach (Codex, Claude, or another compatible app).
-> It adapts the shared plan through conversation; members can also author
-> reusable workouts and workout dates directly in iOS.
+> Positioning (2026-11-01): one plan for everything you train. Members author
+> workouts, schedules and dates directly in iOS, and every feature works without
+> AI. Optionally, an AI app the member chooses (Codex, Claude, or another
+> compatible app) adapts the same shared plan through conversation.
 > You execute and log in a native iOS app. A Cloudflare backend is the
 > single source of truth that both the coach (via MCP) and the app read/write.
 

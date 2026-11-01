@@ -85,11 +85,12 @@ class IOSScopeTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         steps = dict(re.findall(r'      - name: ([^\n]+)\n(.*?)(?=\n      - |\n  [a-z]|\Z)',
                                 workflow, re.S))
-        job_name = re.search(r'  ios-tests:\n    name: ([^\n]+)', workflow).group(1)
+        job_name = re.search(r'  ios-tests:\n(?:    #[^\n]*\n)*    name: ([^\n]+)', workflow).group(1)
+        # A skipped job shows its raw name, so it must not depend on the matrix.
+        self.assertNotIn('matrix', job_name)
         lists = device_lists()
         for family, device in [('iPhone', 'iPhone-17-Pro'), ('iPad', 'iPad-Pro-13-inch-M4-8GB')]:
             step = steps[f'{family} App Store build and tests']
-            self.assertIn(f"matrix.shard == 'app-store-{family.lower()}' && '{family} App Store'", job_name)
             self.assertIn("APP_STORE_BUILD: '1'", step)
             self.assertIn(f'--device com.apple.CoreSimulator.SimDeviceType.{device}', step)
             self.assertIn(f'--only-testing-file .github/ios-tests/app-store-{family.lower()}.txt', step)
@@ -107,6 +108,35 @@ class IOSScopeTests(unittest.TestCase):
                       steps['iPad Station build and tests'])
         for suite in ['StationJourneyTests', 'IpadWorkoutDisplayJourneyTests']:
             self.assertIn('TresFortUITests/' + suite, lists['station'])
+
+    def test_documentation_only_changes_skip_backend_tests(self):
+        for event in ['pull_request', 'push']:
+            self.assertEqual(policy.select_backend(event, [
+                'docs/plans/web-app/plan.md', 'docs/plans/README.md', 'README.md',
+                'AGENTS.md', '.agents/skills/codex-gate/SKILL.md',
+            ]), 'skip')
+            for path in ['src/db.ts', 'test/api.test.ts', 'migrations/0059_x.sql',
+                         'package.json', 'ios/TresFort/App.swift', '.github/workflows/ci.yml',
+                         'scripts/ci-ios-scope.py', 'new-tool.conf']:
+                self.assertEqual(policy.select_backend(event, ['docs/note.md', path]), 'run')
+        for event in ['schedule', 'workflow_dispatch']:
+            self.assertEqual(policy.suite_for_checkout(event, select=policy.select_backend), 'run')
+        self.assertEqual(policy.suite_for_checkout('push', '0' * 40, policy.select_backend), 'run')
+        with patch.object(policy.subprocess, 'check_output', return_value=b'docs/a.md\0') as diff:
+            self.assertEqual(policy.suite_for_checkout(
+                'pull_request', select=policy.select_backend), 'skip')
+            diff.assert_called_once()
+
+    def test_workflow_gates_backend_shards_on_scope_and_requires_the_aggregate(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertIn('--target backend', workflow)
+        shards = re.search(r'  backend-tests:\n(.*?)\n  backend:\n', workflow, re.S).group(1)
+        self.assertIn('needs: plans', shards)
+        self.assertIn("needs.plans.outputs.backend == 'run'", shards)
+        aggregate = re.search(r'  backend:\n(.*)', workflow, re.S).group(1)
+        self.assertIn('name: typecheck + tests', aggregate)
+        self.assertIn('skip) test "$RESULT" = skipped', aggregate)
+        self.assertIn('run) test "$RESULT" = success', aggregate)
 
     def test_pull_request_compares_tested_merge_with_base_and_preserves_paths(self):
         with patch.object(policy.subprocess, 'check_output', return_value=

@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ios-suite: ${{ steps.ios-scope.outputs.suite }}
+      backend: ${{ steps.backend-scope.outputs.backend }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,9 +44,22 @@ jobs:
           suite="$(python3 scripts/ci-ios-scope.py --event "$EVENT" --before "$BEFORE")"
           echo "suite=$suite" >> "$GITHUB_OUTPUT"
           echo "iOS coverage: $suite"
+      # Documentation-only changes skip the backend shards; the plan graph
+      # check above still validates docs/plans.
+      - name: Select backend tests
+        id: backend-scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          backend="$(python3 scripts/ci-ios-scope.py --target backend --event "$EVENT" --before "$BEFORE")"
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "Backend tests: $backend"
 
   ios-tests:
-    name: ${{ matrix.shard == 'station' && 'iPad Station' || matrix.shard == 'app-store-iphone' && 'iPhone App Store' || matrix.shard == 'app-store-ipad' && 'iPad App Store' || needs.plans.outputs.ios-suite == 'full' && format('iOS full ({0}/6)', matrix.shard) || 'iOS smoke' }}
+    # A skipped job never expands its matrix, so its name must not use it:
+    # GitHub appends the shard, e.g. "iOS smoke (1)" or "iOS full (station)".
+    name: iOS ${{ needs.plans.outputs.ios-suite }}
     needs: plans
     # Standard public-repository capacity only; never opt into a paid runner.
     if: github.event.repository.private == false && needs.plans.outputs.ios-suite != 'skip'
@@ -133,7 +147,10 @@ jobs:
           esac
 
   backend-tests:
-    name: backend tests (${{ matrix.shard }}/3)
+    # GitHub appends the shard: "backend tests (1)".
+    name: backend tests
+    needs: plans
+    if: needs.plans.outputs.backend == 'run'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -169,11 +186,19 @@ jobs:
 
   backend:
     name: typecheck + tests
-    needs: backend-tests
+    needs: [plans, backend-tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Require every backend shard
         env:
           RESULT: ${{ needs.backend-tests.result }}
-        run: test "$RESULT" = success
+          SCOPE_RESULT: ${{ needs.plans.result }}
+          BACKEND: ${{ needs.plans.outputs.backend }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          case "$BACKEND" in
+            skip) test "$RESULT" = skipped ;;
+            run) test "$RESULT" = success ;;
+            *) exit 1 ;;
+          esac

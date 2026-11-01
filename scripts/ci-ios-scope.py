@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select full, smoke, or skipped iOS verification without path-filtered checks."""
+"""Select iOS coverage (full, smoke or skip) and whether backend tests run, without path-filtered checks."""
 import argparse
 import re
 import subprocess
@@ -37,9 +37,22 @@ def select_suite(event, paths=()):
     return 'skip' if all(unrelated(path) for path in paths) else 'smoke'
 
 
-def suite_for_checkout(event, before=None):
+def select_backend(event, paths=()):
+    """Backend tests run unless every changed path is documentation."""
     if event in ('schedule', 'workflow_dispatch'):
-        return select_suite(event)
+        return 'run'
+    if event not in ('pull_request', 'push'):
+        raise ValueError('Unsupported CI event: ' + event)
+    # The plan graph check still validates docs/plans on every run. Nothing
+    # the backend jobs build or test reads Markdown or docs/.
+    def documentation(path):
+        return path.startswith('docs/') or path.endswith('.md')
+    return 'skip' if paths and all(documentation(path) for path in paths) else 'run'
+
+
+def suite_for_checkout(event, before=None, select=select_suite):
+    if event in ('schedule', 'workflow_dispatch'):
+        return select(event)
     if event == 'pull_request':
         # checkout uses GitHub's tested merge commit; its first parent is base.
         base = 'HEAD^1'
@@ -47,7 +60,7 @@ def suite_for_checkout(event, before=None):
         if before is None or re.fullmatch(r'[0-9a-f]{40}', before) is None:
             raise ValueError('Push CI requires the before commit SHA')
         if before == '0' * 40:
-            return 'smoke'
+            return select(event, ['<new branch>'])
         base = before
     else:
         raise ValueError('Unsupported CI event: ' + event)
@@ -56,12 +69,14 @@ def suite_for_checkout(event, before=None):
         ['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'],
     )
     paths = changed.decode('utf-8', errors='surrogateescape').split('\0')
-    return select_suite(event, [path for path in paths if path])
+    return select(event, [path for path in paths if path])
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--event', required=True)
     parser.add_argument('--before')
+    parser.add_argument('--target', choices=['ios', 'backend'], default='ios')
     args = parser.parse_args()
-    print(suite_for_checkout(args.event, args.before))
+    select = select_backend if args.target == 'backend' else select_suite
+    print(suite_for_checkout(args.event, args.before, select))

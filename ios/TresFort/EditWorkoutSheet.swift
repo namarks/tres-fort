@@ -959,7 +959,7 @@ private struct EditExerciseTargetView: View {
     private var loadSection: some View {
         Section {
             HStack(spacing: 12) {
-                TextField(slot.allowsAssistance ? "Bodyweight" : "No target", text: $load.text)
+                TextField("No target", text: $load.text)
                     .keyboardType(slot.allowsAssistance ? .numbersAndPunctuation : .decimalPad)
                     .accessibilityLabel("Target weight in \(load.unit.rawValue)")
                     .accessibilityIdentifier("slot.targetWeight")
@@ -986,7 +986,7 @@ private struct EditExerciseTargetView: View {
             Text(slot.isPerHand ? "Weight · each hand" : "Weight")
         } footer: {
             Text(slot.allowsAssistance
-                 ? "Leave empty for bodyweight. Added load is a positive number, assistance a negative one."
+                 ? "Enter 0 for bodyweight, added load as a positive number and assistance as a negative one. Leave it empty to start from your last set."
                  : "Each set starts at this weight. Leave it empty to start from your last set.")
         }
     }

@@ -279,3 +279,78 @@ describe('effective training load', () => {
     expect(payload.activities[0]).toMatchObject({ training_load: null, load: 69, load_method: 'pace' });
   });
 });
+
+// Detail streams on Apple Health pushes (migration 0061,
+// docs/plans/endurance-training-load P3).
+describe('Apple Health detail streams', () => {
+  const stream = (value: number, seconds: number, step = 1) => ({
+    t: Array.from({ length: Math.round(seconds / step) }, (_, i) => i * step),
+    v: Array.from({ length: Math.round(seconds / step) }, () => value),
+  });
+  const ride = { kind: 'ride', name: 'Ride', distance_m: 30000, average_hr: 140 };
+  const stored = (id: string) =>
+    env.DB.prepare('SELECT stream_np_w, stream_hr_rms, stream_hr_sec, effective_load, load_method FROM external_activities WHERE id=?1')
+      .bind(id).first<any>();
+
+  it('scores a ride from its power and heart-rate samples and rescores when thresholds change', async () => {
+    const u = await makeUser('streams');
+    await setThreshold(u.jwt, 'ride', 'threshold_hr', 150);
+    const hkId = crypto.randomUUID();
+    const body = { id: hkId, ...ride, streams: { heart_rate: stream(150, 3600, 5), power: stream(200, 3600) } };
+    // An hour at threshold heart rate.
+    const pushed = await pushHealthRun(u.jwt, body);
+    expect(pushed).toMatchObject({ effective_load: 100, effective_intensity: 100, load_method: 'heart_rate' });
+    // Samples every 5 s; the last one holds a single second.
+    expect(await stored(pushed.id)).toMatchObject({ stream_np_w: 200, stream_hr_rms: 150, stream_hr_sec: 3596 });
+
+    // FTP 250: an hour at 200 W normalized is (200/250)² × 100.
+    const ftp = await setThreshold(u.jwt, 'ride', 'ftp_w', 250);
+    expect(await row(pushed.id)).toMatchObject({ effective_load: 64, effective_intensity: 80, load_method: 'power' });
+    await SELF.fetch(`${BASE}/api/me/thresholds/${ftp}`, { method: 'DELETE', headers: headers(u.jwt) });
+    expect(await row(pushed.id)).toMatchObject({ effective_load: 100, load_method: 'heart_rate' });
+
+    // A push from an app that sends no streams keeps the stored summaries.
+    const { streams: _omit, ...withoutStreams } = body;
+    await pushHealthRun(u.jwt, { ...withoutStreams, name: 'Morning ride' });
+    expect(await stored(pushed.id)).toMatchObject({ stream_hr_rms: 150, load_method: 'heart_rate' });
+
+    // Streams sent as none clear them; average heart rate is what is left.
+    await pushHealthRun(u.jwt, { ...body, streams: null });
+    expect(await stored(pushed.id)).toMatchObject({
+      stream_np_w: null, stream_hr_rms: null, stream_hr_sec: null, load_method: 'heart_rate_average',
+    });
+  });
+
+  it('keeps a sparse stream out of the load', async () => {
+    const u = await makeUser('sparse');
+    await setThreshold(u.jwt, 'ride', 'threshold_hr', 150);
+    // Heart rate every ten minutes, as Zwift writes it to Apple Health.
+    const pushed = await pushHealthRun(u.jwt, { ...ride, streams: { heart_rate: stream(150, 3600, 600) } });
+    expect(await stored(pushed.id)).toMatchObject({ stream_hr_rms: null, stream_hr_sec: null });
+    expect(pushed).toMatchObject({ load_method: 'heart_rate_average' });
+  });
+
+  it('rejects malformed streams before writing', async () => {
+    const u = await makeUser('bad-streams');
+    for (const streams of [
+      { heart_rate: { t: [0, 1], v: [150] } },
+      { cadence: { t: [0], v: [90] } },
+      { power: { t: [0, -1], v: [200, 200] } },
+      { power: { t: [0], v: ['200'] } },
+      [1, 2],
+    ]) {
+      const id = crypto.randomUUID();
+      const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+        method: 'POST',
+        headers: headers(u.jwt),
+        body: JSON.stringify({
+          id, date: '2026-10-24', start_date_local_ms: Date.parse('2026-10-24T12:14:00Z'), kind: 'ride', streams,
+        }),
+      });
+      expect(r.status).toBe(400);
+      expect(await r.json()).toEqual({ error: 'invalid_streams' });
+    }
+    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM external_activities WHERE user_id=?1').bind(u.id).first<{ n: number }>();
+    expect(count?.n).toBe(0);
+  });
+});

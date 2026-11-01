@@ -19,6 +19,9 @@ interface LoadRow {
   weighted_avg_watts: number | null;
   training_load: number | null;
   intensity: number | null;
+  stream_np_w: number | null;
+  stream_hr_rms: number | null;
+  stream_hr_sec: number | null;
   effective_load: number | null;
   effective_intensity: number | null;
   load_method: LoadMethod | null;
@@ -41,6 +44,11 @@ export function effectiveLoadFor(row: Omit<LoadRow, 'id' | 'deleted_at' | 'effec
       weighted_avg_watts: row.weighted_avg_watts,
       provider_load: row.training_load,
       provider_intensity: row.intensity,
+      stream_np_w: row.stream_np_w,
+      hr_summary:
+        row.stream_hr_rms !== null && row.stream_hr_sec !== null
+          ? { rms_bpm: row.stream_hr_rms, seconds: row.stream_hr_sec }
+          : null,
     },
     set,
   );
@@ -83,7 +91,8 @@ export async function refreshActivityLoads(
       db
         .prepare(
           `SELECT id, deleted_at, date, kind, moving_time_sec, distance_m, average_hr, weighted_avg_watts,
-                  training_load, intensity, effective_load, effective_intensity, load_method
+                  training_load, intensity, stream_np_w, stream_hr_rms, stream_hr_sec,
+                  effective_load, effective_intensity, load_method
              FROM external_activities
             WHERE user_id = ?1
               AND (deleted_at IS NULL OR (source = 'healthkit' AND duplicate_of IS NOT NULL))
@@ -112,6 +121,7 @@ export async function refreshActivityLoads(
                 AND date IS ?7 AND kind IS ?8 AND moving_time_sec IS ?9 AND distance_m IS ?10
                 AND average_hr IS ?11 AND weighted_avg_watts IS ?12
                 AND training_load IS ?13 AND intensity IS ?14
+                AND stream_np_w IS ?20 AND stream_hr_rms IS ?21 AND stream_hr_sec IS ?22
                 AND effective_load IS ?15 AND effective_intensity IS ?16 AND load_method IS ?17
                 AND (${thresholdFingerprintSql('?2')}) IS ?18`,
           )
@@ -123,6 +133,7 @@ export async function refreshActivityLoads(
             row.effective_load, row.effective_intensity, row.load_method,
             fingerprint?.fp ?? null,
             row.deleted_at,
+            row.stream_np_w, row.stream_hr_rms, row.stream_hr_sec,
           ),
       );
     }

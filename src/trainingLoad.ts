@@ -52,6 +52,23 @@ export interface LoadInput {
   provider_intensity?: number | null;
   power_samples?: readonly Sample[] | null;
   hr_samples?: readonly Sample[] | null;
+  /** Normalized power already computed from a dense power stream
+   * (`powerStreamSummary`), for sources whose streams are not kept. */
+  stream_np_w?: number | null;
+  /** A heart-rate stream reduced by `heartRateStreamSummary`. */
+  hr_summary?: HeartRateStreamSummary | null;
+}
+
+/**
+ * A heart-rate stream reduced to what its load needs, independent of any
+ * threshold: the root mean square of the readings over the seconds they
+ * cover. Load from it equals load from the stream itself, so a source can
+ * store the summary instead of the samples and still be rescored when the
+ * athlete's threshold changes.
+ */
+export interface HeartRateStreamSummary {
+  rms_bpm: number;
+  seconds: number;
 }
 
 export const MAX_SAMPLE_GAP_SEC = 10;
@@ -188,22 +205,45 @@ export function powerStreamLoad(samples: readonly Sample[], movingSec: number | 
   return powerSummaryLoad(np, seconds, ftp, 'power');
 }
 
-/** Load from a heart-rate stream; null when the stream is too sparse. */
-export function heartRateStreamLoad(samples: readonly Sample[], movingSec: number | null, thresholdHr: number | null | undefined, maxGap = MAX_SAMPLE_GAP_SEC): LoadResult | null {
-  // A zero heart rate is a sensor dropout, not a reading: drop it so it leaves
-  // a gap (and counts against coverage) instead of diluting the load. Zero
-  // power, by contrast, is real coasting and stays in the power path.
+/** Normalized power from a power stream, or null when the stream is too
+ * sparse for the workout's moving time (the same rule `powerStreamLoad`
+ * applies). Threshold-independent, so it can be stored and rescored. */
+export function powerStreamSummary(samples: readonly Sample[], movingSec: number | null): number | null {
+  if (!coverageOk(samples, positive(movingSec) ? movingSec : null)) return null;
+  const np = normalizedPower(samples);
+  return positive(np) ? np : null;
+}
+
+/** Reduce a heart-rate stream to its covered seconds and RMS heart rate, or
+ * null when it is too sparse. A zero heart rate is a sensor dropout, not a
+ * reading: it is dropped so it leaves a gap (and counts against coverage)
+ * instead of diluting the load. Zero power, by contrast, is real coasting and
+ * stays in the power path. */
+export function heartRateStreamSummary(samples: readonly Sample[], movingSec: number | null, maxGap = MAX_SAMPLE_GAP_SEC): HeartRateStreamSummary | null {
   const readings = samples.filter(s => s.v > 0);
-  if (!positive(thresholdHr) || !coverageOk(readings, movingSec)) return null;
-  let weighted = 0;
+  if (!coverageOk(readings, positive(movingSec) ? movingSec : null)) return null;
+  let squares = 0;
   let seconds = 0;
   for (const span of spans(readings, maxGap)) {
-    const ratio = span.v / thresholdHr;
-    weighted += span.dt * ratio * ratio;
+    squares += span.dt * span.v * span.v;
     seconds += span.dt;
   }
   if (seconds <= 0) return null;
-  return result((weighted / 3600) * 100, Math.sqrt(weighted / seconds), 'heart_rate');
+  return { rms_bpm: Math.sqrt(squares / seconds), seconds };
+}
+
+/** Load from a summarized heart-rate stream:
+ * seconds × (RMS HR / threshold HR)² / 3600 × 100. */
+export function heartRateSummaryLoad(summary: HeartRateStreamSummary | null | undefined, thresholdHr: number | null | undefined): LoadResult | null {
+  if (!summary || !positive(summary.rms_bpm) || !positive(summary.seconds) || !positive(thresholdHr)) return null;
+  const ratio = summary.rms_bpm / thresholdHr;
+  return result((summary.seconds / 3600) * ratio * ratio * 100, ratio, 'heart_rate');
+}
+
+/** Load from a heart-rate stream; null when the stream is too sparse. */
+export function heartRateStreamLoad(samples: readonly Sample[], movingSec: number | null, thresholdHr: number | null | undefined, maxGap = MAX_SAMPLE_GAP_SEC): LoadResult | null {
+  if (!positive(thresholdHr)) return null;
+  return heartRateSummaryLoad(heartRateStreamSummary(samples, movingSec, maxGap), thresholdHr);
 }
 
 /** Fallback from average heart rate when no usable stream exists. */
@@ -223,8 +263,8 @@ export function paceLoad(distanceM: number | null | undefined, movingSec: number
 
 /**
  * The best available load, in this order: the provider's own figure, a power
- * stream, the source's normalized power, a heart-rate stream, pace, average
- * heart rate. Each method runs only when its threshold is set. Null means no
+ * stream (or its stored normalized power), the source's normalized power, a
+ * heart-rate stream (or its stored summary), pace, average heart rate. Each method runs only when its threshold is set. Null means no
  * usable data: callers show the load as unknown, never as zero.
  */
 export function selectLoad(input: LoadInput, thresholds: ThresholdSet): LoadResult | null {
@@ -240,8 +280,10 @@ export function selectLoad(input: LoadInput, thresholds: ThresholdSet): LoadResu
   const moving = positive(input.moving_time_sec) ? input.moving_time_sec : null;
   return (
     (input.power_samples ? powerStreamLoad(input.power_samples, moving, thresholds.ftp_w) : null)
+    ?? powerSummaryLoad(input.stream_np_w, moving, thresholds.ftp_w, 'power')
     ?? powerSummaryLoad(input.weighted_avg_watts, moving, thresholds.ftp_w)
     ?? (input.hr_samples ? heartRateStreamLoad(input.hr_samples, moving, thresholds.threshold_hr) : null)
+    ?? heartRateSummaryLoad(input.hr_summary, thresholds.threshold_hr)
     ?? paceLoad(input.distance_m, moving, thresholds.threshold_pace_s_per_km)
     ?? averageHeartRateLoad(input.average_hr, moving, thresholds.threshold_hr)
   );

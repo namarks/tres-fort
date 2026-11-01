@@ -4,6 +4,7 @@ import {
 } from './services/intervalsSync';
 import { createOAuthGrantService } from './services/oauthGrants';
 import { refreshActivityLoads } from './services/activityLoad';
+import { heartRateStreamSummary, powerStreamSummary, type Sample } from './trainingLoad';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
@@ -8890,6 +8891,14 @@ export interface HealthKitActivityInput {
   calories: number | null;
   elevation_gain_m: number | null;
   raw: string | null;
+  /** Samples recorded inside the workout, `t` in seconds from its start.
+   * Absent (an older app) keeps the stored summaries; present replaces them,
+   * including with none when no stream is dense enough. */
+  streams?: HealthKitStreams;
+}
+export interface HealthKitStreams {
+  heart_rate?: readonly Sample[];
+  power?: readonly Sample[];
 }
 export type { SyncStatus, SyncResult, SyncDeps, ActivitySyncDeps, IntervalsImportResult, IntervalsConnectionStatus, IntervalsUserCreds, ActivityDedupeWindow } from './services/intervalsSync';
 export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities, resolveIntervalsCredential } = createIntervalsSyncService({
@@ -9025,6 +9034,11 @@ export async function upsertHealthKitActivity(
   }
   const id = `healthkit:activity:${userId}:${input.id}`;
   const ts = now();
+  // Reduced here, never stored as samples: refreshActivityLoads rescores
+  // from these threshold-independent figures (migration 0061).
+  const streamsSent = input.streams !== undefined;
+  const npW = input.streams?.power ? powerStreamSummary(input.streams.power, input.moving_time_sec) : null;
+  const hr = input.streams?.heart_rate ? heartRateStreamSummary(input.streams.heart_rate, input.moving_time_sec) : null;
   await db.batch([
     db
     .prepare(
@@ -9032,9 +9046,10 @@ export async function upsertHealthKitActivity(
          (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
           moving_time_sec,elapsed_time_sec,distance_m,average_watts,
           weighted_avg_watts,average_hr,max_hr,training_load,intensity,
-          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,start_date_utc_ms,source_timezone)
+          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,start_date_utc_ms,source_timezone,
+          stream_np_w,stream_hr_rms,stream_hr_sec)
        VALUES (?1,?2,'healthkit',?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,NULL,NULL,
-               ?14,?15,?16,?17,NULL,1,NULL,?18,?19)
+               ?14,?15,?16,?17,NULL,1,NULL,?18,?19,?20,?21,?22)
        ON CONFLICT(id) DO UPDATE SET
          start_date_utc_ms=COALESCE(external_activities.start_date_utc_ms, excluded.start_date_utc_ms),
          source_timezone=CASE WHEN external_activities.start_date_utc_ms IS NULL
@@ -9051,6 +9066,9 @@ export async function upsertHealthKitActivity(
          calories=excluded.calories,
          elevation_gain_m=excluded.elevation_gain_m,
          raw=excluded.raw,
+         stream_np_w=CASE WHEN ?23 THEN excluded.stream_np_w ELSE external_activities.stream_np_w END,
+         stream_hr_rms=CASE WHEN ?23 THEN excluded.stream_hr_rms ELSE external_activities.stream_hr_rms END,
+         stream_hr_sec=CASE WHEN ?23 THEN excluded.stream_hr_sec ELSE external_activities.stream_hr_sec END,
          synced_at=CASE
            WHEN excluded.synced_at > external_activities.synced_at THEN excluded.synced_at
            ELSE external_activities.synced_at + 1
@@ -9068,7 +9086,10 @@ export async function upsertHealthKitActivity(
          external_activities.average_hr IS NOT excluded.average_hr OR
          external_activities.max_hr IS NOT excluded.max_hr OR
          external_activities.calories IS NOT excluded.calories OR
-         external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m`,
+         external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
+         (?23 AND (external_activities.stream_np_w IS NOT excluded.stream_np_w OR
+           external_activities.stream_hr_rms IS NOT excluded.stream_hr_rms OR
+           external_activities.stream_hr_sec IS NOT excluded.stream_hr_sec))`,
     )
     .bind(
       id,
@@ -9090,6 +9111,10 @@ export async function upsertHealthKitActivity(
       ts,
       input.start_date_utc_ms ?? null,
       input.source_timezone ?? null,
+      npW,
+      hr?.rms_bpm ?? null,
+      hr ? Math.round(hr.seconds) : null,
+      streamsSent ? 1 : 0,
     ),
     reconcileNativeHealthKitStatement(db, userId, ts),
   ]);

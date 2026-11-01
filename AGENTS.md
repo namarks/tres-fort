@@ -292,6 +292,8 @@ chat start) and a **prompt** (`coach_brief`).
   a provider's own load preferred and the method labeled. Activities keep the
   provider's `training_load`; the shown load is `effective_load` /
   `load_method` (migration `0060`), refreshed by `refreshActivityLoads`.
+  Apple Health pushes may carry heart-rate and power `streams`; the Worker
+  stores only their threshold-independent summaries (migration `0061`).
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude

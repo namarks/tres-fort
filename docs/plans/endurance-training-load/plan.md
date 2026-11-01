@@ -78,10 +78,31 @@ provider connection.
   - Covered by `AthleteThresholdsTests.swift` (history rules matching the
     Worker, pace conversion, validation, request body, correction order,
     failures) and load display and weekly totals tests.
-- [ ] **P3 — Detail streams from Apple Health and the run recorder**
-  - The iOS import reads heart rate, cycling power, cadence and running power
-    samples inside each workout, sends compact streams only when they are
-    dense enough, and the Worker computes load from them.
+- [x] **P3 — Detail streams from Apple Health and the run recorder**
+  - The Apple Health import reads the heart-rate samples inside each run and
+    ride, and cycling power for rides, including each reading inside Apple
+    Watch series samples. It keeps one writing app's samples (the workout's
+    own app when it recorded enough), averages them into whole seconds and
+    sends `streams` on `POST /api/activities/healthkit` when at least 30 seconds
+    remain. Runs from the Tres Fort recorder reach Apple Health with the
+    strap's heart rate, so they take the same path.
+  - The Worker validates the streams and reduces them with
+    `src/trainingLoad.ts` to threshold-independent summaries (migration
+    `0061`: `stream_np_w`, `stream_hr_rms`, `stream_hr_sec`), so a threshold
+    change rescores a workout without keeping its samples. A summary scores
+    exactly as its stream; a sparse stream (Zwift's heart rate every ten
+    minutes) stores nothing and the workout falls back to pace or average heart
+    rate. A push without `streams` keeps the stored summaries; an empty one
+    clears them.
+  - Members connected before this release are asked once for cycling power,
+    and runs and rides from the last 365 days are pushed again, once, with
+    their streams.
+  - Cadence does not change load, and running power is not used because there
+    is no running-power threshold; both are left out.
+  - Covered by `test/training_load.test.ts` (summary parity, sparse streams,
+    selector order), `test/activity_load.test.ts` (scoring, rescoring,
+    omitted and empty streams, validation) and
+    `HealthWorkoutStreamsTests.swift`.
 - [ ] **P4 — `.fit` file import**
   - Upload a `.fit` file (Zwift, any bike computer or watch); the Worker
     parses power, heart rate and speed, computes load, and deduplicates
@@ -106,11 +127,11 @@ provider connection.
 
 ## Next step
 
-**Now (@agent):** P3, detail streams from Apple Health and the run recorder,
-so Health workouts get power or heart-rate load instead of average heart rate
-or pace. P0, P1 and P2 are in the repository. Migrations `0059` and `0060`
-and the Worker need the owner's separate go-ahead to reach production, and the
-app's thresholds screen needs that Worker before it can load.
+**Now (@agent):** P4, `.fit` file import, so Zwift rides and other bike
+computer or watch files get power load without intervals.icu. P0 to P3 are in
+the repository. Migrations `0059`, `0060` and `0061` and the Worker need the
+owner's separate go-ahead to reach production, and the app's thresholds
+screen needs that Worker before it can load.
 
 ## Notes / open questions
 

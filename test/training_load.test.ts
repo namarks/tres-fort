@@ -3,9 +3,12 @@ import {
   averageHeartRateLoad,
   coveredSeconds,
   heartRateStreamLoad,
+  heartRateStreamSummary,
+  heartRateSummaryLoad,
   normalizedPower,
   paceLoad,
   powerStreamLoad,
+  powerStreamSummary,
   powerSummaryLoad,
   selectLoad,
   type Sample,
@@ -174,5 +177,38 @@ describe('thresholdOn', () => {
 
   it('is null for a metric with no rows', () => {
     expect(thresholdOn(rows, 'run', 'threshold_hr', '2026-07-01')).toBeNull();
+  });
+});
+
+describe('stored stream summaries', () => {
+  // A varied hour: 20 minutes easy, 20 at threshold, 20 hard, with a dropout.
+  const hr = [...steady(130, 1200, 2), ...steady(160, 1200, 2, 1200), ...steady(172, 1200, 2, 2400)]
+    .map(s => (s.t >= 3000 && s.t < 3060 ? { ...s, v: 0 } : s));
+  const power = [...steady(150, 1200), ...steady(250, 1200, 1, 1200), ...steady(300, 1200, 1, 2400)];
+
+  it('score exactly as the streams they summarize', () => {
+    for (const threshold of [150, 160, 175]) {
+      expect(heartRateSummaryLoad(heartRateStreamSummary(hr, 3600), threshold)).toEqual(heartRateStreamLoad(hr, 3600, threshold));
+    }
+    const np = powerStreamSummary(power, 3600);
+    expect(np).toBeCloseTo(normalizedPower(power) ?? 0, 9);
+    for (const ftp of [220, 250, 280]) {
+      expect(powerSummaryLoad(np, 3600, ftp, 'power')).toEqual(powerStreamLoad(power, 3600, ftp));
+    }
+  });
+
+  it('are refused for sparse streams, like the streams themselves', () => {
+    expect(heartRateStreamSummary(steady(140, 3600, 600), 3600)).toBeNull();
+    expect(powerStreamSummary(steady(250, 1200), 3600)).toBeNull();
+    expect(powerStreamSummary(steady(0, 3600), 3600)).toBeNull();
+  });
+
+  it('rank like streams in the selector', () => {
+    const thresholds = { ftp_w: 250, threshold_hr: 160, threshold_pace_s_per_km: 300 };
+    const base = { moving_time_sec: 3600, distance_m: 10000, average_hr: 150 };
+    expect(selectLoad({ ...base, stream_np_w: 200, weighted_avg_watts: 250 }, thresholds)?.method).toBe('power');
+    expect(selectLoad({ ...base, hr_summary: { rms_bpm: 160, seconds: 3600 } }, thresholds))
+      .toEqual({ load: 100, intensity: 100, method: 'heart_rate' });
+    expect(selectLoad({ ...base, hr_summary: null }, thresholds)?.method).toBe('pace');
   });
 });

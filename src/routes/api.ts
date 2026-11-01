@@ -8,6 +8,8 @@ import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
+import type { Sample } from '../trainingLoad';
+import type { HealthKitStreams } from '../db';
 import { isGroupId } from '../exerciseGroups';
 import { isPartnerStartInput } from '../partnerTraining';
 import { appleProviderConfig } from '../apple';
@@ -1448,6 +1450,7 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     calories?: number | null;
     elevation_gain_m?: number | null;
     raw?: string | null;
+    streams?: unknown;
   }>();
   if (!b.id || typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
     return c.json({ error: 'invalid_id' }, 400);
@@ -1475,6 +1478,8 @@ apiRoutes.post('/activities/healthkit', async (c) => {
   if (!validActivitySourceTime(b.start_date_utc_ms, b.source_timezone, b.date, startDateLocalMs)) {
     return c.json({ error: 'invalid_source_time' }, 400);
   }
+  const streams = parseHealthKitStreams(b.streams);
+  if (streams === 'invalid') return c.json({ error: 'invalid_streams' }, 400);
   const row = await upsertHealthKitActivity(c.env.DB, c.get('userId'), {
     id: b.id,
     date: b.date,
@@ -1492,9 +1497,44 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     calories: intOrNull(b.calories),
     elevation_gain_m: numOrNull(b.elevation_gain_m),
     raw: typeof b.raw === 'string' ? b.raw : null,
+    ...(streams === undefined ? {} : { streams }),
   });
   return c.json(row, 201);
 });
+
+/** Longest stream accepted: a day at one sample a second. */
+const MAX_STREAM_POINTS = 86_400;
+
+/**
+ * `streams` on an Apple Health push: `{ heart_rate?: {t, v}, power?: {t, v} }`
+ * with parallel arrays, `t` in seconds from the workout start. Absent means an
+ * app that sends no streams (keep what is stored); `null` or `{}` means none.
+ */
+function parseHealthKitStreams(raw: unknown): HealthKitStreams | undefined | 'invalid' {
+  if (raw === undefined) return undefined;
+  if (raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) return 'invalid';
+  const out: HealthKitStreams = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key !== 'heart_rate' && key !== 'power') return 'invalid';
+    if (value === null) continue;
+    if (typeof value !== 'object' || Array.isArray(value)) return 'invalid';
+    const { t, v } = value as { t?: unknown; v?: unknown };
+    if (!Array.isArray(t) || !Array.isArray(v) || t.length !== v.length || t.length > MAX_STREAM_POINTS) {
+      return 'invalid';
+    }
+    const samples: Sample[] = [];
+    for (let i = 0; i < t.length; i++) {
+      const ti = t[i];
+      const vi = v[i];
+      if (typeof ti !== 'number' || !Number.isFinite(ti) || ti < 0) return 'invalid';
+      if (typeof vi !== 'number' || !Number.isFinite(vi) || vi < 0) return 'invalid';
+      samples.push({ t: ti, v: vi });
+    }
+    out[key] = samples;
+  }
+  return out;
+}
 
 // POST /api/activities/recordings — a run recorded in the app, as multipart
 // form data: `id` (client UUID, the idempotency key), `date` (civil start

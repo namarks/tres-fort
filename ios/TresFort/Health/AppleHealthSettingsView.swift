@@ -114,7 +114,7 @@ struct AppleHealthSettingsView: View {
             .disabled(connecting || health.isSyncing)
         } footer: {
             if !health.enabled {
-                Text("You’ll be asked which data to share. Heart rate and distance make the coaching better, but duration alone is enough.")
+                Text("You’ll be asked which data to share. Heart rate, cycling power and distance let Très Fort score each run and ride’s training load, but duration alone is enough.")
             }
         }
     }

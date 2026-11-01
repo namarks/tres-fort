@@ -1,6 +1,6 @@
 # App design pass
 
-Slug: app-design-pass · Status: active · Updated: 2026-11-01 · Theme: member-experience
+Slug: app-design-pass · Status: gated · Updated: 2026-11-01 · Theme: member-experience
 
 ## Goal
 
@@ -33,26 +33,44 @@ one visual system. The owner asked for the whole ranked list from the
     last set, with the same summary, feedback and Finish action.
   - Merged in PR #288 with UI journeys for the Today shortcuts, the iPad
     display entry, the exercise menu, the footer and both finish routes.
-- [ ] **P2 — Workout navigation**
+- [x] **P2 — Workout navigation**
   - Library, workout details, editing and adding an exercise use one
     navigation stack with Back, and Edit is a mode of the details screen.
   - A Plan tab holds the library, the calendar and the weekly schedule.
-    Groups appear only in the Group tab.
+    Groups appear only in the Group tab. Start on the Plan tab continues a
+    workout already on the runner and never replaces it.
   - Adding an exercise sets its target weight too.
-- [ ] **P3 — Endurance without AI**
+  - Merged in PR #289.
+- [x] **P3 — Endurance without AI**
   - Log a run, ride or swim in the app with distance and time. It goes to
     intervals.icu through the same provider write the coach uses, and other
     activities stay local.
   - Progress shows an Endurance card with weekly distance and time and recent
     runs.
-- [ ] **P4 — One visual system**
+  - Merged in PR #290. `POST /api/activities/endurance` needs no migration.
+- [x] **P4 — One visual system**
   - Display type only for big numbers and exercise names, mono type only for
     numbers, and one primary button style across the app.
+  - Merged in PR #291.
+- [ ] **P5 — Release and device check**
+  - Deploy the Worker so the app can reach `POST /api/activities/endurance`,
+    then distribute a TestFlight build from main.
+  - On the owner's iPhone, check the Today shortcuts, the exercise menu, the
+    finish screen, the Plan tab, logging a run with distance and time, the
+    Endurance card and the new type and buttons.
+
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P5 | gated_by | external:owner-design-pass-release | A Worker deploy and a TestFlight build each need the owner's own go-ahead, and the visual check needs a real device. |
 
 ## Next step
 
-**Now (@agent):** Take P2 through CI and Codex review to ready to merge, then
-open P3 and P4, which are built and apply cleanly on top of it.
+**Now (@owner):** Approve a Worker deploy of main (no migration) and a
+TestFlight build from main, then try P1 to P4 on the iPhone. Until the Worker
+is deployed, saving a run, ride or swim with distance fails with an error and
+nothing is saved.
 
 ## Notes / open questions
 

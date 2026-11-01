@@ -203,9 +203,9 @@ integration or social breadth.
   website copy are live (PR #296); the App Store listing waits for the version
   after 1.0, and going public needs the owner's written yes.
 - [Plan on the web](web-app/plan.md) — **planned**; sign in at
-  `app.tresfort.app` with the same Apple account and plan training on a large
-  screen: calendar, workouts, planned runs, schedule, progress and settings
-  over the existing REST API. Training stays on the iPhone. The owner chose
+  `app.tresfort.app` with the same Apple account to plan training and analyze
+  trends with a big screen and a mouse: calendar, workouts, planned runs,
+  schedule, progress charts and settings over the existing REST API. Training stays on the iPhone. The owner chose
   Apple sign-in for existing members; waits on a Sign in with Apple Services ID.
 - [Reliability and service boundaries](reliability-and-service-boundaries/plan.md) —
   **active**; complete the owner-approved performance/quality follow-up to #201,

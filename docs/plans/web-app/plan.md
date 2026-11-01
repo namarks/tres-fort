@@ -5,15 +5,18 @@ Slug: web-app · Status: planned · Updated: 2026-11-01 · Theme: platform
 ## Goal
 
 A member signs in at `app.tresfort.app` on a laptop or desktop browser with
-the same account as the iOS app, and plans their training on a large screen:
-sees lifting, runs, rides and other sessions on one calendar, builds and edits
-workouts and planned runs, sets the weekly schedule, moves, skips and assigns
-dates, and reviews progress. The owner's reason (2026-11-01): planning is
-easier on a larger screen. Every web feature works without AI and writes
+the same account as the iOS app and uses the extra screen space, mouse and
+keyboard for two jobs. **Planning:** see lifting, runs, rides and other
+sessions on one calendar, build and edit workouts and planned runs, set the
+weekly schedule, and move, skip and assign dates. **Analysis:** look at trends
+and progress across weeks and months in more depth than a phone allows. The
+owner's reason (2026-11-01): planning and reviewing progress are easier with
+more screen and a mouse. Every web feature works without AI and writes
 through the same REST endpoints, versioned writers and audit trail as the app.
 
-The iPhone stays the place to train: the set-by-set runner, run recorder,
-Apple Health, iPad Station and partner training are not web features.
+The web is not for training (owner, 2026-11-01). The iPhone stays the place
+to train: the set-by-set runner, run recorder, Apple Health, iPad Station and
+partner training are not web features.
 
 ## Phases
 
@@ -64,10 +67,19 @@ Apple Health, iPad Station and partner training are not web features.
   - Race goal, training phases and deloads follow whatever REST
     [coach-free planning](../coach-free-planning/plan.md) adds; the web does
     not add its own endpoints for them.
-- [ ] **P3 — Progress and history**
-  - Session history with set detail, exercise history charts, weekly volume,
-    the consistency view, and imported and manual activities, including
-    typing in a run, ride, swim or walk.
+- [ ] **P3 — Trends and progress**
+  - Equal in importance to plan editing; it can run alongside P2 once P1 is
+    in.
+  - Session history with set detail; exercise history charts (top set,
+    estimated max, volume) with hover detail and a chosen date range;
+    weekly training volume and time by discipline; the consistency view;
+    imported and manual activities, including typing in a run, ride, swim or
+    walk.
+  - Comparing periods (this block against the last, planned against done)
+    and filtering by discipline or exercise, using existing history and
+    volume endpoints first. New read endpoints are added to the Worker only
+    where the existing ones cannot answer a chart, and the iOS app can use
+    them too.
 - [ ] **P4 — Profile and connections**
   - Profile and units, training profile, intervals.icu connect and resync,
     AI coach connections (personal passphrase, list and revoke grants), Apple

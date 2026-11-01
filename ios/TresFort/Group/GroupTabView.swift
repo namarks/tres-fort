@@ -154,29 +154,18 @@ struct GroupTabView: View {
             Image(systemName: "person.3.fill")
                 .font(.system(size: 56))
                 .foregroundStyle(Theme.muted)
-            Text("NO GROUP YET")
-                .font(Theme.mono(13, .bold)).tracking(1.5)
+            Text("No group yet")
+                .font(.title3.weight(.bold))
                 .foregroundStyle(Theme.text)
             Text("Join a friends-and-family group, or start one.\nCheer each other on.")
-                .font(Theme.mono(12))
+                .font(.subheadline)
                 .foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
             HStack(spacing: 12) {
-                Button { showJoin = true } label: {
-                    Text("JOIN WITH CODE")
-                        .font(Theme.mono(12, .bold))
-                        .padding(.horizontal, 18).padding(.vertical, 12)
-                        .background(Theme.accent)
-                        .foregroundStyle(.black)
-                        .clipShape(Capsule())
-                }
-                Button { showCreate = true } label: {
-                    Text("CREATE GROUP")
-                        .font(Theme.mono(12, .bold))
-                        .padding(.horizontal, 18).padding(.vertical, 12)
-                        .overlay(Capsule().stroke(Theme.muted, lineWidth: 1))
-                        .foregroundStyle(Theme.text)
-                }
+                Button("Join with code") { showJoin = true }
+                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                Button("Create group") { showCreate = true }
+                    .buttonStyle(WorkoutPrimaryButtonStyle(quiet: true))
             }
             // Logging an activity doesn't require a group — it's a personal
             // off-plan log that lands on your calendar. Offer it here so the

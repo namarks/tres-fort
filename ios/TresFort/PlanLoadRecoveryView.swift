@@ -12,8 +12,8 @@ struct PlanLoadRecoveryView: View {
                 Text("Checking your plan…")
                     .font(.headline).foregroundStyle(Theme.text)
             } else {
-                Text("COULDN’T LOAD YOUR PLAN")
-                    .font(Theme.display(28)).foregroundStyle(Theme.text)
+                Text("Couldn’t load your plan")
+                    .font(.title2.weight(.bold)).foregroundStyle(Theme.text)
                 Text(sync.loadError ?? "")
                     .font(.callout).foregroundStyle(Theme.text)
                     .accessibilityIdentifier("today.load-error")

@@ -33,10 +33,10 @@ struct CoachingContextView: View {
                     let recent = CoachingContext.recent(sync.sessions, through: today)
                     let last = CoachingContext.lastCompleted(sync.sessions, through: today)
                     if let last, !recent.contains(where: { $0.id == last.id }) {
-                        Text("Last completed workout").font(Theme.display(20))
+                        Text("Last completed workout").font(.headline)
                         session(last)
                     }
-                    Text("Recent sessions").font(Theme.display(20))
+                    Text("Recent sessions").font(.headline)
                     if recent.isEmpty { Text("No recorded sessions available") }
                     ForEach(recent) { row in session(row) }
                     Text("Logged working sets exclude warm-ups and count each logged set once. Muscle counts use only the catalog’s primary muscle; they do not measure stimulus or complete muscle volume. Effort coverage counts recorded set RPE. External-load volume excludes timed, assisted and zero-load work; units stay separate.")

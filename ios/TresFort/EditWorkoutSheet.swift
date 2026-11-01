@@ -390,8 +390,8 @@ struct EditWorkoutSheet: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Text(day == nil ? "WORKOUT NOT LOADED" : "NO EXERCISES YET")
-                .font(Theme.display(24)).foregroundStyle(Theme.text)
+            Text(day == nil ? "Workout not loaded" : "No exercises yet")
+                .font(.title3.weight(.bold)).foregroundStyle(Theme.text)
             Text(day == nil ? "Refresh to load this workout, or close the editor if it was removed."
                  : "Use Workout actions to add an exercise or a warm-up.")
                 .font(Theme.mono(13)).foregroundStyle(Theme.muted)

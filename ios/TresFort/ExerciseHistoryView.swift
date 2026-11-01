@@ -9,7 +9,7 @@ struct ExerciseHistoryList: View {
         let ids = sync.loggedExerciseIDs
         if ids.isEmpty {
             VStack(spacing: 8) {
-                Text("NO HISTORY").font(Theme.display(28)).foregroundStyle(Theme.text)
+                Text("No history yet").font(.title2.weight(.bold)).foregroundStyle(Theme.text)
                 Text("Log some sets and they'll show here.")
                     .font(Theme.mono(13)).foregroundStyle(Theme.muted)
             }

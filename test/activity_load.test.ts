@@ -161,6 +161,42 @@ describe('effective training load', () => {
     expect((await row(`intervals:activity:${id}:treadmill`)).synced_at).toBe(run.synced_at);
   });
 
+  it('never stores a load overtaken by a concurrent source change', async () => {
+    const u = await makeUser('race');
+    await setThreshold(u.jwt, 'ride', 'threshold_hr', 160);
+    const id = await insertIntervalsRow(u.id, { training_load: null, intensity: null, weighted_avg_watts: null, average_hr: 120 });
+    // A sync lands a provider load between the refresh's read and its write.
+    let raced = false;
+    const racingDb = {
+      prepare: (sql: string) => env.DB.prepare(sql),
+      batch: async (statements: D1PreparedStatement[]) => {
+        if (!raced) {
+          raced = true;
+          await env.DB.prepare(
+            "UPDATE external_activities SET training_load=90, intensity=95, effective_load=90, effective_intensity=95, load_method='provider' WHERE id=?1",
+          ).bind(id).run();
+        }
+        return env.DB.batch(statements);
+      },
+    } as unknown as D1Database;
+    await refreshActivityLoads(racingDb, u.id);
+    expect(raced).toBe(true);
+    expect(await row(id)).toMatchObject({ effective_load: 90, effective_intensity: 95, load_method: 'provider' });
+  });
+
+  it('a retried threshold POST finishes a recompute that failed after the insert', async () => {
+    const u = await makeUser('retry');
+    const pushed = await pushHealthRun(u.jwt);
+    const body = { id: crypto.randomUUID(), sport: 'run', metric: 'threshold_pace_s_per_km', value: 300, effective_date: '2026-01-01' };
+    const post = () => SELF.fetch(`${BASE}/api/me/thresholds`, { method: 'POST', headers: headers(u.jwt), body: JSON.stringify(body) });
+    expect((await post()).status).toBe(201);
+    // Simulate the recompute having failed after the threshold committed.
+    await env.DB.prepare('UPDATE external_activities SET effective_load=NULL, effective_intensity=NULL, load_method=NULL WHERE id=?1')
+      .bind(pushed.id).run();
+    expect((await post()).status).toBe(200);
+    expect(await row(pushed.id)).toMatchObject({ effective_load: 69, load_method: 'pace' });
+  });
+
   it('uses the threshold in effect on each workout date', async () => {
     const u = await makeUser('dated');
     await setThreshold(u.jwt, 'run', 'threshold_pace_s_per_km', 360, '2026-01-01');

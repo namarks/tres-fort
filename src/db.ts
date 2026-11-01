@@ -8903,11 +8903,12 @@ export type {
 export { MAX_RECORDING_BYTES, recordingFormat } from './services/intervalsActivityWrite';
 export { refreshActivityLoads } from './services/activityLoad';
 
-/** Add a threshold, then recompute the member's activity loads (a retry that
- * changed nothing skips the recompute). */
+/** Add a threshold, then recompute the member's activity loads. A retry of
+ * an already stored threshold recomputes too, so a refresh that failed after
+ * the insert committed is completed by the client's retry. */
 export async function saveAthleteThreshold(db: D1Database, userId: string, input: ThresholdInput) {
   const result = await addAthleteThreshold(db, userId, input, 'member');
-  if (result.ok && !result.deduplicated) await refreshActivityLoads(db, userId);
+  if (result.ok) await refreshActivityLoads(db, userId);
   return result;
 }
 

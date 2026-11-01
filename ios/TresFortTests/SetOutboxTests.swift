@@ -438,6 +438,35 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
         guard let calendarHandler else { throw URLError(.badServerResponse) }
         return try await calendarHandler(date, dayID, expectedAttempt, jwt)
     }
+
+    /// (trip id or nil for a new range, fields, expected version)
+    private(set) var tripWrites: [(String?, [String: Any], Int)] = []
+    private(set) var tripRemovals: [(String, Int)] = []
+    var tripError: Error?
+
+    func addTrip(fields: [String: Any], expectedVersion: Int, jwt: String) async throws
+        -> APIClient.TripWriteResult
+    {
+        tripWrites.append((nil, fields, expectedVersion))
+        if let tripError { throw tripError }
+        return APIClient.TripWriteResult(ok: true, version: expectedVersion + 1)
+    }
+
+    func updateTrip(id: String, fields: [String: Any], expectedVersion: Int, jwt: String)
+        async throws -> APIClient.TripWriteResult
+    {
+        tripWrites.append((id, fields, expectedVersion))
+        if let tripError { throw tripError }
+        return APIClient.TripWriteResult(ok: true, version: expectedVersion + 1)
+    }
+
+    func removeTrip(id: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.TripWriteResult
+    {
+        tripRemovals.append((id, expectedVersion))
+        if let tripError { throw tripError }
+        return APIClient.TripWriteResult(ok: true, version: expectedVersion + 1)
+    }
 }
 
 private actor SetAsyncLatch {
@@ -4088,6 +4117,90 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertNil(model.plan?.schedule?.templateID(forWeekdayKey: "tue"))
         XCTAssertEqual(routineAPI.scheduleCalls, 1)
         XCTAssertEqual(routineAPI.calendarCalls, 0)
+    }
+
+    func testAwayDatesSaveAndRemoveSendTheShownPlanVersion() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 0)
+        let workouts = [day(with: [exercise()])]
+        let meta = #"{"trips":[{"id":"trip-1","start":"2026-12-20","end":"2026-12-27","type":"travel"}]}"#
+        let routineAPI = SetRoutineEditingAPIStub()
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], workouts: workouts, planVersion: 4, planMeta: meta)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], workouts: workouts, planVersion: 3, planMeta: meta))
+        XCTAssertEqual(model.plan?.awayDates.map(\.id), ["trip-1"])
+
+        let added = await model.saveAwayDates(id: nil, fields: ["start": "2027-01-02", "end": "2027-01-03"], expectedVersion: 3)
+        XCTAssertTrue(added)
+        XCTAssertEqual(routineAPI.tripWrites.count, 1)
+        XCTAssertNil(routineAPI.tripWrites[0].0)
+        XCTAssertEqual(routineAPI.tripWrites[0].1["start"] as? String, "2027-01-02")
+        XCTAssertEqual(routineAPI.tripWrites[0].2, 3)
+        XCTAssertEqual(model.plan?.version, 4, "A saved range reloads the plan")
+
+        let edited = await model.saveAwayDates(id: "trip-1", fields: ["can_train_light": false], expectedVersion: 4)
+        XCTAssertTrue(edited)
+        XCTAssertEqual(routineAPI.tripWrites[1].0, "trip-1")
+        XCTAssertEqual(routineAPI.tripWrites[1].1["can_train_light"] as? Bool, false)
+        XCTAssertEqual(routineAPI.tripWrites[1].2, 4)
+
+        let removed = await model.removeAwayDates(id: "trip-1", expectedVersion: 4)
+        XCTAssertTrue(removed)
+        XCTAssertEqual(routineAPI.tripRemovals.first?.0, "trip-1")
+        XCTAssertEqual(routineAPI.tripRemovals.first?.1, 4)
+    }
+
+    func testStaleAwayDatesSaveReloadsAndAsksForReview() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 0)
+        let workouts = [day(with: [exercise()])]
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.tripError = APIError.http(409, #"{"conflict":true,"current_version":5}"#)
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], workouts: workouts, planVersion: 5, planMeta: nil)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], workouts: workouts, planVersion: 2, planMeta: nil))
+
+        let saved = await model.saveAwayDates(id: nil, fields: ["start": "2027-01-02", "end": "2027-01-02"], expectedVersion: 2)
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.plan?.version, 5)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(routineAPI.tripWrites.last?.2, 2)
+    }
+
+    func testAwayDatesKeepTheReviewedVersionAfterTheLivePlanMoves() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 0)
+        let workouts = [day(with: [exercise()])]
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.tripError = APIError.http(409, #"{"conflict":true,"current_version":6}"#)
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], workouts: workouts, planVersion: 6, planMeta: nil)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        // The editor opened at version 2; a refresh has since loaded version 6.
+        model.replaceState(with: state(session: s, sets: [], workouts: workouts, planVersion: 6, planMeta: nil))
+
+        let saved = await model.saveAwayDates(id: "trip-1", fields: ["note": "Old"], expectedVersion: 2)
+        let removed = await model.removeAwayDates(id: "trip-1", expectedVersion: 2)
+
+        XCTAssertFalse(saved)
+        XCTAssertFalse(removed)
+        XCTAssertEqual(routineAPI.tripWrites.last?.2, 2, "A save never adopts the newer live version")
+        XCTAssertEqual(routineAPI.tripRemovals.last?.1, 2, "Nor does a removal")
     }
 
     func testScheduleSaveUsesDraftIdentityAndVersionEvenAfterLivePlanChanges() async {

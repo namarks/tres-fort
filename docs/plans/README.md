@@ -116,6 +116,10 @@ AI coaching.
   current set instantly, with Undo. Paired-device validation and measured
   accuracy come before relying on it beyond an opt-in trial.
 
+- [Plan without an AI coach](coach-free-planning/plan.md) — **active**;
+  every plan change the coach can make, the member can make in the app.
+  P0 adds away dates (trips) in the Plan tab; race goal and training phases,
+  deloads and smaller coach-only edits follow.
 - [Partner training on one iPad](partner-training/plan.md) — **planned**;
   two members start a workout together in front of one iPad and move through
   it set by set, each on their own iPhone with their own weights and logging.

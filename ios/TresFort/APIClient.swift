@@ -377,6 +377,10 @@ struct APIClient {
         let ok: Bool
         let session: SessionRow
     }
+    struct TripWriteResult: Decodable {
+        let ok: Bool
+        let version: Int
+    }
     struct CalendarMoveRequest: Equatable {
         let id: String
         let fromDate: String
@@ -535,6 +539,26 @@ struct APIClient {
                 "expected_version": expectedVersion,
             ],
             jwt: jwt)
+    }
+
+    func addTrip(fields: [String: Any], expectedVersion: Int, jwt: String) async throws
+        -> TripWriteResult
+    {
+        var body = fields
+        body["expected_version"] = expectedVersion
+        return try await post("api/plan/trips", body: body, jwt: jwt)
+    }
+
+    func updateTrip(id: String, fields: [String: Any], expectedVersion: Int, jwt: String)
+        async throws -> TripWriteResult
+    {
+        var body = fields
+        body["expected_version"] = expectedVersion
+        return try await patch("api/plan/trips/\(id)", body: body, jwt: jwt)
+    }
+
+    func removeTrip(id: String, expectedVersion: Int, jwt: String) async throws -> TripWriteResult {
+        try await delete("api/plan/trips/\(id)?expected_version=\(expectedVersion)", jwt: jwt)
     }
 
     func setCalendarDate(
@@ -951,6 +975,12 @@ protocol RoutineEditingAPI {
         jwt: String
     ) async throws -> APIClient.CalendarWriteResult
     func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest, jwt: String) async throws -> APIClient.CalendarMoveResult
+    func addTrip(fields: [String: Any], expectedVersion: Int, jwt: String) async throws
+        -> APIClient.TripWriteResult
+    func updateTrip(id: String, fields: [String: Any], expectedVersion: Int, jwt: String)
+        async throws -> APIClient.TripWriteResult
+    func removeTrip(id: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.TripWriteResult
 
 }
 
@@ -959,6 +989,24 @@ extension APIClient: RoutineEditingAPI {}
 extension RoutineEditingAPI {
     func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest, jwt: String) async throws -> APIClient.CalendarMoveResult {
         throw APIError.http(501, "calendar_move_unavailable")
+    }
+
+    func addTrip(fields: [String: Any], expectedVersion: Int, jwt: String) async throws
+        -> APIClient.TripWriteResult
+    {
+        throw APIError.http(501, "away_dates_unavailable")
+    }
+
+    func updateTrip(id: String, fields: [String: Any], expectedVersion: Int, jwt: String)
+        async throws -> APIClient.TripWriteResult
+    {
+        throw APIError.http(501, "away_dates_unavailable")
+    }
+
+    func removeTrip(id: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.TripWriteResult
+    {
+        throw APIError.http(501, "away_dates_unavailable")
     }
 }
 

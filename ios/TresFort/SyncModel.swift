@@ -5802,6 +5802,7 @@ final class SyncModel: ObservableObject {
         if code == 404 {
             return body.contains("\"not_found\"")
                 || body.contains("\"day_not_found\"")
+                || body.contains("\"trip_not_found\"")
         }
         if code == 400 {
             return body.contains("\"active_workout\"")
@@ -5937,6 +5938,29 @@ final class SyncModel: ObservableObject {
                 expectedPlanID: expectedPlanID ?? currentPlan.id,
                 expectedVersion: expectedVersion ?? currentPlan.version,
                 jwt: jwt)
+        }
+        return result?.ok == true
+    }
+
+    /// Adds away dates (`id == nil`) or edits one range, at the plan version
+    /// the editor opened with. A newer plan, from the coach or another device,
+    /// comes back as a conflict, reloads and asks the member to review; the
+    /// editor closes rather than resend its stale fields at the new version.
+    @discardableResult
+    func saveAwayDates(id: String?, fields: [String: Any], expectedVersion version: Int) async -> Bool {
+        let result: APIClient.TripWriteResult? = await performRoutineMutation { api, jwt in
+            if let id {
+                return try await api.updateTrip(id: id, fields: fields, expectedVersion: version, jwt: jwt)
+            }
+            return try await api.addTrip(fields: fields, expectedVersion: version, jwt: jwt)
+        }
+        return result?.ok == true
+    }
+
+    @discardableResult
+    func removeAwayDates(id: String, expectedVersion version: Int) async -> Bool {
+        let result: APIClient.TripWriteResult? = await performRoutineMutation { api, jwt in
+            try await api.removeTrip(id: id, expectedVersion: version, jwt: jwt)
         }
         return result?.ok == true
     }

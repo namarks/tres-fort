@@ -94,6 +94,7 @@ struct WorkoutsView: View {
     @State private var showHistory = false
     @State private var showWeeklySchedule = false
     @State private var showCalendar = false
+    @State private var showAwayDates = false
 
     var body: some View {
         Group {
@@ -202,6 +203,7 @@ struct WorkoutsView: View {
                     onShowWorkout?()
                 })
             }
+            .navigationDestination(isPresented: $showAwayDates) { AwayDatesView(sync: sync) }
             .sheet(item: $assignmentTarget) { workout in
                 WorkoutDateSheet(sync: sync, workout: workout)
             }
@@ -232,8 +234,27 @@ struct WorkoutsView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("plan.calendar")
+                    Button { showAwayDates = true } label: {
+                        HStack(spacing: 12) {
+                            Label("Away dates", systemImage: "airplane")
+                                .font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
+                            Spacer()
+                            if let next = nextAwayDates {
+                                Text(AwayDatesText.range(next))
+                                    .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
+                                .accessibilityHidden(true)
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(sync.plan == nil)
+                    .accessibilityIdentifier("plan.awayDates")
                 } footer: {
-                    Text("Past workouts and what's coming up, day by day.")
+                    Text("Past workouts and what's coming up, day by day. Away dates pause your weekly schedule for travel, rest or injury.")
                 }
             }
             Section {
@@ -400,6 +421,10 @@ struct WorkoutsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    private var nextAwayDates: PlanTrip? {
+        sync.plan?.awayDates.first { $0.end >= sync.todayString }
     }
 
     private func renameDay() {

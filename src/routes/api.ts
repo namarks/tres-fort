@@ -83,6 +83,9 @@ import {
   restorePlanSnapshot,
   comparePlanVersions,
   setPlanSchedule,
+  addTrip,
+  updateTrip,
+  removeTrip,
   setPlannedSession,
   moveCalendarWorkout,
   skipPlannedSession,
@@ -116,8 +119,8 @@ import {
   isPositiveInteger,
   type FieldRule,
 } from '../validation';
-import { WEEKDAYS } from '../types';
-import type { Weekday } from '../types';
+import { TRIP_TYPES, WEEKDAYS } from '../types';
+import type { Trip, TripType, Weekday } from '../types';
 import { clockInTz, enduranceAlias, intervalsTypeFor, parseClock } from '../enduranceActivity';
 import { deriveStationLinkKey, STATION_LINK_KEY_VERSION } from '../stationLink';
 
@@ -497,6 +500,94 @@ apiRoutes.put('/plan/schedule', async (c) => {
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result) return c.json(result, 400);
   return c.json(result);
+});
+
+// Away dates (plans.meta.trips): the member's own add, edit and remove of the
+// availability ranges the coach writes with add_trip / update_trip /
+// remove_trip. Same versioned plan-meta writer and audit row, actor 'ios'.
+// The app always holds the plan it shows, so expected_version is required.
+const TRIP_FIELDS: Record<string, FieldRule> = {
+  start: (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v),
+  end: (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v),
+  type: (v) => typeof v === 'string' && TRIP_TYPES.has(v),
+  can_train_light: (v) => typeof v === 'boolean',
+  note: (v) => typeof v === 'string' && v.length <= 500,
+};
+const TRIP_KEYS = new Set([...Object.keys(TRIP_FIELDS), 'expected_version']);
+
+function tripWriteResponse(
+  c: Context<HonoEnv>,
+  result: { conflict: true; current_version: number } | { error: string } | { ok: true },
+) {
+  if ('conflict' in result) return c.json(result, 409);
+  if ('error' in result) {
+    return c.json(result, result.error === 'trip_not_found' ? 404 : 400);
+  }
+  return c.json(result);
+}
+
+apiRoutes.post('/plan/trips', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const unknown = Object.keys(b).filter((key) => !TRIP_KEYS.has(key));
+  const { start, end, ...rest } = TRIP_FIELDS;
+  const invalid = [
+    ...unknown,
+    ...invalidMutationFields(
+      b,
+      { start: start!, end: end!, expected_version: isPositiveInteger },
+      rest,
+    ),
+  ];
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const trip: Omit<Trip, 'id'> = {
+    start: b.start as string,
+    end: b.end as string,
+    type: (typeof b.type === 'string' ? b.type : 'travel') as TripType,
+  };
+  if (typeof b.can_train_light === 'boolean') trip.can_train_light = b.can_train_light;
+  if (typeof b.note === 'string') trip.note = b.note;
+  const result = await addTrip(c.env.DB, c.get('userId'), trip, b.expected_version as number, {
+    actor: 'ios', operation: 'add_trip', args: b,
+  });
+  return tripWriteResponse(c, result);
+});
+
+apiRoutes.patch('/plan/trips/:id', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const unknown = Object.keys(b).filter((key) => !TRIP_KEYS.has(key));
+  const invalid = [
+    ...unknown,
+    ...invalidMutationFields(b, { expected_version: isPositiveInteger }, TRIP_FIELDS),
+  ];
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const patch: Partial<Omit<Trip, 'id'>> = {};
+  if (typeof b.start === 'string') patch.start = b.start;
+  if (typeof b.end === 'string') patch.end = b.end;
+  if (typeof b.type === 'string') patch.type = b.type as TripType;
+  if (typeof b.can_train_light === 'boolean') patch.can_train_light = b.can_train_light;
+  if (typeof b.note === 'string') patch.note = b.note;
+  const id = c.req.param('id');
+  const result = await updateTrip(
+    c.env.DB, c.get('userId'), id, patch, b.expected_version as number,
+    { actor: 'ios', operation: 'update_trip', args: { ...b, id } },
+  );
+  return tripWriteResponse(c, result);
+});
+
+apiRoutes.delete('/plan/trips/:id', async (c) => {
+  const expected = Number(c.req.query('expected_version'));
+  if (!isPositiveInteger(expected)) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
+  }
+  const id = c.req.param('id');
+  const result = await removeTrip(c.env.DB, c.get('userId'), id, expected, {
+    actor: 'ios', operation: 'remove_trip', args: { id, expected_version: expected },
+  });
+  return tripWriteResponse(c, result);
 });
 
 // One concrete date only. `workout_id: null` means rest; either branch

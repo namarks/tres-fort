@@ -1,9 +1,10 @@
 import SwiftUI
 
-// Visual language from the reference artifact: dark scoreboard, amber
-// accent, lime "done", heavy display type + mono numerics. Fonts use
-// system (SF Pro Heavy / SF Mono) as the native translation; swapping in
-// bundled Bebas Neue + JetBrains Mono is a drop-in polish step later.
+// Visual language: dark scoreboard, amber accent, lime "done". One type
+// system: SF Pro (system text styles, so Dynamic Type applies) for every
+// label and heading; Bebas Neue display type only for workout and exercise
+// names and big numbers; JetBrains Mono only for big numbers. Primary
+// actions use `WorkoutPrimaryButtonStyle`.
 enum Theme {
     static let bgTop = Color(hex: 0x1A1A1F)
     static let bg = Color(hex: 0x0A0A0B)
@@ -22,19 +23,31 @@ enum Theme {
             .ignoresSafeArea()
     }
 
-    /// Bebas Neue — condensed all-caps display (titles, buttons, big timer).
+    /// Bebas Neue: condensed all-caps display, only for workout and
+    /// exercise names and big numbers (timers, weights, stats).
     static func display(_ size: CGFloat) -> Font {
         .custom("BebasNeue-Regular", size: size)
     }
-    /// JetBrains Mono — true monospace for labels + numerics (uniform digits).
+    /// Small labels and captions: SF Pro at the nearest text style (so they
+    /// follow Dynamic Type) with tabular digits, so numbers in a label still
+    /// line up. Formerly JetBrains Mono; mono type is now only for `number`.
     static func mono(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font {
-        let face: String
-        switch w {
-        case .bold, .heavy, .black, .semibold: face = "JetBrainsMono-Bold"
-        case .medium: face = "JetBrainsMono-Medium"
-        default: face = "JetBrainsMono-Regular"
+        Font.system(textStyle(for: size), weight: w).monospacedDigit()
+    }
+    /// The text style closest to a point size, never much larger.
+    static func textStyle(for size: CGFloat) -> Font.TextStyle {
+        switch size {
+        case ..<12: .caption2
+        case ..<13: .caption
+        case ..<15: .footnote
+        case ..<16: .subheadline
+        case ..<17: .callout
+        case ..<20: .body
+        case ..<22: .title3
+        case ..<28: .title2
+        case ..<34: .title
+        default: .largeTitle
         }
-        return .custom(face, size: size)
     }
     /// Big tabular number (stepper values, countdowns).
     static func number(_ size: CGFloat) -> Font {

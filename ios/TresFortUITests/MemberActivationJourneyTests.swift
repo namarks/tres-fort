@@ -552,7 +552,7 @@ final class MemberActivationJourneyTests: XCTestCase {
             tap(app.buttons["Try again"], in: app)
             XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))
             if fixture == "load-failure" {
-                XCTAssertTrue(app.staticTexts["COULDN’T LOAD YOUR PLAN"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["Couldn’t load your plan"].waitForExistence(timeout: 5))
             }
             app.terminate()
         }

@@ -264,7 +264,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(resume.isHittable)
         resume.tap()
         XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["READY TO FINISH"].exists)
+        XCTAssertTrue(app.staticTexts["Ready to finish"].exists)
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
     }
 

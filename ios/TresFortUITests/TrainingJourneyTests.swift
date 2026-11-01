@@ -75,7 +75,7 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
         screenshot("ordinary-workout")
         app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["rest.done"].exists)
         // Finishing stays explicit, and its pinned action is a full-size
         // target that needs no scrolling.
@@ -362,7 +362,7 @@ final class TrainingJourneyTests: XCTestCase {
         let ready = fixture == "empty" ? app.buttons["Create a workout"]
             : fixture == "load-failure" ? app.buttons["Try again"]
             : fixture == "ordinary" ? app.buttons["LOG SET 1"]
-            : app.staticTexts["READY TO FINISH"]
+            : app.staticTexts["Ready to finish"]
         XCTAssertTrue(ready.waitForExistence(timeout: 10))
         // iOS 26.2's contrast heuristic flags even opaque #F4F4F5 over this
         // dark gradient. Palette policy tests and measured screenshot evidence

@@ -603,10 +603,8 @@ struct TodayView: View {
                             onResumeWorkout?()
                         } label: {
                             Label("Resume workout", systemImage: "play.fill")
-                                .frame(maxWidth: .infinity, minHeight: 52)
-                                .background(Theme.accent).foregroundStyle(.black)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
+                        .buttonStyle(WorkoutPrimaryButtonStyle())
                         .accessibilityIdentifier("runner.resume")
                     }
                     .padding(20).background(Theme.surface)
@@ -624,8 +622,8 @@ struct TodayView: View {
             PlanLoadRecoveryView(sync: sync)
         } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
             VStack(spacing: 14) {
-                Text(starterAvailable == false ? "YOUR NEXT WORKOUT" : "YOUR FIRST WORKOUT")
-                    .font(Theme.display(28)).foregroundStyle(Theme.text)
+                Text(starterAvailable == false ? "Your next workout" : "Your first workout")
+                    .font(.title2.weight(.bold)).foregroundStyle(Theme.text)
                 if starterAvailable == true {
                     Button("Find a starting workout") {
                         trainingSetupAccountID = auth.userID
@@ -646,12 +644,8 @@ struct TodayView: View {
                     showRoutine = true
                 } label: {
                     Label("Create a workout", systemImage: "plus.circle.fill")
-                        .font(Theme.mono(14, .bold))
-                        .foregroundStyle(Theme.bg)
-                        .padding(.horizontal, 18).padding(.vertical, 13)
-                        .background(Theme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
+                .buttonStyle(WorkoutPrimaryButtonStyle())
                 .padding(.top, 6)
                 .accessibilityIdentifier("today.createWorkout")
                 Button("Set up my coach") { auth.requestEntry(.coach) }
@@ -678,7 +672,7 @@ struct TodayView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(DateLabel.long(sync.todayString)).font(Theme.mono(12)).foregroundStyle(Theme.muted)
                     if sync.isFreestyle {
-                        Text("Freestyle").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("Freestyle").font(.title2.weight(.bold)).foregroundStyle(Theme.text)
                         Text("Add exercises as you go. Your weekly schedule stays unchanged.").foregroundStyle(Theme.muted)
                         if sync.hasResumableWorkout {
                             Button("Continue freestyle") { sync.resumeWorkout() }
@@ -743,14 +737,14 @@ struct TodayView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                     } else if let session = sync.todaySession,
                               ["planned", "in_progress"].contains(session.status) {
-                        Text("Workout needs review").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("Workout needs review").font(.title2.weight(.bold)).foregroundStyle(Theme.text)
                         Text("There is a workout for today, but its saved workout details are unavailable. Your recorded sets are still available.")
                             .foregroundStyle(Theme.muted)
                         Button("View workout record") { unresolvedDate = IdentifiedString(id: session.date) }
                             .frame(minHeight: 44).accessibilityIdentifier("today.viewUnresolvedWorkout")
                         Button("Refresh workout") { Task { await sync.load() } }.frame(minHeight: 44)
                     } else {
-                        Text("Nothing scheduled").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("Nothing scheduled").font(.title2.weight(.bold)).foregroundStyle(Theme.text)
                         Text("Choose a saved workout, or lift, run or log something without a plan.")
                             .foregroundStyle(Theme.muted)
                     }
@@ -938,7 +932,7 @@ private struct WorkoutDoneView<QuickStarts: View>: View {
                             .font(.system(size: 26))
                             .foregroundStyle(Theme.done)
                         Text("WORKOUT COMPLETE")
-                            .font(Theme.display(34))
+                            .font(.title2.weight(.heavy))
                             .foregroundStyle(Theme.text)
                             .lineLimit(2).minimumScaleFactor(0.6)
                     }
@@ -1237,13 +1231,9 @@ private struct RunnerView: View {
                     // Reserve a separate target for ending rest so a second tap
                     // at this position can never become a set submission.
                     if sync.restEndDate != nil {
-                        Button { sync.skipRest() } label: {
-                            Text("END REST").font(Theme.mono(16, .bold))
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                                .background(Theme.accent).foregroundStyle(Theme.bg)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain).accessibilityIdentifier("rest.done")
+                        Button("End rest") { sync.skipRest() }
+                            .buttonStyle(WorkoutPrimaryButtonStyle())
+                            .accessibilityIdentifier("rest.done")
                     } else {
                         Spacer(minLength: 0).frame(height: 44)
                     }
@@ -1791,70 +1781,42 @@ private struct RunnerSetAction: View {
         let resting = sync.restEndDate != nil
         VStack(spacing: 6) {
             if let onStartRun, !sync.timedActive {
-                Button(action: onStartRun) {
-                    Text("START RUN")
-                        .font(Theme.display(24)).tracking(1.2)
-                        .frame(maxWidth: .infinity).padding(.vertical, 16)
-                        .contentShape(Rectangle())
-                }
-                .background(Theme.accent).foregroundStyle(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .accessibilityIdentifier("runner.startRun")
+                Button("START RUN", action: onStartRun)
+                    .buttonStyle(WorkoutPrimaryButtonStyle(size: .large))
+                    .accessibilityIdentifier("runner.startRun")
             } else if ex.isTimed && sync.timedActive {
-                Button {
+                Button("STOP & LOG") {
                     Task { await sync.stopTimedSet() }
-                } label: {
-                    Text("STOP & LOG").font(Theme.display(24)).tracking(1.2)
-                        .frame(maxWidth: .infinity).padding(.vertical, 16)
-                        .contentShape(Rectangle())
                 }
-                .background(Theme.surface2).foregroundStyle(Theme.text)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .buttonStyle(WorkoutPrimaryButtonStyle(size: .large, quiet: true))
                 .accessibilityIdentifier("runner.stopTimedSet")
                 .disabled(
                     sync.isTerminalMutationInFlight
                         || sync.hasPendingTerminalIntentForCurrentWorkout)
             } else if !sync.isFreestyle && sync.runnerSetsDone(ex) >= ex.target_sets {
                 Text("EXERCISE COMPLETE")
-                    .font(Theme.display(24)).tracking(1.2)
-                    .frame(maxWidth: .infinity).padding(.vertical, 16)
+                    .font(.title3.weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 58)
                     .foregroundStyle(Theme.done)
                     .accessibilityIdentifier("runner.exerciseComplete")
             } else if ex.isTimed {
-                Button {
+                Button("START SET \(displayedSetNumber)") {
                     sync.startTimedSet(
                         expected: ex,
                         expectedSetNumber: physicalSetNumber)
-                } label: {
-                    Text("START SET \(displayedSetNumber)")
-                        .font(Theme.display(24)).tracking(1.2)
-                        .frame(maxWidth: .infinity).padding(.vertical, 16)
-                        .contentShape(Rectangle())
                 }
-                .background(Theme.accent).foregroundStyle(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .buttonStyle(WorkoutPrimaryButtonStyle(size: .large))
                 .accessibilityIdentifier("runner.startSet")
                 .disabled(sync.isSetEntryBlocked(ex))
-                .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
             } else {
-                Button {
+                Button("LOG SET \(displayedSetNumber)") {
                     Task { await sync.logCurrentSet(expected: ex, expectedSetNumber: physicalSetNumber) }
-                } label: {
-                    Text("LOG SET \(displayedSetNumber)")
-                        .font(Theme.display(26)).tracking(1.2)
-                        .frame(maxWidth: .infinity).padding(.vertical, 16)
-                        .contentShape(Rectangle())
                 }
                 // Logging during rest stays available, but a quieter button
                 // keeps the rest card the loudest thing on screen.
-                .background(resting ? Theme.surface2 : Theme.accent)
-                .foregroundStyle(resting ? Theme.accent : .black)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Theme.accent.opacity(resting ? 0.6 : 0), lineWidth: 1))
+                .buttonStyle(WorkoutPrimaryButtonStyle(size: .large, quiet: resting))
                 .accessibilityIdentifier("runner.logSet")
                 .disabled(sync.isSetEntryBlocked(ex))
-                .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
             }
         }
         .frame(maxWidth: .infinity)
@@ -2095,23 +2057,22 @@ private struct FinishedView: View {
                 if let logged = stationLink.lastLogged {
                     StationLinkUndoRow(sync: sync, link: stationLink, logged: logged)
                 }
-                Text(finishPending ? "WAITING" : finishingEarly ? "FINISH EARLY"
-                     : readyToFinish ? "SETS DONE" : "REVIEW SETS")
-                    .font(Theme.display(finishPending ? 64 : 58))
+                Text(finishPending ? "Waiting" : finishingEarly ? "Finish early"
+                     : readyToFinish ? "Sets done" : "Review sets")
+                    .font(.largeTitle.weight(.bold))
                     .foregroundStyle(finishingEarly && !finishPending ? Theme.accent : Theme.done)
-                    .lineLimit(1).minimumScaleFactor(0.6)
+                    .multilineTextAlignment(.center)
                 if finishingEarly && !finishPending {
-                    Text("UNLOGGED SETS WON'T COUNT")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted)
+                    Text("Unlogged sets won't count")
+                        .font(.subheadline).foregroundStyle(Theme.muted)
                         .multilineTextAlignment(.center)
                         .accessibilityIdentifier("feedback.earlyFinishNote")
                 } else {
                     Text(finishPending
-                        ? "FINISH SAVED ON THIS DEVICE"
-                        : readyToFinish ? "READY TO FINISH" : "EXERCISES TO COMPLETE")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted)
+                        ? "Finish saved on this device"
+                        : readyToFinish ? "Ready to finish" : "Exercises to complete")
+                        .font(.subheadline).foregroundStyle(Theme.muted)
+                        .multilineTextAlignment(.center)
                 }
 
                 let sets = todaysSets
@@ -2171,11 +2132,8 @@ private struct FinishedView: View {
                 }
             } label: {
                 Text(finishPending ? "WAITING TO SYNC" : readyToFinish ? "FINISH WORKOUT" : "REVIEW EXERCISES")
-                    .font(Theme.display(24)).tracking(1.5)
-                    .frame(maxWidth: .infinity).padding(.vertical, 16)
             }
-            .background(Theme.accent).foregroundStyle(.black)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .buttonStyle(WorkoutPrimaryButtonStyle(size: .large))
             .accessibilityIdentifier(readyToFinish || finishPending ? "FINISH" : "finished.reviewExercises")
             .disabled(
                 sync.hasPendingTerminalIntentForCurrentWorkout)

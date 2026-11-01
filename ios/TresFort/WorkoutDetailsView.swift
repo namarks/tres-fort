@@ -100,15 +100,28 @@ struct WorkoutDetailsView: View {
     }
 }
 
+/// The app's one primary action style: full width, amber, bold system text,
+/// and a muted fill when disabled. `.large` is for the set runner's main
+/// action (log, start, finish), which wants a bigger target, not another look.
 struct WorkoutPrimaryButtonStyle: ButtonStyle {
+    enum Size { case regular, large }
+    var size: Size = .regular
+    /// Still available but not the loudest thing on screen (logging during
+    /// rest, stopping a timed set): amber outline instead of an amber fill.
+    var quiet = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12)
         configuration.label
-            .font(.headline)
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .foregroundStyle(isEnabled ? Theme.bg : Theme.muted)
-            .background(isEnabled ? Theme.accent : Theme.surface2)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .font(size == .large ? .title3.weight(.bold) : .headline)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: size == .large ? 58 : 48)
+            .foregroundStyle(!isEnabled ? Theme.muted : quiet ? Theme.accent : Theme.bg)
+            .background(isEnabled && !quiet ? Theme.accent : Theme.surface2)
+            .overlay(shape.strokeBorder(Theme.accent.opacity(isEnabled && quiet ? 0.6 : 0), lineWidth: 1))
+            .clipShape(shape)
+            .contentShape(shape)
             .opacity(configuration.isPressed ? 0.8 : 1)
     }
 }

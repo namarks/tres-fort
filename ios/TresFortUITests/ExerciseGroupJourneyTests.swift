@@ -127,7 +127,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
             // fixture sequence below prove the tap logged one physical set.
             log.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             if index + 1 == names.count {
-                XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: 5))
                 XCTAssertFalse(app.buttons["rest.done"].exists, "Final work must go directly to completion")
             } else if index == 0 || index == 2 {
                 // A zero transition advances immediately without a rest cue.
@@ -142,7 +142,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 done.tap()
             }
         }
-        XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: 10))
         let finish = app.buttons["FINISH"]
         XCTAssertTrue(finish.waitForExistence(timeout: 5))
         XCTAssertTrue(finish.isEnabled)

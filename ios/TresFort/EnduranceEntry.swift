@@ -81,12 +81,18 @@ struct EnduranceEntry: Equatable {
         return (1...maxSeconds).contains(total) ? total : nil
     }
 
-    /// The distance in meters, or nil when the field is empty or unreadable.
+    /// The longest distance the form takes: about seven days of nonstop
+    /// riding. Anything outside 1 m...this is a typo, not an activity.
+    static let maxMeters = 5_000_000.0
+
+    /// The distance in meters, or nil when the field is empty, unreadable or
+    /// outside 1 m to `maxMeters`.
     static func meters(from text: String, unit: DistanceUnit) -> Double? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(trimmed), value.isFinite, value > 0 else { return nil }
-        return value * unit.meters
+        guard let value = Double(trimmed), value.isFinite else { return nil }
+        let meters = value * unit.meters
+        return (1...maxMeters).contains(meters) ? meters : nil
     }
 
     /// An empty distance is fine (it's optional); anything else must be a
@@ -106,7 +112,11 @@ struct EnduranceEntry: Equatable {
             return String(format: "%.1f %@", speed, unit == .mi ? "mph" : "km/h")
         }
         let per = kind == "swim" ? 100 * unit.meters : unit.meters
-        let pace = Int((Double(seconds) * per / meters).rounded())
+        // Only a pace that fits a clock converts to Int; anything else is
+        // not worth showing.
+        let raw = (Double(seconds) * per / meters).rounded()
+        guard raw.isFinite, raw >= 1, raw <= Double(maxSeconds) else { return nil }
+        let pace = Int(raw)
         let suffix = kind == "swim" ? "/100\(unit.rawValue)" : "/\(unit.rawValue)"
         return clock(pace) + " " + suffix
     }

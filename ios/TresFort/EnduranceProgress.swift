@@ -99,9 +99,10 @@ struct EnduranceProgress {
     /// Swims in meters or yards to match the member's mi/km choice;
     /// everything else in miles or kilometers.
     static func distance(_ meters: Double, kind: String, unit: RunDistanceUnit) -> String? {
-        guard meters > 0 else { return nil }
+        guard meters.isFinite, meters > 0 else { return nil }
         if kind == "swim" {
             let value = unit == .miles ? meters / 0.9144 : meters
+            guard value < 1e12 else { return nil }
             return "\(Int(value.rounded()).formatted()) \(unit == .miles ? "yd" : "m")"
         }
         return String(format: "%.1f %@", meters / unit.meters, unit.abbreviation)

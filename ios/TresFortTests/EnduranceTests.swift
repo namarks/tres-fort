@@ -29,6 +29,11 @@ final class EnduranceEntryTests: XCTestCase {
         XCTAssertEqual(EnduranceEntry.meters(from: "1500", unit: .m), 1_500)
         XCTAssertNil(EnduranceEntry.meters(from: "-1", unit: .km))
         XCTAssertNil(EnduranceEntry.meters(from: "", unit: .km))
+        // Pasted extremes are typos, and must not reach the pace arithmetic.
+        for text in ["1e-20", "0.0001", "1e300", "5001"] {
+            XCTAssertNil(EnduranceEntry.meters(from: text, unit: .km), text)
+        }
+        XCTAssertEqual(EnduranceEntry.meters(from: "5000", unit: .km), 5_000_000)
         XCTAssertTrue(EnduranceEntry.isReadableDistance(" ", unit: .km))
         XCTAssertFalse(EnduranceEntry.isReadableDistance("far", unit: .km))
     }
@@ -38,6 +43,8 @@ final class EnduranceEntryTests: XCTestCase {
         XCTAssertEqual(EnduranceEntry.paceLabel(seconds: 3_600, meters: 30_000, unit: .km, kind: "ride"), "30.0 km/h")
         XCTAssertEqual(EnduranceEntry.paceLabel(seconds: 1_800, meters: 1_500, unit: .m, kind: "swim"), "2:00 /100m")
         XCTAssertNil(EnduranceEntry.paceLabel(seconds: 1_800, meters: 0, unit: .mi, kind: "run"))
+        XCTAssertNil(EnduranceEntry.paceLabel(seconds: 2_700, meters: 1.6e-17, unit: .mi, kind: "run"))
+        XCTAssertNil(EnduranceEntry.paceLabel(seconds: 2_700, meters: 1e-20, unit: .m, kind: "swim"))
     }
 
     func testSwimsUsePoolUnits() {

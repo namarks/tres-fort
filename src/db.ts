@@ -9099,7 +9099,13 @@ export async function upsertHealthKitActivity(
   // and is immediately re-deduped. An identical retry does not update/reset the
   // row; this idempotent pass therefore preserves an already-retired duplicate.
   await dedupeHealthKitAgainstIntervals(db, userId);
-  await refreshActivityLoads(db, userId, { fromDate: input.date, toDate: input.date });
+  // A revision keeps the first push's civil date (see ON CONFLICT above), so
+  // refresh the stored row's date, not the date this push sent.
+  const stored = await db
+    .prepare('SELECT date FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(id, userId)
+    .first<{ date: string }>();
+  if (stored) await refreshActivityLoads(db, userId, { fromDate: stored.date, toDate: stored.date });
   const row = await db
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
     .bind(id, userId)

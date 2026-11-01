@@ -197,6 +197,23 @@ describe('effective training load', () => {
     expect(await row(pushed.id)).toMatchObject({ effective_load: 69, load_method: 'pace' });
   });
 
+  it('refreshes a revised Apple Health workout on its stored date', async () => {
+    const u = await makeUser('revised');
+    await setThreshold(u.jwt, 'run', 'threshold_pace_s_per_km', 300);
+    const first = await pushHealthRun(u.jwt);
+    expect(first).toMatchObject({ date: '2026-10-24', effective_load: 69 });
+    // A re-push after travel sends another civil date; the stored date stays,
+    // and the halved time must still recompute: 0.5 h × (300/180)² × 100.
+    const revised = await pushHealthRun(u.jwt, {
+      id: first.external_id,
+      date: '2026-10-25',
+      start_date_local_ms: Date.parse('2026-10-25T02:14:00Z'),
+      moving_time_sec: 1800,
+      elapsed_time_sec: 1800,
+    });
+    expect(revised).toMatchObject({ date: '2026-10-24', moving_time_sec: 1800, effective_load: 139, load_method: 'pace' });
+  });
+
   it('uses the threshold in effect on each workout date', async () => {
     const u = await makeUser('dated');
     await setThreshold(u.jwt, 'run', 'threshold_pace_s_per_km', 360, '2026-01-01');

@@ -3,8 +3,12 @@ import XCTest
 /// Reveal a control on its own scrolling surface without overshooting it or
 /// tapping coordinates. The caller keeps ownership of the eventual action.
 enum UITestScrolling {
+    /// `leadingDragInset` starts each drag that far in from the surface's
+    /// leading edge instead of its centre. Use it when the centre can hold a
+    /// control that claims the press, such as a pull-down menu, which opens
+    /// on touch instead of scrolling.
     static func reveal(_ element: XCUIElement, in app: XCUIApplication,
-                       maxAttempts: Int, surface: XCUIElement? = nil,
+                       maxAttempts: Int, surface: XCUIElement? = nil, leadingDragInset: CGFloat? = nil,
                        file: StaticString = #filePath, line: UInt = #line) {
         if let surface {
             XCTAssertTrue(surface.exists, file: file, line: line)
@@ -41,8 +45,9 @@ enum UITestScrolling {
             let distance = min(height * 0.45, max(24, abs(offset)))
             let startY = top + height * (down ? 0.25 : 0.75)
             let origin = app.coordinate(withNormalizedOffset: .zero)
-            let start = origin.withOffset(CGVector(dx: viewport.midX, dy: startY))
-            let end = origin.withOffset(CGVector(dx: viewport.midX, dy: startY + (down ? distance : -distance)))
+            let x = leadingDragInset.map { viewport.minX + $0 } ?? viewport.midX
+            let start = origin.withOffset(CGVector(dx: x, dy: startY))
+            let end = origin.withOffset(CGVector(dx: x, dy: startY + (down ? distance : -distance)))
             start.press(forDuration: 0.1, thenDragTo: end,
                         withVelocity: .slow, thenHoldForDuration: 0.5)
         }

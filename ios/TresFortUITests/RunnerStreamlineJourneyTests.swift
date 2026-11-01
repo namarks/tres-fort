@@ -35,7 +35,11 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
                         file: StaticString = #filePath, line: UInt = #line) {
-        UITestScrolling.reveal(element, in: app, maxAttempts: 10, file: file, line: line)
+        // Drag in the 20 pt side margin that Today and the runner keep clear.
+        // At accessibility sizes the runner's exercise options menu is a wide
+        // text button mid-screen, and a press that starts on it opens the
+        // menu instead of scrolling.
+        UITestScrolling.reveal(element, in: app, maxAttempts: 10, leadingDragInset: 12, file: file, line: line)
     }
 
     private func capture(_ name: String) {

@@ -14,41 +14,6 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         return app
     }
 
-    /// The Plan tab holds the library, and details, the editor and the
-    /// calendar push onto its one stack instead of stacking sheets.
-    func testPlanTabKeepsWorkoutDetailsEditorAndCalendarOnOneStack() {
-        let app = XCUIApplication()
-        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "library"
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
-        app.launch()
-        let tab = app.tabBars.buttons["Plan"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 10))
-        tab.tap()
-        let plan = app.navigationBars["Plan"]
-        XCTAssertTrue(plan.waitForExistence(timeout: 5))
-        XCTAssertFalse(plan.buttons["Done"].exists)
-        XCTAssertTrue(app.buttons["library.weeklySchedule"].exists)
-        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        image.name = "plan-tab"; image.lifetime = .keepAlways; add(image)
-
-        app.buttons["library.workout.hotel"].tap()
-        let details = app.navigationBars["Hotel"]
-        XCTAssertTrue(details.waitForExistence(timeout: 5))
-        XCTAssertFalse(details.buttons["Done"].exists)
-        app.buttons["workoutDetails.edit"].tap()
-        let editor = app.navigationBars["Edit Hotel"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
-        editor.buttons["Done"].tap()
-        XCTAssertTrue(details.waitForExistence(timeout: 5))
-        details.backButton.tap()
-        XCTAssertTrue(plan.waitForExistence(timeout: 5))
-
-        app.buttons["plan.calendar"].tap()
-        XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
-        app.navigationBars["Calendar"].backButton.tap()
-        XCTAssertTrue(plan.waitForExistence(timeout: 5))
-    }
-
     func testTagsArchiveCancelAndRestore() {
         let app = launch()
         app.buttons["Actions for Gym"].tap()

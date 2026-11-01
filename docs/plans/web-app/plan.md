@@ -51,6 +51,11 @@ partner training are not web features.
     `src/runSteps.ts` directly, so the web runs the same code as the Worker
     rather than a third copy of those rules.
   - Sign out, and a link to delete the account (the existing `DELETE /api/me`).
+  - New accounts: `/auth/apple` already creates an ordinary account for any
+    new Apple identity, so a person can sign up on the web first. A short
+    first-run offers the existing starter workouts and a link to the iPhone
+    app for training; a group invite code carries through sign-in as it does
+    in the app.
   - Checks: Vitest for gateway and view logic, Playwright against a local
     Worker and D1 at 1280 and 800 px widths, and a keyboard-only pass.
 - [ ] **P2 — Edit the plan**

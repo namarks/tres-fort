@@ -27,16 +27,13 @@ struct WorkoutFeedbackSheet: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var sync: SyncModel
     let target: WorkoutTerminalActionTarget
-    let finishAfterSave: Bool
     @StateObject private var editor: WorkoutFeedbackEditor
     @State private var saveFailed = false
-    @State private var feedbackExpanded = false
     @FocusState private var typing: Bool
 
-    init(sync: SyncModel, target: WorkoutTerminalActionTarget, finishAfterSave: Bool = false) {
+    init(sync: SyncModel, target: WorkoutTerminalActionTarget) {
         self.sync = sync
         self.target = target
-        self.finishAfterSave = finishAfterSave
         _editor = StateObject(wrappedValue: WorkoutFeedbackEditor(
             initial: sync.currentWorkoutFeedback, transcriber: WorkoutFeedbackTranscriberFactory.make()))
     }
@@ -44,70 +41,23 @@ struct WorkoutFeedbackSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if finishAfterSave {
-                    finishSummary
-                    Section {
-                        Button {
-                            typing = false
-                            feedbackExpanded.toggle()
-                        } label: {
-                            HStack {
-                                Text(editor.initial?.isEmpty == false ? "Edit feedback" : "Add feedback")
-                                Spacer()
-                                Text("Optional").foregroundStyle(.secondary)
-                                Image(systemName: feedbackExpanded ? "chevron.up" : "chevron.down")
-                                    .font(.caption.weight(.semibold))
-                            }
-                        }
-                        .disabled(recordingActive)
-                        .accessibilityIdentifier("feedback.expand")
-                        .accessibilityValue(feedbackExpanded ? "Expanded" : "Collapsed")
-                    }
-                }
-                if !finishAfterSave || feedbackExpanded {
-                    feedbackFields
-                }
+                feedbackFields
                 if saveFailed {
                     Section { Text("This workout changed. Close this sheet and review its current feedback before saving again.") }
                 }
             }
-            .navigationTitle(finishAfterSave ? "Finish workout" : "Feedback")
+            .navigationTitle("Feedback")
             .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if finishAfterSave {
-                    VStack(spacing: 8) {
-                        Button(action: feedbackChanged ? saveFeedback : finishWithoutChanges) {
-                            Text(feedbackChanged ? "Save feedback & finish" : "Finish workout")
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent).foregroundStyle(.black)
-                        .disabled(recordingActive)
-                        .accessibilityIdentifier(feedbackChanged ? "feedback.saveAndFinish" : "feedback.finishWithoutChanges")
-                        if feedbackChanged {
-                            Button(editor.initial?.isEmpty == false ? "Finish with saved feedback" : "Finish without feedback",
-                                   action: finishWithoutChanges)
-                                .frame(minHeight: 44)
-                                .accessibilityIdentifier("feedback.finishWithoutChanges")
-                        }
-                    }
-                    .padding(.horizontal, 20).padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(Theme.background)
-                }
-            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(finishAfterSave ? "Keep working" : "Cancel") {
+                    Button("Cancel") {
                         editor.stop()
                         dismiss()
                     }
                 }
-                if !finishAfterSave {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save feedback", action: saveFeedback)
-                            .disabled(editor.isRecording || editor.isStarting || editor.isFinalizing)
-                    }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save feedback", action: saveFeedback)
+                        .disabled(editor.isRecording || editor.isStarting || editor.isFinalizing)
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -119,42 +69,6 @@ struct WorkoutFeedbackSheet: View {
             if phase == .background { editor.interrupt() }
         }
         .onDisappear { editor.stop() }
-    }
-
-    private var recordingActive: Bool {
-        editor.isRecording || editor.isStarting || editor.isFinalizing
-    }
-
-    private var feedbackChanged: Bool {
-        editor.text != (editor.initial?.notes ?? "") || editor.fatigue != editor.initial?.perceivedFatigue
-    }
-
-    private var finishSummary: some View {
-        Section {
-            let savedSets = sync.todaySession.map { sync.setsForSession($0.id).filter { $0.is_warmup == 0 } } ?? []
-            let pendingSets = sync.setOutbox.pending.filter { $0.date == target.date }
-            let failed = pendingSets.filter { $0.deliveryState == .failed }.count
-            let sending = pendingSets.filter { sync.sendingSetIntentIDs.contains($0.id) }.count
-            let queued = pendingSets.filter {
-                $0.deliveryState == .queued && !sync.sendingSetIntentIDs.contains($0.id)
-            }.count
-            let exerciseCount = Set(savedSets.map(\.exercise_id)).count
-            Text(sync.selectedDay?.name ?? "Workout").font(.headline)
-            Text("\(savedSets.count) working \(savedSets.count == 1 ? "set" : "sets") saved · \(exerciseCount) \(exerciseCount == 1 ? "exercise" : "exercises")")
-                .accessibilityIdentifier("feedback.finishSummary")
-            if queued > 0 { Text("\(queued) \(queued == 1 ? "set" : "sets") queued on this device").foregroundStyle(.secondary) }
-            if sending > 0 { Text("\(sending) \(sending == 1 ? "set" : "sets") syncing").foregroundStyle(.secondary) }
-            if failed > 0 { Text("\(failed) \(failed == 1 ? "set needs" : "sets need") retry before finishing").foregroundStyle(.secondary) }
-            if sync.exercises.contains(where: { !sync.isSkipped($0) && sync.runnerSetsDone($0) < $0.target_sets }) {
-                Text("Unlogged sets won't be counted.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("feedback.earlyFinishNote")
-            }
-            if editor.initial?.isEmpty == false {
-                Text("Your saved feedback will be included.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
     }
 
     @ViewBuilder
@@ -201,21 +115,12 @@ struct WorkoutFeedbackSheet: View {
         }
     }
 
-    private func finishWithoutChanges() {
-        editor.stop()
-        dismiss()
-        Task { await sync.finishWorkout(expected: target) }
-    }
-
     private func saveFeedback() {
         guard sync.saveWorkoutFeedback(editor.approvedFeedback(), expected: target, previous: editor.initial) else {
             saveFailed = true
             return
         }
         dismiss()
-        if finishAfterSave, let savedTarget = sync.terminalActionTarget {
-            Task { await sync.finishWorkout(expected: savedTarget) }
-        }
     }
 }
 

@@ -32,6 +32,23 @@ final class StationConnectionJourneyTests: XCTestCase {
         element.tapWhenReady(file: file, line: line)
     }
 
+    /// iPad display sits in the + menu (or the workout menu during a
+    /// workout) until this phone turns it on, then in the toolbar.
+    private func openIPadDisplay(in app: XCUIApplication,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let direct = app.navigationBars.buttons["today.ipadDisplay"]
+        let workoutMenu = app.buttons["today.workoutActions"]
+        let moreMenu = app.buttons["today.moreWaysToTrain"]
+        let deadline = Date().addingTimeInterval(UITestWait.screen)
+        while Date() < deadline, !direct.exists, !workoutMenu.exists, !moreMenu.exists {
+            _ = moreMenu.waitForExistence(timeout: 0.5)
+        }
+        if !direct.exists {
+            tap(workoutMenu.exists ? workoutMenu : moreMenu, in: app, file: file, line: line)
+        }
+        tap(app.buttons["today.ipadDisplay"], in: app, file: file, line: line)
+    }
+
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
@@ -56,12 +73,12 @@ final class StationConnectionJourneyTests: XCTestCase {
     func testPhoneConnectionIsVisibleBeforeAndDuringWorkoutAndRemembersExplicitChoice() throws {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone)
         let app = launch()
-        tap(app.buttons["today.ipadDisplay"], in: app)
+        openIPadDisplay(in: app)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
         capture("iphone-connect-ipad")
         // Looking at setup and dismissing does not opt in.
         app.navigationBars["iPad display"].buttons["Done"].tap()
-        tap(app.buttons["today.ipadDisplay"], in: app)
+        openIPadDisplay(in: app)
         tap(app.buttons["station.phoneConnect"], in: app)
         XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: 5))
         // The fixture refuses the key request. The real setup must expose
@@ -72,14 +89,14 @@ final class StationConnectionJourneyTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [offline], timeout: 10), .completed)
         app.navigationBars["iPad display"].buttons["Done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
-        tap(app.buttons["today.ipadDisplay"], in: app)
+        openIPadDisplay(in: app)
         XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["station.phoneDisconnect"], in: app)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 5))
         app.navigationBars["iPad display"].buttons["Done"].tap()
         tap(app.buttons["today.startWorkout"], in: app)
         XCTAssertTrue(app.buttons["runner.logSet"].waitForExistence(timeout: 5))
-        tap(app.buttons["today.ipadDisplay"], in: app)
+        openIPadDisplay(in: app)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
     }
 
@@ -90,7 +107,7 @@ final class StationConnectionJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["station.phoneDisconnect"].exists)
         app.navigationBars["iPad display"].buttons["Done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
-        tap(app.buttons["today.ipadDisplay"], in: app)
+        openIPadDisplay(in: app)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
     }
 
@@ -134,7 +151,7 @@ final class StationConnectionJourneyTests: XCTestCase {
     func testLargestTextKeepsSetupAndDismissalReachable() throws {
         let app = launch(largeText: true)
         if UIDevice.current.userInterfaceIdiom == .phone {
-            tap(app.buttons["today.ipadDisplay"], in: app)
+            openIPadDisplay(in: app)
             tap(app.buttons["station.phoneConnect"], in: app)
             tap(app.buttons["station.phoneDisconnect"], in: app)
             XCTAssertTrue(app.navigationBars["iPad display"].buttons["Done"].isHittable)

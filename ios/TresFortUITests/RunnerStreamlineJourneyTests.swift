@@ -113,6 +113,32 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         capture("focus-rest-keeps-workspace-stable")
     }
 
+    func testExerciseMenuOpensPlatesAndSkipsInOneTap() {
+        let app = launch()
+        let title = app.staticTexts["runner.exerciseTitle"]
+        XCTAssertEqual(title.label, "BARBELL SQUAT")
+        // Before the first set there is no rest or last-set row to reserve.
+        XCTAssertFalse(app.buttons["rest.done"].exists)
+        XCTAssertFalse(app.staticTexts["Ready when you are"].exists)
+        let menu = app.buttons["runner.exerciseMenu"]
+        XCTAssertTrue(menu.isHittable)
+        menu.tap()
+        let plates = app.buttons["runner.menu.plates"]
+        XCTAssertTrue(plates.waitForExistence(timeout: 5)); plates.tap()
+        let loading = app.navigationBars["Barbell loading"]
+        XCTAssertTrue(loading.waitForExistence(timeout: 5))
+        capture("runner-exercise-menu-plates")
+        loading.buttons["Done"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: loading)
+        waitForExpectations(timeout: 5)
+        menu.tap()
+        let skip = app.buttons["runner.menu.skip"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
+        expectation(for: NSPredicate(format: "label != %@", "BARBELL SQUAT"), evaluatedWith: title)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(app.buttons["LOG SET 1"].isHittable)
+    }
+
     func testCorrectionTargetsLastSetAfterAdvancingAndEndingRest() {
         let app = launch()
         for index in 1...3 {
@@ -318,7 +344,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         app.buttons["rest.done"].tap()
         app.buttons["today.workoutActions"].tap()
         app.buttons["Finish workout"].tap()
-        let finish = app.buttons["feedback.finishWithoutChanges"]
+        let finish = app.buttons["FINISH"]
         XCTAssertTrue(finish.waitForExistence(timeout: 5)); finish.tap()
         let summary = app.staticTexts["today.completedSummary"]
         XCTAssertTrue(summary.waitForExistence(timeout: 10))

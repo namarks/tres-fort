@@ -15,12 +15,19 @@ final class FreestyleJourneyTests: XCTestCase {
         if large { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", timed ? "NO" : "YES"]
         app.launch()
-        // Freestyle is an occasional start, so it lives in Today's "+" menu.
-        let more = app.buttons["today.moreWaysToTrain"]
-        XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
-        let start = app.buttons["today.startFreestyle"]
-        XCTAssertTrue(start.waitForExistence(timeout: 5))
-        XCTAssertEqual(start.label, "Start freestyle"); start.tap()
+        // Freestyle starts from Today itself or from its "+" menu.
+        if large {
+            let start = app.buttons["today.quick.freestyle"]
+            XCTAssertTrue(start.waitForExistence(timeout: 10))
+            XCTAssertEqual(start.label, "Freestyle lift")
+            reveal(start, app: app); start.tap()
+        } else {
+            let more = app.buttons["today.moreWaysToTrain"]
+            XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
+            let start = app.buttons["today.startFreestyle"]
+            XCTAssertTrue(start.waitForExistence(timeout: 5))
+            XCTAssertEqual(start.label, "Start freestyle"); start.tap()
+        }
         let search = app.textFields["exercisePicker.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap(); search.typeText((timed ? "Goblet Hold" : "Barbell Squat") + "\n")
@@ -60,7 +67,7 @@ final class FreestyleJourneyTests: XCTestCase {
         XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
         let actions = app.buttons["today.workoutActions"]
         actions.tap(); app.buttons["Finish workout"].tap()
-        let finish = app.buttons["feedback.finishWithoutChanges"]
+        let finish = app.buttons["FINISH"]
         XCTAssertTrue(finish.waitForExistence(timeout: 5)); reveal(finish, app: app); finish.tap()
         let history = app.buttons["today.viewCompletedWorkout"]
         XCTAssertTrue(history.waitForExistence(timeout: 10)); reveal(history, app: app); history.tap()

@@ -51,9 +51,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
         let app = launch()
         XCTAssertFalse(app.buttons["Workout options"].exists)
         XCTAssertFalse(app.buttons["today.createWorkout"].exists)
-        let displayConnection = app.navigationBars["Today"].buttons["today.ipadDisplay"]
-        XCTAssertTrue(displayConnection.waitForExistence(timeout: 5))
-        XCTAssertEqual(displayConnection.label, "iPad display")
+        // Unplanned training is one tap from Today. The iPad display waits in
+        // the + menu until one is turned on, so the toolbar stays calm.
+        XCTAssertTrue(app.buttons["today.quick.logActivity"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Today"].buttons["today.ipadDisplay"].exists)
         capture("today-navigation")
         tap(app.buttons["today.viewWorkout"], in: app)
         XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))
@@ -84,9 +85,13 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
         XCTAssertTrue(app.staticTexts["Strength A"].exists, "Creation must not replace today's scheduled workout")
         tap(app.buttons["today.moreWaysToTrain"], in: app)
+        XCTAssertTrue(app.buttons["today.ipadDisplay"].waitForExistence(timeout: 5))
         tap(app.buttons["today.logActivity"], in: app)
         XCTAssertTrue(app.navigationBars["Log activity"].waitForExistence(timeout: 5))
         capture("activity-destination")
+        tap(app.navigationBars["Log activity"].buttons["Cancel"], in: app)
+        tap(app.buttons["today.quick.logActivity"], in: app)
+        XCTAssertTrue(app.navigationBars["Log activity"].waitForExistence(timeout: 5))
     }
 
     func testCalendarMovesAndRemovesOneDateWithoutChangingWeeklySchedule() {

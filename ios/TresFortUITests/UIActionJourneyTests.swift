@@ -149,7 +149,7 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["LOG SET 2"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["feedback.finishWithoutChanges"], in: app)
+        tap(app.buttons["FINISH"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 
@@ -158,20 +158,20 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["today.startWorkout"], in: app)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        XCTAssertTrue(app.navigationBars["Finish workout"].waitForExistence(timeout: 5))
+        // Finishing early lands on the same finish screen as the last set.
+        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Skip"].exists)
-        XCTAssertTrue(app.staticTexts["feedback.finishSummary"].exists)
-        XCTAssertTrue(app.buttons["feedback.expand"].isHittable)
+        XCTAssertTrue(app.staticTexts["feedback.earlyFinishNote"].exists)
+        XCTAssertTrue(app.buttons["feedback.open"].exists)
         XCTAssertFalse(app.textViews["feedback.note"].exists)
-        XCTAssertFalse(app.buttons["feedback.saveAndFinish"].exists)
-        XCTAssertTrue(app.buttons["feedback.finishWithoutChanges"].isHittable)
+        XCTAssertTrue(app.buttons["FINISH"].isHittable)
         capture("finish")
         tap(app.buttons["Keep working"], in: app)
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["feedback.finishWithoutChanges"], in: app)
+        tap(app.buttons["FINISH"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 
@@ -180,12 +180,13 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["today.startWorkout"], in: app)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["feedback.expand"], in: app)
+        tap(app.buttons["feedback.open"], in: app)
         let note = app.textViews["feedback.note"]
         tap(note, in: app)
         note.typeText("Finished early today.")
         if app.buttons["Done"].isHittable { app.buttons["Done"].tap() }
-        tap(app.buttons["feedback.saveAndFinish"], in: app)
+        tap(app.buttons["Save feedback"], in: app)
+        tap(app.buttons["FINISH"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
         tap(app.buttons["today.viewCompletedWorkout"], in: app)
         XCTAssertEqual(app.staticTexts["feedback.saved-note"].label, "Finished early today.")

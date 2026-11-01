@@ -4,11 +4,12 @@ Slug: planned-runs · Status: active · Updated: 2026-10-31 · Theme: connected-
 
 ## Goal
 
-The coach can plan a run with steps and targets, such as a 10-minute warm-up,
-then 4 × 800 m at 4:10/km with 2-minute jogs, then a cool-down. A simpler
-plan might be 40 minutes in heart rate zone 2. The run is part of the Tres
-Fort plan, next to the lifting days, and it is scheduled the same way. The
-member sees today's run in the app and starts it in the run recorder. The app
+The coach or the member can plan a run with steps and targets, such as a
+10-minute warm-up, then 4 × 800 m at 4:10/km with 2-minute jogs, then a
+cool-down. A simpler plan might be 40 minutes in heart rate zone 2. The run
+is part of the Tres Fort plan, next to the lifting days, and it is scheduled
+the same way. The member sees today's run in the app and starts it in the run
+recorder. The app
 announces each step as it starts and says whether the member is on, above or
 below the target pace or heart rate. The recorded run still uploads to
 intervals.icu, which stays the store of completed runs.
@@ -120,6 +121,25 @@ intervals.icu, which stays the store of completed runs.
     planned.
   - Check step timing and how useful and well-timed the cues are. Check that
     the uploaded run in intervals.icu lines up with the plan.
+- [x] **P5 — Plan runs in the app**
+  - The owner's rule (2026-11-01): every feature must be usable in the app
+    without an AI coach. Until P5, only the coach could write steps.
+  - In the workout editor, tapping an outdoor run opens "Plan run" instead
+    of the sets and loads form. A member adds steps and repeat groups, moves
+    or removes them, and sets how many times a repeat runs.
+  - Each step has a kind (warm-up, work, recovery, cool-down) and ends after
+    a time or a distance. A distance can be typed in m, km or mi. The step
+    can carry a pace range, typed as m:ss in the recorder's unit and stored
+    per kilometer, or a heart rate range.
+  - The editor checks the server's limits before saving (`RunPlanLimits`
+    mirrors `RUN_STEP_LIMITS`) and names the problem. It saves through the
+    existing slot PATCH with the reviewed plan version, so the server still
+    validates, audits (`actor='ios'`) and bumps the plan version. "Remove
+    all steps" saves `null`, which leaves a plain run.
+  - Steps in a format this app can't read can only be removed, so editing
+    never drops them silently.
+  - Adding "Outdoor Run" from the exercise list says to tap it afterwards to
+    plan steps.
 
 ## Dependencies
 
@@ -132,7 +152,8 @@ intervals.icu, which stays the store of completed runs.
 ## Next step
 
 **Now (@owner):** On TestFlight build 59, run a planned interval session
-and a heart rate run (P4), after the coach adds them to the plan.
+and a heart rate run (P4), after the coach adds them to the plan. Once P5
+reaches a TestFlight build, the runs can be planned in the app instead.
 Run-recorder P3's real runs can use the same build.
 
 Released on 2026-10-31 with the owner's go-ahead: migration 0058 was applied
@@ -163,6 +184,11 @@ yet, so the first coach-planned run is the first real write.
   fresh, and the spoken step wording in miles and kilometers.
   `RunRecorderTests` covers a planned run speaking its first and next
   steps, one heart rate cue, and the end of the plan.
+- P5: `RunPlanEditingTests` covers saving steps in the plan's format and
+  reading them back, the draft's add, move, edit and remove operations,
+  repeat defaults, the server's limits and each step problem, and pace and
+  distance entry in miles and kilometers. `SetOutboxTests` covers saving
+  steps and clearing them through the slot route with the reviewed version.
 
 ## Notes / open questions
 

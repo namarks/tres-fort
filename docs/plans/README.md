@@ -183,13 +183,13 @@ integration or social breadth.
   checked on the owner's iPhone. P4 adds auto-pause and a glanceable
   running display.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
-  **active**; the coach plans runs with steps and pace or heart rate
-  targets in the Tres Fort plan, and the recorder follows them with spoken
-  on/off-target cues. Completed runs still upload to intervals.icu. P0's
-  step format, migration 0058 and MCP tools, P1's display in the app
-  with a Start run button, P2's step-by-step guidance while recording,
-  and P3's spoken step and target cues are in the repository; P4 is the
-  owner's real runs.
+  **active**; the coach or the member plans runs with steps and pace or
+  heart rate targets in the Tres Fort plan, and the recorder follows them
+  with spoken on/off-target cues. Completed runs still upload to
+  intervals.icu. P0's step format, migration 0058 and MCP tools, P1's
+  display in the app with a Start run button, P2's step-by-step guidance
+  while recording, P3's spoken step and target cues and P5's in-app step
+  editor are in the repository; P4 is the owner's real runs.
 
 ### Platform (`platform`)
 

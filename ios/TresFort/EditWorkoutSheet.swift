@@ -37,6 +37,7 @@ struct EditWorkoutSheet: View {
     @State private var adding = false
     @State private var addPresetWarmup = false
     @State private var editingExercise: ExerciseEditTarget?
+    @State private var planningRun: ExerciseEditTarget?
     @State private var replacingExercise: ExerciseReplacementTarget?
     @State private var refreshing = false
     @State private var selectingGroup = false
@@ -121,6 +122,15 @@ struct EditWorkoutSheet: View {
                         dayID: dayID,
                         slot: target.exercise, expectedVersion: target.version)
                 }
+            }
+            .sheet(item: $planningRun) { target in
+                NavigationStack {
+                    RunPlanEditorView(
+                        sync: sync,
+                        dayID: dayID,
+                        slot: target.exercise, expectedVersion: target.version)
+                }
+                .preferredColorScheme(.dark)
             }
             .sheet(item: $replacingExercise) { target in
                 ReplaceExerciseSheet(sync: sync, dayID: dayID, target: target)
@@ -307,7 +317,9 @@ struct EditWorkoutSheet: View {
                 .accessibilityIdentifier("editor.select.\(ex.id)")
             }
             Button {
-                editingExercise = ExerciseEditTarget(exercise: ex, version: sync.plan?.version ?? 0)
+                let target = ExerciseEditTarget(exercise: ex, version: sync.plan?.version ?? 0)
+                // A run's sets and loads don't apply; it opens its step plan instead.
+                if ex.isOutdoorRun { planningRun = target } else { editingExercise = target }
             } label: {
                 let layout = dynamicTypeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
@@ -320,7 +332,7 @@ struct EditWorkoutSheet: View {
                     }
                     if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                     if ex.isWarmup { WarmupTag() }
-                    if !reordering && !selectingGroup && !dynamicTypeSize.isAccessibilitySize && !ex.isOutdoorRun {
+                    if !reordering && !selectingGroup && !dynamicTypeSize.isAccessibilitySize {
                         Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.dim)
                     }
                 }
@@ -328,8 +340,7 @@ struct EditWorkoutSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // Sets and loads don't apply to a run; its steps come from the coach.
-            .disabled(selectingGroup || reordering || ex.isOutdoorRun)
+            .disabled(selectingGroup || reordering)
             .accessibilityIdentifier("editor.slot.\(ex.id)")
             if !selectingGroup && !reordering {
                 Menu {
@@ -354,7 +365,7 @@ struct EditWorkoutSheet: View {
         }
     }
 
-    /// Targets and rest for a lift; a run's steps, which only the coach edits.
+    /// Targets and rest for a lift; a run's planned steps.
     private func slotSummary(_ ex: TemplateExercise) -> String {
         if ex.isOutdoorRun { return ex.runPrescriptionLabel(in: .preferred()) }
         return ex.group_id == nil ? "\(ex.targetLabel) · \(ex.rest_seconds)s rest" : ex.targetLabel
@@ -678,8 +689,14 @@ private struct ConfigureExerciseView: View {
             }
 
             if isCardio {
-                Section("Duration") {
+                Section {
                     Stepper("\(minutes) min", value: $minutes, in: 1...60)
+                } header: {
+                    Text("Duration")
+                } footer: {
+                    if exercise.id == RunPlan.exerciseID {
+                        Text("After adding the run, tap it in the workout to plan steps with pace or heart rate targets.")
+                    }
                 }
             } else if canChooseMeasure {
                 Section("Measure") {

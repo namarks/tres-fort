@@ -5525,6 +5525,20 @@ final class SyncModel: ObservableObject {
         }
     }
 
+    /// Saves a run slot's planned steps, or clears them with nil, so a member
+    /// can plan a run without the coach (docs/plans/planned-runs P5).
+    func updateRunSteps(dayID: String, teID: String, steps: RunPlan?,
+                        expectedVersion: Int? = nil) async -> Bool {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT,
+              !workoutEditorRefreshNeeded,
+              let version = expectedVersion ?? plan?.version else { return false }
+        let fields: [String: Any] = ["run_steps": steps.map { $0.jsonObject as Any } ?? NSNull()]
+        return await performSlotEdit(jwt: jwt) {
+            _ = try await self.planEditingAPI.updateExerciseSlot(
+                dayID: dayID, teID: teID, fields: fields, expectedVersion: version, jwt: jwt)
+        }
+    }
+
     /// An accepted mutation stays successful even if its refresh fails. A
     /// rejected version refreshes the view and requires an explicitly reviewed
     /// edit; it never retries a form's stale prescription against newer state.

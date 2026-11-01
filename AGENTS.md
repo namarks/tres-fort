@@ -286,6 +286,12 @@ chat start) and a **prompt** (`coach_brief`).
   unit from the catalog `exercises.unit`, and never sum lb with kg. Previous
   bests match the same physical load across units (`sameLoad`). See the
   [weight unit release](docs/plans/workouts-and-multi-session/weight-unit-release.md).
+- Endurance load comes from `src/trainingLoad.ts` (pure) and the member's
+  `athlete_thresholds` history (migration `0059`, `/api/me/thresholds`):
+  power, heart-rate or pace load, scaled so one hour at threshold is 100, with
+  a provider's own load preferred and the method labeled. Missing data stays
+  unknown; never fabricate a load. See
+  [the plan](docs/plans/endurance-training-load/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude
   editing `target_*` / the per-exercise `progression` JSON and writing a
   note. `progression.type` (linear|double|rpe|manual) is interpreted by

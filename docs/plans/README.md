@@ -194,6 +194,13 @@ integration or social breadth.
   display in the app with a Start run button, P2's step-by-step guidance
   while recording, P3's spoken step and target cues and P5's in-app step
   editor are in the repository; P4 is the owner's real runs.
+- [Real training load for endurance workouts](endurance-training-load/plan.md) —
+  **active**; members set FTP, threshold heart rate and threshold pace in the
+  app, and one Worker load engine gives every run, ride and swim a labeled
+  power, heart-rate or pace load from Apple Health, the recorder, `.fit`
+  uploads and later Garmin, keeping intervals.icu's figure when it has one.
+  P0's thresholds store and engine are in the repository; P1 applies them
+  to imported workouts.
 
 ### Platform (`platform`)
 

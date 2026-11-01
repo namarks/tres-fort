@@ -108,6 +108,11 @@ import {
   MAX_RECORDING_BYTES,
   writeAudit,
   ensureActivePlan,
+  addAthleteThreshold,
+  deleteAthleteThreshold,
+  getAthleteThresholds,
+  parseThresholdInput,
+  isCivilDate,
 } from '../db';
 import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
 import {
@@ -1621,6 +1626,35 @@ apiRoutes.put('/me/training-profile', async (c) => {
   if ('error' in result) return c.json(result, 400);
   if ('conflict' in result) return c.json(result, 409);
   return c.json(result);
+});
+
+// Athlete thresholds for training load (migration 0059). Append-only history:
+// POST adds a value effective from a civil date (idempotent on the client
+// UUID), DELETE soft-deletes one row. GET ?as_of=YYYY-MM-DD reports the values
+// in effect on that date; without it, the latest values.
+apiRoutes.get('/me/thresholds', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const asOf = c.req.query('as_of');
+  if (asOf !== undefined && !isCivilDate(asOf)) return c.json({ error: 'invalid_fields', fields: ['as_of'] }, 400);
+  return c.json(await getAthleteThresholds(c.env.DB, c.get('userId'), asOf ?? null));
+});
+
+apiRoutes.post('/me/thresholds', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const input = parseThresholdInput(parsed.body);
+  if (!input.ok) return c.json({ error: 'invalid_fields', fields: input.fields }, 400);
+  const result = await addAthleteThreshold(c.env.DB, c.get('userId'), input.input, 'member');
+  if (!result.ok) return c.json({ error: result.error }, 409);
+  return c.json({ threshold: result.threshold, deduplicated: result.deduplicated }, result.deduplicated ? 200 : 201);
+});
+
+apiRoutes.delete('/me/thresholds/:id', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const result = await deleteAthleteThreshold(c.env.DB, c.get('userId'), c.req.param('id'));
+  if (!result.ok) return c.json({ error: result.error }, 404);
+  return c.json({ ok: true });
 });
 
 apiRoutes.get('/starter-workouts', async (c) => {

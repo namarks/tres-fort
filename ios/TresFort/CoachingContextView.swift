@@ -48,7 +48,7 @@ struct CoachingContextView: View {
             .background(Theme.background).navigationTitle("Training overview")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }.preferredColorScheme(.dark)
+        }
     }
 
     private func session(_ row: SessionRow) -> some View {

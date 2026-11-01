@@ -60,7 +60,7 @@ struct FeedItemRow: View {
         switch item {
         case .session:  return Theme.accent
         case .ride:     return Theme.muted
-        case .activity: return Color(hex: 0xA855F7)
+        case .activity: return BrandPalette.categorical[4]
         case .unknown:  return Theme.dim
         }
     }

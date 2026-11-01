@@ -1,21 +1,24 @@
 import SwiftUI
 
-// Visual language: dark scoreboard, amber accent, lime "done". One type
-// system: SF Pro (system text styles, so Dynamic Type applies) for every
-// label and heading; Bebas Neue display type only for workout and exercise
-// names and big numbers; JetBrains Mono only for big numbers. Primary
-// actions use `WorkoutPrimaryButtonStyle`.
+// Visual language: the Ink palette (`BrandPalette`), following the system
+// light or dark appearance, with a single dusty-navy accent and a muted green
+// for "done". One type system: SF Pro (system text styles, so Dynamic Type
+// applies) for every label and heading; Bebas Neue display type only for
+// workout and exercise names and big numbers; JetBrains Mono only for big
+// numbers. Primary actions use `WorkoutPrimaryButtonStyle`.
 enum Theme {
-    static let bgTop = Color(hex: 0x1A1A1F)
-    static let bg = Color(hex: 0x0A0A0B)
-    static let surface = Color(hex: 0x141417)
-    static let surface2 = Color(hex: 0x1C1C21)
-    static let text = Color(hex: 0xF4F4F5)
-    static let muted = Color(hex: 0xA1A1AA)
-    static let dim = Color(hex: 0x4A4A52)
-    static let accent = Color(hex: 0xF59E0B)
-    static let done = Color(hex: 0x84CC16)
-    static let danger = Color(hex: 0xEF4444)
+    static let bgTop = BrandPalette.bgTop
+    static let bg = BrandPalette.bg
+    static let surface = BrandPalette.surface
+    static let surface2 = BrandPalette.surface2
+    static let text = BrandPalette.text
+    static let muted = BrandPalette.muted
+    static let dim = BrandPalette.dim
+    static let accent = BrandPalette.accent
+    /// Text and icons on an accent fill.
+    static let onAccent = BrandPalette.onAccent
+    static let done = BrandPalette.done
+    static let danger = BrandPalette.danger
 
     static var background: some View {
         RadialGradient(colors: [bgTop, bg],

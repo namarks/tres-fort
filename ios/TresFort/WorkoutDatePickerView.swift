@@ -111,7 +111,6 @@ struct WorkoutDatePickerView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .interactiveDismissDisabled(saving)
         .onChange(of: workouts.map(\.id)) { _, ids in
             if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }

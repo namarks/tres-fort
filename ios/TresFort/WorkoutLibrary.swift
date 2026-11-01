@@ -88,7 +88,6 @@ struct WorkoutDateSheet: View {
         }
         .environment(\.calendar, CalendarProjection.calendar)
         .environment(\.timeZone, CalendarProjection.calendar.timeZone)
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -156,7 +155,6 @@ struct MoveWorkoutDateSheet: View {
         }
         .environment(\.calendar, CalendarProjection.calendar)
         .environment(\.timeZone, CalendarProjection.calendar.timeZone)
-        .preferredColorScheme(.dark)
         .interactiveDismissDisabled(saving)
     }
 }

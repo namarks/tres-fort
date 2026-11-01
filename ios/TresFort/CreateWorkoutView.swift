@@ -73,7 +73,6 @@ struct CreateWorkoutView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .interactiveDismissDisabled(creating)
     }
 

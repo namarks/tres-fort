@@ -51,7 +51,6 @@ struct WorkoutTagsSheet: View {
             .onAppear { reload() }
         }
         .interactiveDismissDisabled(saving)
-        .preferredColorScheme(.dark)
     }
     private func reload() {
         text = (sync.workout(id: workout.id) ?? workout).workoutTags.joined(separator: ", ")

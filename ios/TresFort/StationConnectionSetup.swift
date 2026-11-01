@@ -88,7 +88,6 @@ struct StationPhoneSetupView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onDone) } }
         }
         .tint(Theme.accent)
-        .preferredColorScheme(.dark)
     }
 
     private var connectionMessage: String {

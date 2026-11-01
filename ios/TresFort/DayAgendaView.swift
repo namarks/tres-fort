@@ -84,7 +84,6 @@ struct DayAgendaView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .preferredColorScheme(.dark)
         .onDisappear {
             workoutStartTask?.cancel()
             workoutStartTask = nil

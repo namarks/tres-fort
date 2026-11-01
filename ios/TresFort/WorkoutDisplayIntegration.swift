@@ -229,7 +229,7 @@ private struct LinkedWorkoutControls<Extra: View>: View {
                     .contentShape(Rectangle())
             }
             .background(resting ? Theme.surface2 : Theme.accent)
-            .foregroundStyle(resting ? Theme.accent : .black)
+            .foregroundStyle(resting ? Theme.accent : Theme.onAccent)
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Theme.accent.opacity(resting ? 0.6 : 0), lineWidth: 1))

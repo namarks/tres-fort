@@ -37,7 +37,6 @@ struct FeedItemDetailSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .preferredColorScheme(.dark)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }

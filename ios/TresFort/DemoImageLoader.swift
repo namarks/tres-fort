@@ -119,3 +119,14 @@ final class DemoImageLoader: ObservableObject {
         }
     }
 }
+
+extension Image {
+    /// A demo frame. The bundled line drawings are white strokes on a clear
+    /// background, so they render as a template in the text color, which
+    /// keeps them visible in light and dark mode. Photos keep their colors.
+    func demoImage(isDrawing: Bool) -> some View {
+        renderingMode(isDrawing ? .template : .original)
+            .resizable().scaledToFit()
+            .foregroundStyle(Theme.text)
+    }
+}

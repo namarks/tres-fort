@@ -121,14 +121,14 @@ struct ExerciseDemoSheet: View {
                 // flicker between image + blank, since `opacity(showSecondFrame ? 0 : 1)`
                 // assumes the other frame is there to replace it.
                 Image(uiImage: img)
-                    .resizable().scaledToFit()
+                    .demoImage(isDrawing: loader.showsDrawing)
             case (let img0?, let img1?):
                 ZStack {
                     Image(uiImage: img0)
-                        .resizable().scaledToFit()
+                        .demoImage(isDrawing: loader.showsDrawing)
                         .opacity(showSecondFrame ? 0 : 1)
                     Image(uiImage: img1)
-                        .resizable().scaledToFit()
+                        .demoImage(isDrawing: loader.showsDrawing)
                         .opacity(showSecondFrame ? 1 : 0)
                 }
             }

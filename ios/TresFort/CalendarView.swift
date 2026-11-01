@@ -408,11 +408,11 @@ struct CalendarDayCell: View {
                 ? PendingActivity.glyph(for: dayManual.first?.type ?? "other")
                 : "bicycle")
         // Endurance/manual glyph color — CATEGORY-based so a completed ride
-        // reads CYAN (not amber) and a manual logs its own category color,
+        // reads TEAL (not the accent) and a manual logs its own category color,
         // matching the feed and the Group heatmap
         // everywhere. A bare planned ride stays muted. (Previously this was a
         // blanket Theme.accent, which made rides look like lifts and clashed
-        // with the cyan used in every other view.)
+        // with the teal used in every other view.)
         let enduranceColor: Color = hasActivity
             ? WorkoutCategory.endurance.color
             : (hasManual

@@ -167,13 +167,11 @@ struct StationView: View {
                         .accessibilityIdentifier("station.done")
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
         } else {
             ContentUnavailableView("Account session ended", systemImage: "lock")
         }
         }
-        .preferredColorScheme(.dark)
         .onAppear {
             idleTimer.begin()
             refreshIdleTimer()
@@ -581,6 +579,9 @@ struct StationView: View {
                 }
             }
             .frame(height: dynamicTypeSize.isAccessibilitySize ? 320 : 280)
+            // The camera panel is always black, so its placeholder text and
+            // icon use the dark-mode colors in either appearance.
+            .environment(\.colorScheme, .dark)
             .clipShape(RoundedRectangle(cornerRadius: 20))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Camera setup")

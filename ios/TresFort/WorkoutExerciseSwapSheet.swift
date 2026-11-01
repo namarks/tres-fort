@@ -63,6 +63,5 @@ struct WorkoutExerciseSwapSheet: View {
             }
         }
         .interactiveDismissDisabled(saving)
-        .preferredColorScheme(.dark)
     }
 }

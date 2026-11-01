@@ -5,8 +5,9 @@ import WidgetKit
 // publishes from its own calendar projection; it never computes a schedule.
 // One entry per civil day lets it turn over at midnight, and a tap opens Today.
 
-private let accent = Color(red: 0.96, green: 0.62, blue: 0.04)
-private let surface = Color(red: 0.078, green: 0.078, blue: 0.09)
+private let accent = BrandPalette.accent
+private let surface = BrandPalette.surface
+private let primaryText = BrandPalette.text
 
 struct TodayWorkoutEntry: TimelineEntry {
     let date: Date
@@ -128,11 +129,11 @@ struct TodayWorkoutWidgetView: View {
                    !day.exerciseNames.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(day.exerciseNames.prefix(4), id: \.self) { name in
-                            Text(name).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+                            Text(name).font(.caption).foregroundStyle(primaryText.opacity(0.85)).lineLimit(1)
                         }
                         if day.exerciseNames.count > 4 {
                             Text("+ \(day.exerciseNames.count - 4) more")
-                                .font(.caption).foregroundStyle(.white.opacity(0.6))
+                                .font(.caption).foregroundStyle(BrandPalette.muted)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -149,12 +150,12 @@ struct TodayWorkoutWidgetView: View {
                 .font(.caption2.weight(.heavy)).tracking(1.5)
                 .foregroundStyle(accent)
             Text(presentation.headline)
-                .font(.headline).foregroundStyle(.white)
+                .font(.headline).foregroundStyle(primaryText)
                 .lineLimit(3).minimumScaleFactor(0.8)
             Spacer(minLength: 0)
             Text(presentation.status)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(entry.day?.status == .completed ? accent : .white.opacity(0.7))
+                .foregroundStyle(entry.day?.status == .completed ? accent : BrandPalette.muted)
                 .lineLimit(2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

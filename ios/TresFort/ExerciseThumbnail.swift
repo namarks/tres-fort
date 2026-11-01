@@ -18,7 +18,7 @@ struct ExerciseThumbnail: View {
         ZStack {
             Theme.surface2
             if let image = loader.frames.compactMap({ $0 }).first {
-                Image(uiImage: image).resizable().scaledToFit()
+                Image(uiImage: image).demoImage(isDrawing: loader.showsDrawing)
             } else {
                 Image(systemName: "figure.strengthtraining.traditional")
                     .font(.system(size: 24, weight: .regular))

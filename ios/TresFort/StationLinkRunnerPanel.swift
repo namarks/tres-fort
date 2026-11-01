@@ -103,7 +103,7 @@ struct StationLinkRunnerPanel: View {
                 Button("Log \(proposal.reps)") {
                     Task { await commit(proposal) }
                 }
-                .buttonStyle(.borderedProminent).tint(Theme.accent).foregroundStyle(.black)
+                .buttonStyle(.borderedProminent).tint(Theme.accent).foregroundStyle(Theme.onAccent)
                 .frame(minHeight: 44)
                 .accessibilityIdentifier("runner.station.logNow")
                 // Edit hands the count to the ordinary rep control and LOG SET.

@@ -5,7 +5,7 @@ export function homePage() {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Très Fort — Everything you train. One plan.</title>
 <meta name="description" content="Lifting, runs, rides, swims and everything else on one plan. Follow every workout set by set on iPhone and iPad, train with your crew, and connect an AI app only if you want one.">
-<meta name="theme-color" content="#0a0a0b"><link rel="icon" href="/assets/app-icon.png"><link rel="apple-touch-icon" href="/assets/app-icon.png">
+<meta name="theme-color" content="#f5f8fb"><link rel="icon" href="/assets/app-icon.png"><link rel="apple-touch-icon" href="/assets/app-icon.png">
 <style>${styles}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <header><nav class="wrap" aria-label="Main navigation"><a class="brand" href="/" aria-label="Très Fort home"><img src="/assets/app-icon.png" width="44" height="44" alt=""><span class="wordmark">TRÈS FORT</span></a><div class="nav-links"><a class="app-nav" href="#app">The app</a><a href="/privacy">Privacy</a><a href="#contact">Contact <span aria-hidden="true">↗</span></a></div></nav></header>

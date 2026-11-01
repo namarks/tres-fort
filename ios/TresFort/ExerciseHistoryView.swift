@@ -109,8 +109,6 @@ struct ExerciseDetailView: View {
         .background(Theme.background)
         .navigationTitle(sync.exerciseName(exerciseID))
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .preferredColorScheme(.dark)
     }
 
     private func progressCard(_ progress: ExerciseHistoryProgress,

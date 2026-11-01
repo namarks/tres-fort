@@ -55,7 +55,6 @@ struct StationRecordingsView: View {
                     }
                 }
         }
-        .preferredColorScheme(.dark)
         .onReceive(access.$isActive) { active in
             guard !active else { return }
             recordings = []
@@ -307,6 +306,7 @@ struct StationRecordingDetailView: View {
                 } else { ProgressView() }
             }
             .aspectRatio(recording.imageAspectRatio, contentMode: .fit)
+            .environment(\.colorScheme, .dark)  // always-black frame
             .clipShape(RoundedRectangle(cornerRadius: 12))
             if recording.exercise == .curl {
                 Text("\(pose.personCount) people · \(pose.milliseconds, specifier: "%.1f") ms")

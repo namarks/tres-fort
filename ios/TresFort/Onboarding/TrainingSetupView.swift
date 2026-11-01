@@ -108,7 +108,6 @@ struct TrainingSetupView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task { await model.load() }
         .onChange(of: model.receipt) { _, receipt in
             if let receipt, let onStarterSaved { onStarterSaved(receipt) }

@@ -141,7 +141,6 @@ struct PlanHistoryView: View {
                 Text("The selected version is shown on the left of the comparison arrow. Your current routine stays in history, and the restored routine becomes a new version.")
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder private var comparisonContent: some View {

@@ -30,7 +30,6 @@ struct StationCatalogView: View {
             .navigationTitle("Camera tracking")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
-        .preferredColorScheme(.dark)
     }
 
     private func row(_ option: StationExerciseOption) -> some View {

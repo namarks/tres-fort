@@ -106,13 +106,11 @@ struct RunPlanEditorView: View {
                 }
             }
         }
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .tint(Theme.accent)
         .sheet(item: $editing) { target in
             NavigationStack {
                 RunStepEditorView(step: target.step, unit: unit) { draft.update(target.id, to: $0) }
             }
-            .preferredColorScheme(.dark)
         }
     }
 
@@ -372,7 +370,6 @@ struct RunStepEditorView: View {
                 .accessibilityIdentifier("runStep.done")
             }
         }
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .tint(Theme.accent)
     }
 

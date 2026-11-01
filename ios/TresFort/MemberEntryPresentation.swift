@@ -162,7 +162,6 @@ private struct MemberWorkoutEntryView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task { await load() }
     }
 

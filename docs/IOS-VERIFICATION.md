@@ -71,10 +71,10 @@ hosted runner timings (including cold build time):
 | Shard | Coverage |
 | --- | --- |
 | 1 | All unit tests and remaining UI classes |
-| 2 | Training and workout feedback |
-| 3 | Today navigation, Intervals connection and exercise discovery |
+| 2 | Training, workout feedback and Intervals connection |
+| 3 | Today navigation |
 | 4 | Member activation and freestyle workouts |
-| 5 | UI actions, history, exercise groups and exercise information |
+| 5 | UI actions, history, exercise groups, exercise information and exercise discovery |
 | 6 | Workout library, weekly schedule and runner controls |
 
 The partitions are disjoint and cover every suite; newly added classes remain
@@ -89,6 +89,11 @@ The smoke job keeps a 30-minute limit. Full jobs allow 40 minutes: on October 3,
 slow hosted runners took shard 3 to 29 minutes, 8 of them building. The extra
 time is headroom for slow runners, not room for more tests. Existing
 assertions and element waits are unchanged.
+On November 1 shard 3 passed all 26 of its tests but reached the 40-minute
+limit (10.8 minutes of build and boot, 28.9 of tests), while shards 2 and 5
+finished in about 17. Intervals connection moved to shard 2 and exercise
+discovery to shard 5, leaving Today navigation (about 19 minutes of tests)
+alone in shard 3.
 Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
 The iPad Station and App Store device jobs read their selectors from

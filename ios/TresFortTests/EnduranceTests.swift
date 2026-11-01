@@ -15,6 +15,14 @@ final class EnduranceEntryTests: XCTestCase {
         }
     }
 
+    func testTimeOverSevenDaysOrHugeIsRejectedWithoutOverflow() {
+        XCTAssertEqual(EnduranceEntry.seconds(from: "168:00:00"), 604_800)
+        for text in ["168:00:01", "10081", "153722867280912931", "153722867280912931:00",
+                     "2562047788015215:00:00", "9223372036854775807"] {
+            XCTAssertNil(EnduranceEntry.seconds(from: text), text)
+        }
+    }
+
     func testDistanceConvertsToMetersAndAcceptsADecimalComma() throws {
         XCTAssertEqual(try XCTUnwrap(EnduranceEntry.meters(from: "3.1", unit: .mi)), 4_988.966, accuracy: 0.001)
         XCTAssertEqual(EnduranceEntry.meters(from: "5,5", unit: .km), 5_500)
@@ -80,6 +88,7 @@ final class EnduranceProgressTests: XCTestCase {
             activity("ride", date: "2026-11-02", kind: "ride", seconds: 3_600, meters: 30_000),
             activity("lift", date: "2026-11-03", kind: "strength", seconds: 3_600),
             activity("yoga", date: "2026-11-03", kind: "yoga", seconds: 3_600),
+            activity("pilates", date: "2026-11-03", kind: "other", seconds: 3_600),
             activity("last-week", date: "2026-10-27", seconds: 1_200),
             activity("too-old", date: "2026-10-10"),
             activity("tomorrow", date: "2026-11-05"),
@@ -100,6 +109,7 @@ final class EnduranceProgressTests: XCTestCase {
     func testNoEnduranceMeansNoCard() {
         let summary = EnduranceProgress(activities: [
             activity("lift", date: "2026-11-03", kind: "strength"),
+            activity("pilates", date: "2026-11-03", kind: "other"),
             activity("too-old", date: "2025-01-01"),
         ], today: today)
         XCTAssertTrue(summary.isEmpty)

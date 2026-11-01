@@ -51,15 +51,20 @@ struct EnduranceEntry: Equatable {
         return body
     }
 
-    /// "45" (minutes), "45:30" or "1:05:30" in seconds. Nil when unreadable
-    /// or zero.
+    /// The longest activity the server accepts: seven days.
+    static let maxSeconds = 7 * 24 * 3600
+
+    /// "45" (minutes), "45:30" or "1:05:30" in seconds. Nil when unreadable,
+    /// zero or longer than `maxSeconds`.
     static func seconds(from text: String) -> Int? {
         let parts = text.trimmingCharacters(in: .whitespaces)
             .split(separator: ":", omittingEmptySubsequences: false)
         guard (1...3).contains(parts.count) else { return nil }
         var numbers: [Int] = []
         for part in parts {
-            guard let n = Int(part), n >= 0 else { return nil }
+            // Bounding each part first keeps the arithmetic below from
+            // overflowing on a pasted huge number.
+            guard let n = Int(part), (0...maxSeconds).contains(n) else { return nil }
             numbers.append(n)
         }
         let total: Int
@@ -73,7 +78,7 @@ struct EnduranceEntry: Equatable {
             guard numbers[1] < 60, numbers[2] < 60 else { return nil }
             total = numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
         }
-        return total > 0 ? total : nil
+        return (1...maxSeconds).contains(total) ? total : nil
     }
 
     /// The distance in meters, or nil when the field is empty or unreadable.

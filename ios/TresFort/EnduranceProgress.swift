@@ -24,7 +24,9 @@ struct EnduranceProgress {
         let count: Int
     }
 
-    static let excludedKinds: Set<String> = ["strength", "yoga"]
+    /// Kinds that count as endurance. Strength, yoga and anything a source
+    /// couldn't classify ("other", e.g. Pilates) stay out of the totals.
+    static let enduranceKinds: Set<String> = ["run", "ride", "swim", "walk", "hike", "row", "ski", "elliptical"]
 
     /// Oldest first, ending with this week.
     let weeks: [Week]
@@ -56,7 +58,7 @@ struct EnduranceProgress {
             (a.synced_at ?? 0) >= (b.synced_at ?? 0) ? a : b
         })
         let counted = unique.values.filter {
-            !$0.isDeleted && !Self.excludedKinds.contains($0.kind)
+            !$0.isDeleted && Self.enduranceKinds.contains($0.kind)
                 && $0.date >= firstDay && $0.date <= today
         }
         recent = counted.sorted { a, b in

@@ -2,11 +2,15 @@ import SwiftUI
 
 /// A saved workout is always opened by its explicit identity. A stale selection
 /// must never fall through to the runner's last workout or the first library row.
+/// Pushed from the library it uses that navigation stack and its Back button;
+/// presented on its own it brings a stack and Done. Edit always pushes the
+/// editor onto the same stack instead of stacking another sheet.
 struct WorkoutDetailsView: View {
     @ObservedObject var sync: SyncModel
     let workoutID: String
     var date: String? = nil
     var onStart: ((String) -> Void)? = nil
+    var isPushed = false
     @Environment(\.dismiss) private var dismiss
     @State private var editing = false
     @State private var saving = false
@@ -16,57 +20,67 @@ struct WorkoutDetailsView: View {
     private var canResume: Bool { sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == workoutID }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if let workout {
-                        Text(workout.isArchived ? "Archived workout" : date.map { "For " + DateLabel.long($0) } ?? "Saved workout")
-                            .font(Theme.mono(12)).foregroundStyle(Theme.muted)
-                        WorkoutExercisePreview(sync: sync, exercises: workout.exercises)
-                        if workout.exercises.isEmpty {
-                            Text(workout.isArchived ? "No exercises saved in this archived workout." : "No exercises yet. Edit this workout to add exercises and targets.")
-                                .foregroundStyle(Theme.muted)
-                        }
-                        if !workout.isArchived {
-                        Button("Edit \(workout.name)") { editing = true }
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .accessibilityIdentifier("workoutDetails.edit")
-                        }
-                        Text(workout.isArchived ? "Restore this workout from the library to use it again." : "Changes apply whenever you use this saved workout. Completed records stay unchanged.")
-                            .font(.footnote).foregroundStyle(Theme.muted)
-                    } else {
-                        Text("This workout is not loaded. Refresh to check for it, or choose another workout from the library.")
-                            .foregroundStyle(Theme.muted)
-                        Button(refreshing ? "Refreshing…" : "Refresh workout") {
-                            refreshing = true
-                            Task { await sync.load(); refreshing = false }
-                        }
-                        .disabled(refreshing)
-                        .frame(minHeight: 44)
-                    }
-                    if let error = sync.loadError {
-                        Text(error).font(.footnote).foregroundStyle(Theme.danger)
-                    }
-                }
-                .padding(20)
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let workout, !workout.isArchived, onStart != nil || date != nil {
-                    primaryAction(for: workout)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .background(Theme.background)
-                        .overlay(alignment: .top) { Divider() }
-                }
-            }
-            .background(Theme.background)
-            .foregroundStyle(Theme.text)
-            .navigationTitle(workout?.name ?? "Workout unavailable")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-            .sheet(isPresented: $editing) { EditWorkoutSheet(sync: sync, dayID: workoutID) }
+        Group {
+            if isPushed { content } else { NavigationStack { content } }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                if let workout {
+                    Text(workout.isArchived ? "Archived workout" : date.map { "For " + DateLabel.long($0) } ?? "Saved workout")
+                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                    WorkoutExercisePreview(sync: sync, exercises: workout.exercises)
+                    if workout.exercises.isEmpty {
+                        Text(workout.isArchived ? "No exercises saved in this archived workout." : "No exercises yet. Edit this workout to add exercises and targets.")
+                            .foregroundStyle(Theme.muted)
+                    }
+                    if !workout.isArchived {
+                    Button("Edit \(workout.name)") { editing = true }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("workoutDetails.edit")
+                    }
+                    Text(workout.isArchived ? "Restore this workout from the library to use it again." : "Changes apply whenever you use this saved workout. Completed records stay unchanged.")
+                        .font(.footnote).foregroundStyle(Theme.muted)
+                } else {
+                    Text("This workout is not loaded. Refresh to check for it, or choose another workout from the library.")
+                        .foregroundStyle(Theme.muted)
+                    Button(refreshing ? "Refreshing…" : "Refresh workout") {
+                        refreshing = true
+                        Task { await sync.load(); refreshing = false }
+                    }
+                    .disabled(refreshing)
+                    .frame(minHeight: 44)
+                }
+                if let error = sync.loadError {
+                    Text(error).font(.footnote).foregroundStyle(Theme.danger)
+                }
+            }
+            .padding(20)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let workout, !workout.isArchived, onStart != nil || date != nil {
+                primaryAction(for: workout)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(Theme.background)
+                    .overlay(alignment: .top) { Divider() }
+            }
+        }
+        .background(Theme.background)
+        .foregroundStyle(Theme.text)
+        .navigationTitle(workout?.name ?? "Workout unavailable")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !isPushed {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+            }
+        }
+        .navigationDestination(isPresented: $editing) {
+            EditWorkoutSheet(sync: sync, dayID: workoutID, isPushed: true)
+        }
     }
 
     @ViewBuilder

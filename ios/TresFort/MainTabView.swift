@@ -95,7 +95,7 @@ struct MainTabView: View {
     private var groupModel: GroupModel { models.group }
     private var health: HealthKitSyncModel { models.health }
 
-    enum Tab { case today, progress, group, profile }
+    enum Tab { case today, plan, progress, group, profile }
 
     init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init,
          weightReader: (any BodyWeightReading)? = nil) {
@@ -126,6 +126,12 @@ struct MainTabView: View {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
                 .tag(Tab.today)
+            // Saved workouts, the weekly schedule and the calendar in one
+            // place instead of behind Today.
+            WorkoutsView(sync: sync, onStart: startFromPlan, isTabRoot: true,
+                         onShowWorkout: resumeWorkout)
+                .tabItem { Label("Plan", systemImage: "list.bullet.clipboard") }
+                .tag(Tab.plan)
             TrainingProgressView(sync: sync, weight: health.weight,
                                  onHealthSettings: { showHealthSettings = true })
                 .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
@@ -267,5 +273,20 @@ struct MainTabView: View {
     private func resumeWorkout() {
         isWorkoutFocused = true
         selectedTab = .today
+    }
+
+    /// Start (or continue) a saved workout chosen on the Plan tab, then show
+    /// it on Today, where the runner lives. Details disable Start when today
+    /// is already completed or another workout blocks a new one.
+    private func startFromPlan(_ id: String) {
+        Task { @MainActor in
+            await RestCue.requestNotificationPermissionIfNeeded()
+            if sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == id {
+                sync.resumeWorkout()
+            } else {
+                sync.startOverride(dayID: id)
+            }
+            resumeWorkout()
+        }
     }
 }

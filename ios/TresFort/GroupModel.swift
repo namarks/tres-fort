@@ -461,7 +461,7 @@ final class GroupModel: ObservableObject {
     }
 
     /// Make `id` the active group and refresh its feed/stats/series. Used by
-    /// the Group-tab title switcher and the Profile groups list.
+    /// the Group-tab title switcher.
     func selectGroup(_ id: String) {
         guard id != selectedGroupID else { return }
         selectedGroupID = id

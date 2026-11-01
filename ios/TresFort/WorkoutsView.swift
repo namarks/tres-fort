@@ -58,10 +58,16 @@ enum RoutineCreationPolicy {
 
 /// Compact member-owned editor for the same plan tree and weekly schedule the
 /// coach reads and edits. There is intentionally no separate "manual" plan.
+/// It is the Plan tab's root, and the sheet Today opens to choose a workout.
+/// Either way details and the editor push onto its one navigation stack.
 struct WorkoutsView: View {
     @ObservedObject var sync: SyncModel
     var onStart: ((String) -> Void)? = nil
     var date: String? = nil
+    /// The Plan tab: no Done, and the calendar sits at the top.
+    var isTabRoot = false
+    /// Shows the workout on Today after the calendar starts one.
+    var onShowWorkout: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     @State private var showArchived = false
@@ -87,6 +93,7 @@ struct WorkoutsView: View {
     @State private var assignmentTarget: Workout?
     @State private var showHistory = false
     @State private var showWeeklySchedule = false
+    @State private var showCalendar = false
 
     var body: some View {
         Group {
@@ -111,11 +118,13 @@ struct WorkoutsView: View {
                 }
             }
             .background(Theme.background)
-            .navigationTitle(date == nil ? "Workouts" : "Choose a workout")
+            .navigationTitle(isTabRoot ? "Plan" : date == nil ? "Workouts" : "Choose a workout")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
+                if !isTabRoot {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
+                    }
                 }
                 if canReorder && visibleWorkouts.count > 1 {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -170,14 +179,24 @@ struct WorkoutsView: View {
             } message: {
                 Text("Completed workouts and logged sets stay in your history. Weekly and planned date assignments become rest. You can restore this workout later.")
             }
-            .sheet(item: $detailTarget) { target in
+            .navigationDestination(item: $detailTarget) { target in
                 WorkoutDetailsView(sync: sync, workoutID: target.id, date: date,
                                    onStart: onStart.map { start in
-                    { id in dismiss(); start(id) }
-                })
+                    { id in
+                        // The tab stays put for next time; a sheet closes.
+                        if isTabRoot { detailTarget = nil } else { dismiss() }
+                        start(id)
+                    }
+                }, isPushed: true)
             }
-            .sheet(item: $editTarget) { target in
-                EditWorkoutSheet(sync: sync, dayID: target.id)
+            .navigationDestination(item: $editTarget) { target in
+                EditWorkoutSheet(sync: sync, dayID: target.id, isPushed: true)
+            }
+            .navigationDestination(isPresented: $showCalendar) {
+                HistoryView(sync: sync, onStartWorkout: {
+                    showCalendar = false
+                    onShowWorkout?()
+                })
             }
             .sheet(item: $assignmentTarget) { workout in
                 WorkoutDateSheet(sync: sync, workout: workout)
@@ -193,6 +212,26 @@ struct WorkoutsView: View {
 
     private var routineList: some View {
         List {
+            if isTabRoot {
+                Section {
+                    Button { showCalendar = true } label: {
+                        HStack(spacing: 12) {
+                            Label("Calendar", systemImage: "calendar")
+                                .font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
+                                .accessibilityHidden(true)
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("plan.calendar")
+                } footer: {
+                    Text("Past workouts and what's coming up, day by day.")
+                }
+            }
             Section {
                 if date == nil {
                     Picker("Library", selection: $showArchived) {

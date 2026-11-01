@@ -482,7 +482,7 @@ extension SetLog {
 
 /// Minimal `Identifiable` box so a bare `String` id — a workout id, a
 /// `YYYY-MM-DD` — can drive a `.sheet(item:)` presentation.
-struct IdentifiedString: Identifiable {
+struct IdentifiedString: Identifiable, Hashable {
     let id: String
 }
 

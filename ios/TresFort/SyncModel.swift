@@ -5418,6 +5418,7 @@ final class SyncModel: ObservableObject {
     func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
                           targetSets: Int, targetReps: Int, targetRepsMax: Int?,
                           restSeconds: Int, targetDurationS: Int?,
+                          load: [String: Any] = [:],
                           expectedVersion: Int? = nil) async -> Bool {
         guard canInitiateBoundFeatureAction, let jwt = currentJWT,
               !workoutEditorRefreshNeeded,
@@ -5426,7 +5427,7 @@ final class SyncModel: ObservableObject {
             _ = try await self.planEditingAPI.addExercise(
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
                 targetSets: targetSets, targetReps: targetReps, targetRepsMax: targetRepsMax,
-                restSeconds: restSeconds, targetDurationS: targetDurationS,
+                restSeconds: restSeconds, targetDurationS: targetDurationS, load: load,
                 expectedVersion: version, jwt: jwt)
         }
     }

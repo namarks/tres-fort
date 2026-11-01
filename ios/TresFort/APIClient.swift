@@ -566,15 +566,18 @@ struct APIClient {
     func addExercise(dayID: String, exercise: String, isWarmup: Bool,
                      targetSets: Int, targetReps: Int, targetRepsMax: Int?,
                      restSeconds: Int,
-                     targetDurationS: Int?, expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
-        var body: [String: Any] = [
+                     targetDurationS: Int?, load: [String: Any],
+                     expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
+        // Target weight, its unit and RPE, only when the member set them.
+        var body: [String: Any] = load
+        body.merge([
             "exercise": exercise,
             "expected_version": expectedVersion,
             "target_sets": targetSets,
             "target_reps": targetReps,
             "rest_seconds": restSeconds,
             "is_warmup": isWarmup,
-        ]
+        ]) { _, prescription in prescription }
         if let targetRepsMax { body["target_reps_max"] = targetRepsMax }
         if let targetDurationS { body["target_duration_s"] = targetDurationS }
         return try await post("api/workouts/\(dayID)/exercises", body: body, jwt: jwt)
@@ -888,6 +891,7 @@ protocol PlanEditingAPI {
         targetRepsMax: Int?,
         restSeconds: Int,
         targetDurationS: Int?,
+        load: [String: Any],
         expectedVersion: Int, jwt: String
     ) async throws -> APIClient.SlotIDRow
     func updateExerciseSlot(

@@ -12,15 +12,16 @@ def select_suite(event, paths=()):
         raise ValueError('Unsupported CI event: ' + event)
 
     # Changes to the selection/partition machinery must prove full coverage on
-    # the PR itself; a passing smoke run cannot validate the weekly job budget.
-    # Device-job test lists (.github/ios-tests/) are deliberately absent: the
-    # smoke tier already runs every device job, so it exercises a list edit.
+    # the PR itself; a passing smoke run cannot validate the nightly job budget.
+    # Smoke is one iPhone job, so an edit to a device job's test list
+    # (.github/ios-tests/) also runs full: otherwise nothing would run it.
     verification_paths = {
         '.github/workflows/ci.yml', 'scripts/verify-ios.sh',
         'scripts/ci-ios-scope.py', 'test/verify-ios.test.py',
         'test/ci-ios-scope.test.py',
     }
-    if any(path in verification_paths for path in paths):
+    if any(path in verification_paths or path.startswith('.github/ios-tests/')
+           for path in paths):
         return 'full'
 
     def unrelated(path):

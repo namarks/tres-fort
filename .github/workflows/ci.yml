@@ -6,8 +6,9 @@ on:
   push:
     branches: [main]
   schedule:
-    # Weekly full UI coverage on main (Monday, early morning Pacific time).
-    - cron: '17 11 * * 1'
+    # Nightly release check on main (early morning Pacific time): the full UI
+    # suite plus the iPad Station and App Store device jobs, which PRs skip.
+    - cron: '17 11 * * *'
   workflow_dispatch:
 
 # A newer push to the same branch/PR cancels the in-flight run.
@@ -44,22 +45,19 @@ jobs:
           echo "iOS coverage: $suite"
 
   ios-tests:
-    name: ${{ matrix.shard == 'station' && 'iPad Station' || matrix.shard == 'app-store-iphone' && 'iPhone App Store' || matrix.shard == 'app-store-ipad' && 'iPad App Store' || format('iOS {0} ({1}/{2})', needs.plans.outputs.ios-suite, matrix.shard, needs.plans.outputs.ios-suite == 'full' && 6 || 2) }}
+    name: ${{ matrix.shard == 'station' && 'iPad Station' || matrix.shard == 'app-store-iphone' && 'iPhone App Store' || matrix.shard == 'app-store-ipad' && 'iPad App Store' || needs.plans.outputs.ios-suite == 'full' && format('iOS full ({0}/6)', matrix.shard) || 'iOS smoke' }}
     needs: plans
     # Standard public-repository capacity only; never opt into a paid runner.
     if: github.event.repository.private == false && needs.plans.outputs.ios-suite != 'skip'
     runs-on: macos-15
-    # Smoke gates PRs within 30 minutes. Full runs get headroom for slow
-    # hosted runners rather than room for more tests; a hang still stops.
+    # Smoke (one iPhone job) gates PRs within 30 minutes. Full runs, the
+    # release check, add the device jobs and get headroom for slow hosted
+    # runners rather than room for more tests; a hang still stops.
     timeout-minutes: ${{ needs.plans.outputs.ios-suite == 'full' && 40 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.plans.outputs.ios-suite == 'full' && '[1, 2, 3, 4, 5, 6]' || '[1, 2]') }}
-        include:
-          - shard: station
-          - shard: app-store-iphone
-          - shard: app-store-ipad
+        shard: ${{ fromJSON(needs.plans.outputs.ios-suite == 'full' && '[1, 2, 3, 4, 5, 6, "station", "app-store-iphone", "app-store-ipad"]' || '[1]') }}
     env:
       IOS_UI_SUITE: ${{ needs.plans.outputs.ios-suite }}
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
@@ -69,8 +67,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # Device-job test lists live in .github/ios-tests/ so adding a class to
-      # one runs the smoke tier; any ci.yml edit forces all six full shards.
+      # Device-job test lists live in .github/ios-tests/; editing one, or
+      # ci.yml, runs the full release check on that PR.
       - name: Install pinned XcodeGen
         shell: bash
         run: |

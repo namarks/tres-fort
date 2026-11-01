@@ -231,6 +231,27 @@ struct PlanTree: Codable, Equatable {
     }
 }
 
+/// One away-dates range from `meta.trips`, with the fields the member edits.
+/// The calendar reads the same rows through `PlanTree.trips` (`TripRange`).
+struct PlanTrip: Decodable, Identifiable, Equatable {
+    let id: String
+    let start: String
+    let end: String
+    let type: String?
+    let can_train_light: Bool?
+    let note: String?
+}
+
+extension PlanTree {
+    /// Away dates in date order, for the editor. [] when meta has none.
+    var awayDates: [PlanTrip] {
+        guard let meta, let data = meta.data(using: .utf8) else { return [] }
+        struct MetaEnvelope: Decodable { let trips: [PlanTrip]? }
+        let trips = (try? JSONDecoder().decode(MetaEnvelope.self, from: data).trips) ?? []
+        return trips.sorted { ($0.start, $0.end) < ($1.start, $1.end) }
+    }
+}
+
 struct PlanChangeSummary: Codable, Equatable {
     let plan_fields: Int
     let schedule_days: Int

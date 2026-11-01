@@ -340,6 +340,36 @@ final class TodayNavigationJourneyTests: XCTestCase {
         capture("calendar-continued-workout")
     }
 
+    /// The Plan tab holds the library, and details, the editor and the
+    /// calendar push onto its one stack instead of stacking sheets. The tab
+    /// bar exists only under RootView, so this runs on the app-store fixture.
+    func testPlanTabKeepsWorkoutDetailsEditorAndCalendarOnOneStack() {
+        let app = launch()
+        tap(app.tabBars.buttons["Plan"], in: app)
+        let plan = app.navigationBars["Plan"]
+        XCTAssertTrue(plan.waitForExistence(timeout: 5))
+        XCTAssertFalse(plan.buttons["Done"].exists)
+        XCTAssertTrue(app.buttons["library.weeklySchedule"].waitForExistence(timeout: 5))
+        capture("plan-tab")
+
+        tap(app.buttons["library.workout.strength-b"], in: app)
+        let details = app.navigationBars["Strength B"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        XCTAssertFalse(details.buttons["Done"].exists)
+        tap(app.buttons["workoutDetails.edit"], in: app)
+        let editor = app.navigationBars["Edit Strength B"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        tap(editor.buttons["Done"], in: app)
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        tap(details.backButton, in: app)
+        XCTAssertTrue(plan.waitForExistence(timeout: 5))
+
+        tap(app.buttons["plan.calendar"], in: app)
+        XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
+        tap(app.navigationBars["Calendar"].backButton, in: app)
+        XCTAssertTrue(plan.waitForExistence(timeout: 5))
+    }
+
     func testPlanTabContinuesTheRunningWorkoutAndBlocksAnother() {
         let app = launch()
         openCalendar(in: app)

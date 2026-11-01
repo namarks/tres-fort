@@ -57,7 +57,9 @@ provider connection.
     `synced_at` so `/api/state` deltas carry them. It runs after an Apple
     Health push, after each intervals.icu activity sync (whose upsert writes
     provider loads directly, so unchanged rows are never rewritten) and after a
-    threshold is added or deleted.
+    threshold is added or deleted. Apple Health copies hidden as duplicates
+    of an intervals.icu activity are kept current without a new `synced_at`,
+    so restoring one shows the right load.
   - `get_recent_activities` and the coach brief report `load` and
     `load_method` beside the provider's `training_load`.
 - [ ] **P2 — Thresholds and load in the app**

@@ -1,7 +1,7 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
-import { refreshActivityLoads, syncExternalActivities } from '../src/db';
+import { dedupeHealthKitAgainstIntervals, refreshActivityLoads, syncExternalActivities } from '../src/db';
 import type { Env } from '../src/types';
 
 // Effective training load on external activities (migration 0060,
@@ -212,6 +212,38 @@ describe('effective training load', () => {
       elapsed_time_sec: 1800,
     });
     expect(revised).toMatchObject({ date: '2026-10-24', moving_time_sec: 1800, effective_load: 139, load_method: 'pace' });
+  });
+
+  it('keeps a hidden Apple Health duplicate current so a restore shows the right load', async () => {
+    const u = await makeUser('hidden');
+    const start = Date.parse('2026-10-24T12:14:00Z');
+    const pushed = await pushHealthRun(u.jwt, { start_date_local_ms: start });
+    // intervals.icu then delivers the same run without a load, so the Apple
+    // Health copy is retired as its duplicate.
+    const intervalsId = `intervals:activity:${u.id}:dup`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,name,moving_time_sec,distance_m,
+         start_date_local_ms,synced_at)
+       VALUES (?1,?2,'intervals','dup','2026-10-24','run','Run',3600,10000,?3,1)`,
+    ).bind(intervalsId, u.id, start).run();
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    const hidden = await env.DB.prepare('SELECT deleted_at, duplicate_of, synced_at FROM external_activities WHERE id=?1')
+      .bind(pushed.id).first<any>();
+    expect(hidden).toMatchObject({ duplicate_of: intervalsId });
+    expect(hidden.deleted_at).not.toBeNull();
+
+    // A threshold set while it is hidden updates its load without re-sending
+    // the tombstone.
+    await setThreshold(u.jwt, 'run', 'threshold_pace_s_per_km', 300);
+    expect(await row(pushed.id)).toMatchObject({ effective_load: 69, load_method: 'pace', synced_at: hidden.synced_at });
+
+    // The intervals.icu run goes away; the restored copy already has its load.
+    await env.DB.prepare('UPDATE external_activities SET deleted_at=?2 WHERE id=?1').bind(intervalsId, Date.now()).run();
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    const restored = await env.DB.prepare('SELECT deleted_at, effective_load, load_method, synced_at FROM external_activities WHERE id=?1')
+      .bind(pushed.id).first<any>();
+    expect(restored).toMatchObject({ deleted_at: null, effective_load: 69, load_method: 'pace' });
+    expect(restored.synced_at).toBeGreaterThan(hidden.synced_at);
   });
 
   it('uses the threshold in effect on each workout date', async () => {

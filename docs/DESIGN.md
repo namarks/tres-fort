@@ -768,6 +768,17 @@ to the authenticated coach in `get_current_plan` and `coach://state/current`,
 including before the first plan exists. Reports remain distinct from measured
 training; activity selection alone does not prescribe other sports or their load.
 
+**Athlete thresholds and training load.** `athlete_thresholds` (migration
+`0059`) is an append-only, member-private history of ride FTP and threshold
+heart rate and run threshold heart rate and threshold pace, each effective from
+a civil date. `GET /api/me/thresholds[?as_of=YYYY-MM-DD]` lists live rows and the
+values in effect (the earliest row applies to older dates); `POST` adds a row,
+idempotent on its client UUID; `DELETE /api/me/thresholds/:id` soft-deletes.
+`src/trainingLoad.ts` is the pure load engine: power (normalized power), heart
+rate from dense samples, pace and average-heart-rate fallbacks, all scaled so
+one hour at threshold is 100, with a provider's own load preferred. See
+[the plan](plans/endurance-training-load/plan.md).
+
 `GET /api/starter-workouts` returns curated equipment-matched previews, with
 excluded movement patterns removed. `POST /api/starter-workouts/:id` accepts the
 observed profile version and atomically creates a first library workout, slots,

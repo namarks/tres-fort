@@ -40,8 +40,8 @@ describe('account export projection', () => {
     const exported = await exportUserData(fakeDb, userId);
 
     expect(batchCalls).toBe(1);
-    expect(batchSize).toBe(21);
-    expect(preparedSql).toHaveLength(21);
+    expect(batchSize).toBe(22);
+    expect(preparedSql).toHaveLength(22);
     expect(exported).toMatchObject({
       account: { id: userId },
       training: { plans: [], sessions: [], set_logs: [] },

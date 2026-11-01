@@ -1280,6 +1280,7 @@ export async function deleteUserAccount(
     db.prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
 
     db.prepare('DELETE FROM training_profiles WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM athlete_thresholds WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
@@ -2410,6 +2411,7 @@ export async function exportUserData(
     db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
     db.prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
     db.prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT id,sport,metric,value,effective_date,source,created_at,deleted_at FROM athlete_thresholds WHERE user_id=?1 ORDER BY created_at,id').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2473,6 +2475,7 @@ export async function exportUserData(
       training_profile: rowsAt(18)[0] ?? null,
       starter_workout_receipts: rowsAt(19),
       freestyle_workout_receipts: rowsAt(20),
+      athlete_thresholds: rowsAt(21),
     },
     group_memberships: memberships,
     group_safety: {
@@ -8896,6 +8899,15 @@ export type {
   EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult, RecordedRunInput, RecordedRunUploadResult,
 } from './services/intervalsActivityWrite';
 export { MAX_RECORDING_BYTES, recordingFormat } from './services/intervalsActivityWrite';
+export {
+  addAthleteThreshold,
+  deleteAthleteThreshold,
+  getAthleteThresholds,
+  parseThresholdInput,
+  isCivilDate,
+  type AthleteThreshold,
+  type ThresholdsView,
+} from './services/athleteThresholds';
 export const { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun } = createIntervalsActivityWriteService({
   resolveIntervalsCredential, syncExternalActivities,
 });

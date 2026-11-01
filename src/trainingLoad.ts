@@ -115,31 +115,54 @@ function coverageOk(samples: readonly Sample[], movingSec: number | null): boole
   return !positive(movingSec) || covered / movingSec >= MIN_STREAM_COVERAGE;
 }
 
-/** Normalized power: 1 Hz step-held power within each continuous run of
- * samples, 30-second rolling average, fourth-power mean, fourth root. Null
- * when no run is at least 30 seconds long. */
+/** Normalized power: power resampled to 1-second bins within each
+ * continuous run of samples (each bin is the time-weighted mean of the
+ * readings that hold during it, so faster-than-1 Hz streams count every
+ * reading), then a 30-second rolling average, fourth-power mean and fourth
+ * root. Null when no run is at least 30 seconds long. */
 export function normalizedPower(samples: readonly Sample[], maxGap = MAX_SAMPLE_GAP_SEC): number | null {
-  const all = spans(samples, maxGap);
-  const t0 = all[0]?.t ?? 0;
   let sum4 = 0;
   let count = 0;
-  let segment: number[] = [];
-  const flush = () => {
+  const rolling = (bins: number[]) => {
     let windowSum = 0;
-    segment.forEach((watts, i) => {
-      windowSum += watts - (i >= NP_WINDOW_SEC ? segment[i - NP_WINDOW_SEC] ?? 0 : 0);
+    bins.forEach((watts, i) => {
+      windowSum += watts - (i >= NP_WINDOW_SEC ? bins[i - NP_WINDOW_SEC] ?? 0 : 0);
       if (i >= NP_WINDOW_SEC - 1) {
         sum4 += (windowSum / NP_WINDOW_SEC) ** 4;
         count += 1;
       }
     });
-    segment = [];
   };
-  for (const span of all) {
-    // Whole seconds this sample holds, aligned to the stream clock so
-    // fractional sample spacing does not drift.
-    const seconds = span.ends ? 1 : Math.floor(span.t + span.dt - t0) - Math.floor(span.t - t0);
-    for (let k = 0; k < seconds; k++) segment.push(span.v);
+  let run: Span[] = [];
+  const flush = () => {
+    const first = run[0];
+    const last = run[run.length - 1];
+    if (first && last) {
+      const n = Math.ceil(last.t + last.dt - first.t - 1e-9);
+      const energy = new Array<number>(n).fill(0);
+      const time = new Array<number>(n).fill(0);
+      for (const span of run) {
+        let from = span.t - first.t;
+        const to = from + span.dt;
+        while (from < to - 1e-9) {
+          const bin = Math.floor(from + 1e-9);
+          const until = Math.min(to, bin + 1);
+          if (bin < n) {
+            energy[bin] = (energy[bin] ?? 0) + span.v * (until - from);
+            time[bin] = (time[bin] ?? 0) + (until - from);
+          }
+          from = until;
+        }
+      }
+      rolling(energy.map((e, i) => {
+        const t = time[i] ?? 0;
+        return t > 0 ? e / t : 0;
+      }));
+    }
+    run = [];
+  };
+  for (const span of spans(samples, maxGap)) {
+    run.push(span);
     if (span.ends) flush();
   }
   flush();

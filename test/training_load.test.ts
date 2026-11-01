@@ -34,6 +34,15 @@ describe('normalized power', () => {
     expect(expected).toBeGreaterThan(250); // well above the 200 W average
   });
 
+  it('time-averages readings that arrive faster than once a second', () => {
+    // Alternating 100 W and 400 W half-second readings average 250 W in every
+    // second, so NP is 250 W and an hour at FTP 250 scores 100.
+    const samples = Array.from({ length: 7200 }, (_, i) => ({ t: i * 0.5, v: i % 2 === 0 ? 100 : 400 }));
+    // (The final reading holds one extra second, nudging NP by ~0.001 W.)
+    expect(normalizedPower(samples)).toBeCloseTo(250, 2);
+    expect(powerStreamLoad(samples, 3600, 250)?.load).toBe(100);
+  });
+
   it('does not fill a recording pause', () => {
     const samples = [...steady(200, 600), ...steady(200, 600, 1, 660)];
     expect(coveredSeconds(samples)).toBe(1200);

@@ -819,3 +819,84 @@ describe('/auth/apple provider grant wiring', () => {
     expect(issue).not.toHaveBeenCalled();
   });
 });
+
+describe('/auth/apple web Services ID tokens', () => {
+  const WEB_ID = 'com.example.tresfort.web';
+  const webEnv = () => routeEnv({ APPLE_WEB_SERVICES_ID: WEB_ID });
+
+  it('accepts a web token whose nonce matches and asks for both audiences', async () => {
+    const sub = `web-signin-${crypto.randomUUID()}`;
+    const verify = vi.fn<AuthRouteDependencies['verifyAppleIdentityToken']>(
+      async () => ({ sub, email: null, audience: WEB_ID, nonce: 'browser-nonce' }),
+    );
+    const routes = createAuthRoutes({
+      verifyAppleIdentityToken: verify,
+      issueAppJwt: async () => 'web-jwt',
+    });
+
+    const response = await post(
+      routes,
+      '/apple',
+      { identityToken: 'web-token', nonce: 'browser-nonce', fullName: 'Web Member' },
+      webEnv(),
+    );
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { jwt: string; user: { display_name: string } };
+    expect(payload.jwt).toBe('web-jwt');
+    expect(payload.user.display_name).toBe('Web Member');
+    expect(verify).toHaveBeenCalledWith('web-token', ['com.example.tresfort', WEB_ID]);
+  });
+
+  it('rejects a web token without the matching nonce before creating an account', async () => {
+    const sub = `web-nonce-${crypto.randomUUID()}`;
+    const routes = createAuthRoutes({
+      verifyAppleIdentityToken: async () => ({ sub, email: null, audience: WEB_ID, nonce: 'browser-nonce' }),
+      issueAppJwt: async () => 'never',
+    });
+
+    for (const nonce of [undefined, '', 'other-nonce', 42]) {
+      const response = await post(routes, '/apple', { identityToken: 'web-token', nonce }, webEnv());
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'apple_verification_failed' });
+    }
+    const row = await env.DB.prepare('SELECT id FROM users WHERE apple_sub = ?1').bind(sub).first();
+    expect(row).toBeNull();
+  });
+
+  it('rejects an authorization code with a web token, since the exchange is bound to the app', async () => {
+    const sub = `web-code-${crypto.randomUUID()}`;
+    const exchange = vi.fn<AuthRouteDependencies['exchangeAppleAuthorizationCode']>();
+    const routes = createAuthRoutes({
+      verifyAppleIdentityToken: async () => ({ sub, email: null, audience: WEB_ID, nonce: 'n' }),
+      exchangeAppleAuthorizationCode: exchange,
+      issueAppJwt: async () => 'never',
+    });
+
+    const response = await post(
+      routes,
+      '/apple',
+      { identityToken: 'web-token', nonce: 'n', authorizationCode: 'code' },
+      webEnv(),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'apple_authorization_failed' });
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it('keeps native tokens unchanged and accepts only the bundle ID when no web ID is set', async () => {
+    const sub = `native-only-${crypto.randomUUID()}`;
+    const verify = vi.fn<AuthRouteDependencies['verifyAppleIdentityToken']>(
+      async () => ({ sub, email: null, audience: 'com.example.tresfort', nonce: null }),
+    );
+    const routes = createAuthRoutes({ verifyAppleIdentityToken: verify, issueAppJwt: async () => 'native-jwt' });
+
+    const native = await post(routes, '/apple', { identityToken: 'native-token' }, webEnv());
+    expect(native.status).toBe(200);
+
+    const withoutWeb = await post(routes, '/apple', { identityToken: 'native-token' });
+    expect(withoutWeb.status).toBe(200);
+    expect(verify).toHaveBeenLastCalledWith('native-token', 'com.example.tresfort');
+  });
+});

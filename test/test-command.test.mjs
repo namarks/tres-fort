@@ -20,6 +20,16 @@ test('the default command runs prerequisites once and all supported shards', () 
     .map(([, args]) => args.at(-1)), ['--shard=1/3', '--shard=2/3', '--shard=3/3']);
 });
 
+test('the web app check runs once: in the default command or the first CI shard', () => {
+  const count = (args) => invoke(args).calls.filter(([, a]) => a.includes('test:web')).length;
+  assert.equal(count([]), 1);
+  assert.equal(count(['--shard=1/3']), 1);
+  assert.equal(count(['--shard', '1/3']), 1);
+  assert.equal(count(['--shard=2/3']), 0);
+  assert.equal(count(['--shard=3/3']), 0);
+  assert.equal(count(['test/calendar.test.ts']), 0);
+});
+
 test('CI shard selection and focused test arguments are preserved', () => {
   for (const args of [['--shard=2/3'], ['--shard', '3/3'], ['test/calendar.test.ts', '-t', 'blackout']]) {
     const { calls } = invoke(args);

@@ -28,12 +28,18 @@ import {
   upsertUserUnlessDeletedOwner,
 } from '../db';
 
-type VerifiedAppleIdentity = { sub: string; email: string | null };
+type VerifiedAppleIdentity = {
+  sub: string;
+  email: string | null;
+  /** Audience the token was issued to; absent means the native app. */
+  audience?: string | null;
+  nonce?: string | null;
+};
 
 export interface AuthRouteDependencies {
   verifyAppleIdentityToken: (
     identityToken: string,
-    bundleId: string,
+    audience: string | string[],
   ) => Promise<VerifiedAppleIdentity>;
   exchangeAppleAuthorizationCode: (
     config: AppleProviderConfig,
@@ -87,8 +93,14 @@ function publicUser(user: User): PublicUser {
   };
 }
 
-// POST /auth/apple  { identityToken, authorizationCode?, fullName?, invite_code? }
+// POST /auth/apple  { identityToken, authorizationCode?, fullName?, invite_code?, nonce? }
 //   -> { jwt, user, group_id? }
+//
+// The native app's tokens are issued to APPLE_BUNDLE_ID. When
+// APPLE_WEB_SERVICES_ID is set, tokens issued to that Services ID (the web
+// app) are accepted too. A web token must carry the nonce the web gateway
+// generated for that browser and passes here as `nonce`, and must not send an
+// authorization code: the code exchange below is bound to the native client.
 //
 // Open sign-in. Four paths, evaluated in order:
 //
@@ -132,18 +144,38 @@ export function createAuthRoutes(
       authorizationCode?: unknown;
       fullName?: string;
       invite_code?: string;
+      nonce?: unknown;
     }>();
     if (!body.identityToken) {
       return c.json({ error: 'missing_identityToken' }, 400);
     }
+    const webServicesId =
+      c.env.APPLE_WEB_SERVICES_ID &&
+      c.env.APPLE_WEB_SERVICES_ID !== c.env.APPLE_BUNDLE_ID
+        ? c.env.APPLE_WEB_SERVICES_ID
+        : null;
     let claims;
     try {
       claims = await dependencies.verifyAppleIdentityToken(
         body.identityToken,
-        c.env.APPLE_BUNDLE_ID,
+        webServicesId
+          ? [c.env.APPLE_BUNDLE_ID, webServicesId]
+          : c.env.APPLE_BUNDLE_ID,
       );
     } catch {
       return c.json({ error: 'apple_verification_failed' }, 401);
+    }
+    if (webServicesId && claims.audience === webServicesId) {
+      if (
+        typeof body.nonce !== 'string' ||
+        body.nonce.length === 0 ||
+        claims.nonce !== body.nonce
+      ) {
+        return c.json({ error: 'apple_verification_failed' }, 401);
+      }
+      if (body.authorizationCode !== undefined) {
+        return c.json({ error: 'apple_authorization_failed' }, 401);
+      }
     }
 
     // A deliberately deleted owner is suppressed until an administrator clears

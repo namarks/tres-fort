@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
     "test:website": "npm --prefix website test",
+    "test:web": "npm --prefix web ci --no-audit --no-fund && npm --prefix web run check",
     "test:oauth-browser": "node scripts/check-oauth-browser.mjs",
     "build:website": "npm --prefix website run build",
     "test:query-plans": "node scripts/check-data-storage-query-plans.mjs",
@@ -27,7 +28,8 @@
     "ios:verify": "bash scripts/verify-ios.sh",
     "plans:check": "node scripts/vendor/planning/plan-graph.mjs check",
     "test:workout-rollout": "vitest run test/workout_schema.test.ts test/workout_wire.test.ts",
-    "deploy:website": "npm --prefix website run deploy --"
+    "deploy:website": "npm --prefix website run deploy --",
+    "deploy:web": "npm --prefix web ci --no-audit --no-fund && npm --prefix web run deploy --"
   },
   "dependencies": {
     "hono": "^4.12.34",

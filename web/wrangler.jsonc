@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // The Tres Fort web app (docs/plans/web-app): static single-page app plus a
+  // same-origin gateway that finishes Sign in with Apple, keeps the app JWT in
+  // an HttpOnly cookie and forwards /api/* to the API Worker. Deploying it is
+  // a separate owner decision; see web/README.md.
+  "name": "tres-fort-web",
+  "account_id": "f8d78ce7cbf48da4f2a3ac9d9a63a5d5",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "app.tresfort.app", "custom_domain": true }
+  ],
+  "observability": { "enabled": false },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/auth/*"]
+  },
+  "services": [
+    { "binding": "API", "service": "tres-fort" }
+  ],
+  "vars": {
+    "APPLE_WEB_SERVICES_ID": "com.nmarkspdx.tresfort.web",
+    "WEB_ORIGIN": "https://app.tresfort.app"
+  }
+}

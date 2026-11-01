@@ -65,6 +65,37 @@ enum HealthWorkoutStreams {
             })
     }
 
+    enum PauseMark: Equatable {
+        case pause, resume
+    }
+
+    /// Paused stretches, in seconds from the workout start, from its pause
+    /// and resume marks in time order. A pause with no resume runs to the
+    /// end; a repeated mark changes nothing.
+    static func pausedRanges(_ marks: [(mark: PauseMark, t: TimeInterval)],
+                             duration: TimeInterval) -> [Range<TimeInterval>] {
+        var ranges: [Range<TimeInterval>] = []
+        var pausedAt: TimeInterval?
+        for (mark, t) in marks.sorted(by: { $0.t < $1.t }) {
+            switch mark {
+            case .pause:
+                if pausedAt == nil { pausedAt = t }
+            case .resume:
+                if let from = pausedAt, t > from { ranges.append(from..<t) }
+                if pausedAt != nil { pausedAt = nil }
+            }
+        }
+        if let from = pausedAt, duration > from { ranges.append(from..<duration) }
+        return ranges
+    }
+
+    /// Readings outside every paused stretch.
+    static func removing(_ paused: [Range<TimeInterval>],
+                         from points: [HealthStreamPoint]) -> [HealthStreamPoint] {
+        guard !paused.isEmpty else { return points }
+        return points.filter { point in !paused.contains { $0.contains(point.t) } }
+    }
+
     /// The body's `streams` value: only streams with enough points.
     static func jsonBody(_ streams: [String: HealthStream]) -> [String: Any] {
         streams.mapValues { $0.jsonBody }
@@ -79,6 +110,19 @@ private final class HealthStreamAccumulator: @unchecked Sendable {
 }
 
 extension HealthWorkoutStreams {
+    /// The workout's pause and resume marks (manual and automatic), in
+    /// seconds from its start.
+    static func pauseMarks(for workout: HKWorkout) -> [(mark: PauseMark, t: TimeInterval)] {
+        (workout.workoutEvents ?? []).compactMap { event -> (mark: PauseMark, t: TimeInterval)? in
+            let t = event.dateInterval.start.timeIntervalSince(workout.startDate)
+            switch event.type {
+            case .pause, .motionPaused: return (.pause, t)
+            case .resume, .motionResumed: return (.resume, t)
+            default: return nil
+            }
+        }
+    }
+
     /// Every quantity of `identifier` recorded during the workout, including
     /// each reading inside series samples (Apple Watch stores workout heart
     /// rate that way). Nil when HealthKit fails, for example while the phone

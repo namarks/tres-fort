@@ -72,4 +72,29 @@ final class HealthWorkoutStreamsTests: XCTestCase {
         XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "swim"))
         XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "strength"))
     }
+
+    func testDropsReadingsTakenWhileThePauseLasts() {
+        let paused = HealthWorkoutStreams.pausedRanges(
+            [(.pause, 600), (.resume, 900), (.pause, 1_500), (.pause, 1_600), (.resume, 1_800), (.pause, 3_000)],
+            duration: 3_600)
+        XCTAssertEqual(paused, [600..<900, 1_500..<1_800, 3_000..<3_600])
+        let kept = HealthWorkoutStreams.removing(paused, from: points(150, count: 3_600))
+        // 600 + 600 + 1,200 seconds of training remain.
+        XCTAssertEqual(kept.count, 2_400)
+        XCTAssertFalse(kept.contains { $0.t >= 600 && $0.t < 900 })
+        XCTAssertTrue(kept.contains { $0.t == 900 })
+        XCTAssertEqual(HealthWorkoutStreams.removing([], from: points(150, count: 10)).count, 10)
+    }
+
+    func testFailedDetailReadIsRemembered() {
+        func push(kind: String, streams: [String: HealthStream]?) -> HealthKitActivityPush {
+            HealthKitActivityPush(id: "w", date: "2026-10-24", start_date_local_ms: 1,
+                start_date_utc_ms: 2, source_timezone: nil, kind: kind, name: nil,
+                moving_time_sec: 60, elapsed_time_sec: 60, distance_m: nil, average_hr: nil,
+                max_hr: nil, calories: nil, elevation_gain_m: nil, raw: nil, streams: streams)
+        }
+        XCTAssertTrue(push(kind: "ride", streams: nil).missedStreams)
+        XCTAssertFalse(push(kind: "ride", streams: [:]).missedStreams)
+        XCTAssertFalse(push(kind: "swim", streams: nil).missedStreams)
+    }
 }

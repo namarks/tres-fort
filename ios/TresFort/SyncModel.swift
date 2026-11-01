@@ -5942,12 +5942,12 @@ final class SyncModel: ObservableObject {
         return result?.ok == true
     }
 
-    /// Adds away dates (`id == nil`) or edits one range, at the plan version on
-    /// screen. Another device's newer plan comes back as a conflict, reloads
-    /// and asks the member to review.
+    /// Adds away dates (`id == nil`) or edits one range, at the plan version
+    /// the editor opened with. A newer plan, from the coach or another device,
+    /// comes back as a conflict, reloads and asks the member to review; the
+    /// editor closes rather than resend its stale fields at the new version.
     @discardableResult
-    func saveAwayDates(id: String?, fields: [String: Any]) async -> Bool {
-        guard let version = plan?.version else { return false }
+    func saveAwayDates(id: String?, fields: [String: Any], expectedVersion version: Int) async -> Bool {
         let result: APIClient.TripWriteResult? = await performRoutineMutation { api, jwt in
             if let id {
                 return try await api.updateTrip(id: id, fields: fields, expectedVersion: version, jwt: jwt)
@@ -5958,8 +5958,7 @@ final class SyncModel: ObservableObject {
     }
 
     @discardableResult
-    func removeAwayDates(id: String) async -> Bool {
-        guard let version = plan?.version else { return false }
+    func removeAwayDates(id: String, expectedVersion version: Int) async -> Bool {
         let result: APIClient.TripWriteResult? = await performRoutineMutation { api, jwt in
             try await api.removeTrip(id: id, expectedVersion: version, jwt: jwt)
         }

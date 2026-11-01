@@ -125,9 +125,12 @@ struct AwayDatesView: View {
     @ObservedObject var sync: SyncModel
     @State private var editing: AwayDatesTarget?
 
+    /// What the editor opens with, including the plan version the member
+    /// reviewed, so a later save can't overwrite a newer plan unseen.
     private struct AwayDatesTarget: Identifiable {
         let id: String
         let draft: AwayDatesDraft
+        let version: Int
     }
 
     private var trips: [PlanTrip] { sync.plan?.awayDates ?? [] }
@@ -138,7 +141,8 @@ struct AwayDatesView: View {
         List {
             Section {
                 Button {
-                    editing = AwayDatesTarget(id: "new", draft: AwayDatesDraft(today: Date()))
+                    guard let version = sync.plan?.version else { return }
+                    editing = AwayDatesTarget(id: "new", draft: AwayDatesDraft(today: Date()), version: version)
                 } label: {
                     Label("Add away dates", systemImage: "plus.circle.fill")
                         .font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
@@ -168,7 +172,8 @@ struct AwayDatesView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(item: $editing) { target in
             NavigationStack {
-                AwayDatesEditor(sync: sync, tripID: target.id == "new" ? nil : target.id, draft: target.draft)
+                AwayDatesEditor(sync: sync, tripID: target.id == "new" ? nil : target.id,
+                                draft: target.draft, expectedVersion: target.version)
             }
             .preferredColorScheme(.dark)
         }
@@ -176,7 +181,8 @@ struct AwayDatesView: View {
 
     private func row(_ trip: PlanTrip) -> some View {
         Button {
-            editing = AwayDatesTarget(id: trip.id, draft: AwayDatesDraft(trip: trip))
+            guard let version = sync.plan?.version else { return }
+            editing = AwayDatesTarget(id: trip.id, draft: AwayDatesDraft(trip: trip), version: version)
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -200,19 +206,24 @@ struct AwayDatesView: View {
     }
 }
 
-/// Adds or edits one away-dates range.
+/// Adds or edits one away-dates range. Every write carries the plan version
+/// the editor opened with. When the plan has moved on (a conflict, or a
+/// refresh while editing), a failed write closes the editor so the member
+/// reviews the latest ranges before trying again.
 struct AwayDatesEditor: View {
     @ObservedObject var sync: SyncModel
     let tripID: String?
+    let expectedVersion: Int
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft: AwayDatesDraft
     @State private var working = false
     @State private var confirmingRemove = false
 
-    init(sync: SyncModel, tripID: String?, draft: AwayDatesDraft) {
+    init(sync: SyncModel, tripID: String?, draft: AwayDatesDraft, expectedVersion: Int) {
         _sync = ObservedObject(wrappedValue: sync)
         self.tripID = tripID
+        self.expectedVersion = expectedVersion
         _draft = State(initialValue: draft)
     }
 
@@ -286,9 +297,9 @@ struct AwayDatesEditor: View {
         working = true
         let fields = draft.fields
         Task {
-            let saved = await sync.saveAwayDates(id: tripID, fields: fields)
+            let saved = await sync.saveAwayDates(id: tripID, fields: fields, expectedVersion: expectedVersion)
             working = false
-            if saved { dismiss() }
+            if saved || planMovedOn { dismiss() }
         }
     }
 
@@ -296,9 +307,12 @@ struct AwayDatesEditor: View {
         guard let tripID else { return }
         working = true
         Task {
-            let removed = await sync.removeAwayDates(id: tripID)
+            let removed = await sync.removeAwayDates(id: tripID, expectedVersion: expectedVersion)
             working = false
-            if removed { dismiss() }
+            if removed || planMovedOn { dismiss() }
         }
     }
+
+    /// The plan on screen is no longer the one this editor opened with.
+    private var planMovedOn: Bool { sync.plan?.version != expectedVersion }
 }

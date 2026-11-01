@@ -31,8 +31,10 @@ P5).
     the next range and opens a list of coming-up and past ranges. The editor
     picks the first and last day (the last day can't come before the
     first), the reason, "I can still train" and a note. An edit sends only
-    the fields that changed. Saving and removing go through the routine
-    write queue, so a stale plan reloads and asks the member to review.
+    the fields that changed. Saving and removing carry the plan version the
+    editor opened with and go through the routine write queue. If the plan
+    has moved on, the write is a conflict: the app reloads, closes the
+    editor and asks the member to review.
   - The calendar already reads trips: a range where the member can't train
     blocks the days, and one where they can pauses the weekly schedule.
 - [ ] **P1 — Race goal and training phases**
@@ -66,8 +68,9 @@ build that shows the Away dates row reaches members.
   DELETE without a version. `AwayDatesTests` covers reading ranges in date
   order, the fields a new range and an edit send, keeping the last day on
   or after the first, the note limit and the row text. `SetOutboxTests`
-  covers saving and removing with the shown plan version and a stale save
-  reloading.
+  covers saving and removing with the reviewed plan version, a stale save
+  reloading, and a save or removal keeping the reviewed version after the
+  live plan has moved on.
 
 ## Notes / open questions
 

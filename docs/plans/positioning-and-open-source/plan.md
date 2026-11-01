@@ -14,12 +14,17 @@ self-hosting notes, published only after the owner's written approval.
 
 ## Phases
 
-- [ ] **P0 — Repository and website copy**
+- [x] **P0 — Repository and website copy**
   - README, website home page, AGENTS.md and the DESIGN.md summary lead with one
     plan across disciplines, list Apple Health ahead of intervals.icu, and
     describe AI as optional. The website hero is checked at phone, tablet and
     desktop widths with no horizontal scroll.
   - Website changes go live only with a separate website deploy.
+  - Merged in PR #296 (main 872e8da), with the hero checked at 390, 800 and
+    1280 px. The owner approved the website deploy on 2026-11-01: website
+    Worker version 71c1c4c0 serves tresfort.app with the new title and hero;
+    the homepage, /privacy and assets return 200 and the email DNS records are
+    unchanged. Rollback target 843f44c8.
 - [ ] **P1 — In-app copy**
   - Onboarding and Profile → Coach wording treats AI as an add-on, without
     changing behavior.
@@ -46,7 +51,6 @@ self-hosting notes, published only after the owner's written approval.
 
 ## Execution frontier
 
-- P0
 - P1
 - P3
 
@@ -60,7 +64,9 @@ self-hosting notes, published only after the owner's written approval.
 
 ## Next step
 
-**Now (@agent):** Merge P0's copy. **Owner:** choose the P3 options.
+**Now (@owner):** Choose the P3 options (license, fresh repository or flip,
+self-hosting level); whether the project should earn money affects the license
+choice. P1 in-app copy can proceed in parallel.
 
 ## Notes / open questions
 

@@ -200,8 +200,8 @@ integration or social breadth.
 - [Positioning and open source](positioning-and-open-source/plan.md) —
   **active**; lead every surface with "Everything you train. One plan." and
   AI as optional, then publish a cleaned open-source snapshot. Repository and
-  website copy come first; the App Store listing waits for the version after
-  1.0, and going public needs the owner's written yes.
+  website copy are live (PR #296); the App Store listing waits for the version
+  after 1.0, and going public needs the owner's written yes.
 - [Reliability and service boundaries](reliability-and-service-boundaries/plan.md) —
   **active**; complete the owner-approved performance/quality follow-up to #201,
   including canonical-only clients, durable offline recovery and reproducible checks.

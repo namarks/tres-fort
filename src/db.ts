@@ -3,6 +3,8 @@ import {
   type IntervalsConnectionStatus, type IntervalsUserCreds, type ActivityDedupeWindow,
 } from './services/intervalsSync';
 import { createOAuthGrantService } from './services/oauthGrants';
+import { refreshActivityLoads } from './services/activityLoad';
+import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
   type PartnerWorkoutInput, type PartnerStartInput, type PartnerSlot } from './partnerTraining';
@@ -8893,12 +8895,30 @@ export type { SyncStatus, SyncResult, SyncDeps, ActivitySyncDeps, IntervalsImpor
 export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities, resolveIntervalsCredential } = createIntervalsSyncService({
   getUserIntervalsCreds, findOwnerRow, userHasTouchedIntervalsCreds,
   seedOwnerIntervalsCredsFromEnv, ensureOwnerUser, getIntervalsConnectionStatus,
-  getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals,
+  getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals, refreshActivityLoads,
 });
 export type {
   EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult, RecordedRunInput, RecordedRunUploadResult,
 } from './services/intervalsActivityWrite';
 export { MAX_RECORDING_BYTES, recordingFormat } from './services/intervalsActivityWrite';
+export { refreshActivityLoads } from './services/activityLoad';
+
+/** Add a threshold, then recompute the member's activity loads. A retry of
+ * an already stored threshold recomputes too, so a refresh that failed after
+ * the insert committed is completed by the client's retry. */
+export async function saveAthleteThreshold(db: D1Database, userId: string, input: ThresholdInput) {
+  const result = await addAthleteThreshold(db, userId, input, 'member');
+  if (result.ok) await refreshActivityLoads(db, userId);
+  return result;
+}
+
+/** Soft-delete a threshold, then recompute the member's activity loads. */
+export async function removeAthleteThreshold(db: D1Database, userId: string, id: string) {
+  const result = await deleteAthleteThreshold(db, userId, id);
+  if (result.ok) await refreshActivityLoads(db, userId);
+  return result;
+}
+
 export {
   addAthleteThreshold,
   deleteAthleteThreshold,
@@ -8988,11 +9008,9 @@ function reconcileNativeHealthKitStatement(
  * windowed tombstoning is source-scoped to 'intervals' (migration 0027), and a
  * HealthKit deletion is an explicit future delete path, not a windowed reconcile.
  *
- * training_load / intensity are intentionally left NULL: HealthKit carries no
- * native TSS and we have no per-user HR anchor (LTHR/max-HR) to derive hrTSS
- * yet, so we do NOT fabricate a load number — the coach reads average_hr +
- * duration directly. A per-user HR-anchor setting that unlocks hrTSS is a
- * tracked follow-up (docs/MULTISOURCE-INGESTION.md).
+ * training_load / intensity stay NULL: HealthKit carries no native load. The
+ * effective load comes from refreshActivityLoads (migration 0060) using the
+ * member's athlete_thresholds, and stays NULL without usable data.
  */
 export async function upsertHealthKitActivity(
   db: D1Database,
@@ -9081,6 +9099,13 @@ export async function upsertHealthKitActivity(
   // and is immediately re-deduped. An identical retry does not update/reset the
   // row; this idempotent pass therefore preserves an already-retired duplicate.
   await dedupeHealthKitAgainstIntervals(db, userId);
+  // A revision keeps the first push's civil date (see ON CONFLICT above), so
+  // refresh the stored row's date, not the date this push sent.
+  const stored = await db
+    .prepare('SELECT date FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(id, userId)
+    .first<{ date: string }>();
+  if (stored) await refreshActivityLoads(db, userId, { fromDate: stored.date, toDate: stored.date });
   const row = await db
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
     .bind(id, userId)

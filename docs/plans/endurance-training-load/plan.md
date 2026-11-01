@@ -48,17 +48,25 @@ provider connection.
     provider > power > heart rate > pace and reports the method.
   - Unit tests pin the formulas against hand-computed fixtures; route tests
     cover validation, idempotency, soft delete and per-user isolation.
-- [ ] **P1 — Apply load to imported workouts**
-  - Store the method beside `external_activities.training_load` and compute
-    load for Apple Health rows (pace or average heart rate until streams
-    exist) and typed-in local activities; recompute a member's affected rows
-    when a threshold changes and resync them through `/api/state`.
-  - Prefill thresholds from the intervals.icu athlete's sport settings when
-    connected, recorded with source `intervals` and editable.
-  - Coach brief and `get_recent_activities` report load with its method.
+- [x] **P1 — Apply load to imported workouts**
+  - Migration `0060` adds `effective_load`, `effective_intensity` and
+    `load_method` to `external_activities`; `training_load` / `intensity`
+    stay the provider's figures. Existing provider loads are backfilled.
+  - `refreshActivityLoads` computes the rest from the member's thresholds in
+    effect on each workout date, writing only changed rows and advancing
+    `synced_at` so `/api/state` deltas carry them. It runs after an Apple
+    Health push, after each intervals.icu activity sync (whose upsert writes
+    provider loads directly, so unchanged rows are never rewritten) and after a
+    threshold is added or deleted. Apple Health copies hidden as duplicates
+    of an intervals.icu activity are kept current without a new `synced_at`,
+    so restoring one shows the right load.
+  - `get_recent_activities` and the coach brief report `load` and
+    `load_method` beside the provider's `training_load`.
 - [ ] **P2 — Thresholds and load in the app**
-  - Profile screen to view, add and correct thresholds with their dates; load
-    and its method shown on activity rows and in Progress.
+  - Profile screen to view, add and correct thresholds with their dates,
+    offering the intervals.icu athlete's sport settings as starting values
+    when connected; load and its method shown on activity rows and in
+    Progress.
 - [ ] **P3 — Detail streams from Apple Health and the run recorder**
   - The iOS import reads heart rate, cycling power, cadence and running power
     samples inside each workout, sends compact streams only when they are
@@ -83,14 +91,16 @@ provider connection.
 
 ## Next step
 
-**Now (@agent):** P1, applying the engine to imported workouts. P0 is in the
-repository with `test/training_load.test.ts` and
-`test/athlete_thresholds.test.ts`; its formulas reproduce intervals.icu's load
-for a real Zwift ride (power) and Garmin run (average heart rate). Migration
-`0059` and the Worker need the owner's separate go-ahead to reach production.
+**Now (@agent):** P2, the thresholds screen and load display in the app. P0
+(PR #298) and P1 are in the repository; P1 is covered by
+`test/activity_load.test.ts`. Migrations `0059` and `0060` and the Worker need
+the owner's separate go-ahead to reach production.
 
 ## Notes / open questions
 
+- The calendar's scheduling heuristic still reads only planned events'
+  provider load; using effective load there would change the Swift parity
+  contract and is left for a separate decision.
 - The owner chose on 2026-11-01 that endurance workouts need real load
   ("otherwise a serious athlete won't use my app"). This plan is outside the
   [Connected Training](../../initiatives/connected-training.md) initiative,

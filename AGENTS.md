@@ -289,8 +289,10 @@ chat start) and a **prompt** (`coach_brief`).
 - Endurance load comes from `src/trainingLoad.ts` (pure) and the member's
   `athlete_thresholds` history (migration `0059`, `/api/me/thresholds`):
   power, heart-rate or pace load, scaled so one hour at threshold is 100, with
-  a provider's own load preferred and the method labeled. Missing data stays
-  unknown; never fabricate a load. See
+  a provider's own load preferred and the method labeled. Activities keep the
+  provider's `training_load`; the shown load is `effective_load` /
+  `load_method` (migration `0060`), refreshed by `refreshActivityLoads`.
+  Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude
   editing `target_*` / the per-exercise `progression` JSON and writing a

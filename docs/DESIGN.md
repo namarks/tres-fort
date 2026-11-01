@@ -778,7 +778,12 @@ values in effect (the earliest row applies to older dates); `POST` adds a row,
 idempotent on its client UUID; `DELETE /api/me/thresholds/:id` soft-deletes.
 `src/trainingLoad.ts` is the pure load engine: power (normalized power), heart
 rate from dense samples, pace and average-heart-rate fallbacks, all scaled so
-one hour at threshold is 100, with a provider's own load preferred. See
+one hour at threshold is 100, with a provider's own load preferred.
+`external_activities.effective_load`, `effective_intensity` and `load_method`
+(migration `0060`) hold the load Tres Fort shows, while `training_load` stays
+the provider's figure; `refreshActivityLoads` recomputes them after Apple
+Health pushes, intervals.icu syncs and threshold changes, advancing
+`synced_at` only for changed rows. See
 [the plan](plans/endurance-training-load/plan.md).
 
 `GET /api/starter-workouts` returns curated equipment-matched previews, with

@@ -229,8 +229,13 @@ export function paceLoad(distanceM: number | null | undefined, movingSec: number
  */
 export function selectLoad(input: LoadInput, thresholds: ThresholdSet): LoadResult | null {
   if (typeof input.provider_load === 'number' && Number.isFinite(input.provider_load) && input.provider_load >= 0) {
-    const intensity = positive(input.provider_intensity) ? input.provider_intensity / 100 : null;
-    return result(input.provider_load, intensity, 'provider');
+    // Rounded exactly as migration 0060 and the intervals.icu upsert store
+    // it, so an unchanged provider row never needs a rewrite.
+    return {
+      load: Math.round(input.provider_load),
+      intensity: positive(input.provider_intensity) ? round1(input.provider_intensity) : null,
+      method: 'provider',
+    };
   }
   const moving = positive(input.moving_time_sec) ? input.moving_time_sec : null;
   return (

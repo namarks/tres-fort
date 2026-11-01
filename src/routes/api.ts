@@ -108,8 +108,8 @@ import {
   MAX_RECORDING_BYTES,
   writeAudit,
   ensureActivePlan,
-  addAthleteThreshold,
-  deleteAthleteThreshold,
+  saveAthleteThreshold,
+  removeAthleteThreshold,
   getAthleteThresholds,
   parseThresholdInput,
   isCivilDate,
@@ -1645,14 +1645,14 @@ apiRoutes.post('/me/thresholds', async (c) => {
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const input = parseThresholdInput(parsed.body);
   if (!input.ok) return c.json({ error: 'invalid_fields', fields: input.fields }, 400);
-  const result = await addAthleteThreshold(c.env.DB, c.get('userId'), input.input, 'member');
+  const result = await saveAthleteThreshold(c.env.DB, c.get('userId'), input.input);
   if (!result.ok) return c.json({ error: result.error }, 409);
   return c.json({ threshold: result.threshold, deduplicated: result.deduplicated }, result.deduplicated ? 200 : 201);
 });
 
 apiRoutes.delete('/me/thresholds/:id', async (c) => {
   c.header('Cache-Control', 'no-store');
-  const result = await deleteAthleteThreshold(c.env.DB, c.get('userId'), c.req.param('id'));
+  const result = await removeAthleteThreshold(c.env.DB, c.get('userId'), c.req.param('id'));
   if (!result.ok) return c.json({ error: result.error }, 404);
   return c.json({ ok: true });
 });

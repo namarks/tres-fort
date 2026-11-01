@@ -5,6 +5,7 @@ import {
   activityLoads,
   calendarInputs,
   describeDistance,
+  describeGroup,
   describeRunSteps,
   describeSlot,
   itemLoad,
@@ -14,6 +15,7 @@ import {
   prefersMiles,
   projectRange,
   shiftMonth,
+  slotBlocks,
   type Slot,
   type Workout,
 } from '../src/model';
@@ -119,6 +121,24 @@ describe('workout details', () => {
       slot({ id: 'c', order_index: 2 }),
     ]));
     expect(labelled.map((s) => [s.id, s.group_label])).toEqual([['a', 'A1'], ['b', 'A2'], ['c', undefined]]);
+  });
+
+  it('shows a superset’s or circuit’s own rests, not its members’ ordinary rests', () => {
+    const blocks = slotBlocks(workout('w', 'W', [
+      slot({ id: 'a', order_index: 0, group_id: 'g', target_sets: 4, rest_seconds: 120, group_rest_seconds: 60, group_transition_seconds: 0 }),
+      slot({ id: 'b', order_index: 1, group_id: 'g', target_sets: 4, rest_seconds: 120, group_rest_seconds: 60, group_transition_seconds: 0 }),
+      slot({ id: 'c', order_index: 2 }),
+      slot({ id: 'd', order_index: 3, group_id: 'h', group_rest_seconds: 90, group_transition_seconds: 15 }),
+      slot({ id: 'e', order_index: 4, group_id: 'h', group_rest_seconds: 90, group_transition_seconds: 15 }),
+      slot({ id: 'f', order_index: 5, group_id: 'h', group_rest_seconds: 90, group_transition_seconds: 15 }),
+    ]));
+    expect(blocks.map((b) => [b.group?.title ?? null, b.members.map((m) => m.id)])).toEqual([
+      ['Superset A', ['a', 'b']], [null, ['c']], ['Circuit B', ['d', 'e', 'f']],
+    ]);
+    expect(describeGroup(blocks[0]!.group!)).toBe('4 rounds · round rest 1:00');
+    expect(describeGroup(blocks[2]!.group!)).toBe('3 rounds · round rest 1:30 · 0:15 between exercises');
+    expect(describeSlot(blocks[0]!.members[0]!)).toBe('4 × 5 @ 225 lb');
+    expect(describeSlot(blocks[1]!.members[0]!)).toBe('3 × 5 @ 225 lb · rest 2:00');
   });
 
   it('describes planned run steps in miles or kilometres', () => {

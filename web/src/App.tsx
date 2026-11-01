@@ -3,6 +3,7 @@ import { fetchMe, fetchState, signOut, SignedOutError, type Me, type StateRespon
 import {
   activityLoads,
   calendarInputs,
+  describeGroup,
   describeRunSteps,
   describeSlot,
   ENDURANCE_LABELS,
@@ -14,15 +15,16 @@ import {
   localToday,
   monthOf,
   monthWeeks,
-  orderedSlots,
   prefersMiles,
   projectRange,
   shiftMonth,
+  slotBlocks,
   STATUS_LABELS,
   tripOn,
   WEEKDAY_LABELS,
   type CalendarCell,
   type ShownLoad,
+  type Slot,
   type Workout,
 } from './model';
 import { WEEKDAYS, type WeeklySchedule } from '../../src/types';
@@ -252,23 +254,19 @@ function DayDetail(props: {
           <h3>{workout.name}</h3>
           {workout.notes ? <p className="muted">{workout.notes}</p> : null}
           <ol className="slots">
-            {orderedSlots(workout).map((slot) => {
-              const steps = describeRunSteps(slot.run_steps, miles);
-              return (
-                <li key={slot.id} className={slot.is_warmup ? 'warmup' : ''}>
-                  <div className="slot-name">
-                    {slot.group_label ? <span className="group">{slot.group_label}</span> : null}
-                    {slot.exercise_name}
-                    {slot.is_warmup ? <span className="tag">Warm-up</span> : null}
-                  </div>
-                  {steps.length ? (
-                    <ul className="steps">{steps.map((line, i) => <li key={i}>{line}</li>)}</ul>
-                  ) : (
-                    <div className="muted">{describeSlot(slot)}</div>
-                  )}
-                </li>
-              );
-            })}
+            {slotBlocks(workout).map((block) => block.group ? (
+              <li key={block.members[0]!.id} className="group-block">
+                <div className="group-head">
+                  <strong>{block.group.title}</strong>
+                  <span className="muted">{describeGroup(block.group)}</span>
+                </div>
+                <ol className="slots">
+                  {block.members.map((slot) => <SlotItem key={slot.id} slot={slot} miles={miles} />)}
+                </ol>
+              </li>
+            ) : (
+              <SlotItem key={block.members[0]!.id} slot={block.members[0]!} miles={miles} />
+            ))}
           </ol>
         </section>
       )}
@@ -296,5 +294,23 @@ function DayDetail(props: {
       {!workout && !cell?.items.length && !trip ? <p className="muted">A rest day.</p> : null}
       <p className="fine">Editing on the web is coming next. For now, change your plan in the iPhone app.</p>
     </aside>
+  );
+}
+
+function SlotItem({ slot, miles }: { slot: Slot; miles: boolean }) {
+  const steps = describeRunSteps(slot.run_steps, miles);
+  return (
+    <li className={slot.is_warmup ? 'warmup' : ''}>
+      <div className="slot-name">
+        {slot.group_label ? <span className="group">{slot.group_label}</span> : null}
+        {slot.exercise_name}
+        {slot.is_warmup ? <span className="tag">Warm-up</span> : null}
+      </div>
+      {steps.length ? (
+        <ul className="steps">{steps.map((line, i) => <li key={i}>{line}</li>)}</ul>
+      ) : (
+        <div className="muted">{describeSlot(slot)}</div>
+      )}
+    </li>
   );
 }

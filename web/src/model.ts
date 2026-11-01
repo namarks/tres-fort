@@ -155,7 +155,52 @@ export function orderedSlots(workout: Workout): Slot[] {
   return coachGroupSlots(slots) as Slot[];
 }
 
-/** "3 × 5–8 @ 225 lb · RPE 8 · rest 2:00" */
+export interface SlotBlock {
+  /** A superset or circuit; null for a single exercise. */
+  group: { title: string; rounds: number; roundRest: number; transitionRest: number } | null;
+  members: Slot[];
+}
+
+/**
+ * Slots in order, with each superset or circuit gathered into one block, as
+ * the app's ExerciseGroupBlock shows them. A group's rests are the ones the
+ * runner uses: transition rest between exercises, round rest after the last.
+ */
+export function slotBlocks(workout: Workout): SlotBlock[] {
+  const blocks: SlotBlock[] = [];
+  for (const slot of orderedSlots(workout)) {
+    const last = blocks[blocks.length - 1];
+    if (slot.group_id && last?.group && last.members[0]!.group_id === slot.group_id) {
+      last.members.push(slot);
+      last.group.title = `${last.members.length === 2 ? 'Superset' : 'Circuit'} ${(slot.group_label ?? '').replace(/\d+$/, '')}`;
+      continue;
+    }
+    blocks.push({
+      group: slot.group_id
+        ? {
+            title: `Superset ${(slot.group_label ?? '').replace(/\d+$/, '')}`,
+            rounds: slot.target_sets,
+            roundRest: slot.group_rest_seconds ?? slot.rest_seconds,
+            transitionRest: slot.group_transition_seconds ?? 0,
+          }
+        : null,
+      members: [slot],
+    });
+  }
+  return blocks;
+}
+
+/** "4 rounds · round rest 1:30 · 0:15 between exercises" */
+export function describeGroup(group: NonNullable<SlotBlock['group']>): string {
+  const parts = [`${group.rounds} ${group.rounds === 1 ? 'round' : 'rounds'}`, `round rest ${formatClock(group.roundRest)}`];
+  if (group.transitionRest > 0) parts.push(`${formatClock(group.transitionRest)} between exercises`);
+  return parts.join(' · ');
+}
+
+/**
+ * "3 × 5–8 @ 225 lb · RPE 8 · rest 2:00". A grouped slot's own rest is kept
+ * only for ungrouping, so it is not shown; its group's rests are.
+ */
 export function describeSlot(slot: Slot): string {
   const parts: string[] = [];
   const sets = `${slot.target_sets} ×`;
@@ -173,7 +218,7 @@ export function describeSlot(slot: Slot): string {
     parts[0] += ` @ ${trimNumber(slot.target_weight)} ${slot.target_weight_unit ?? 'lb'}${hand}`;
   }
   if (slot.target_rpe !== null) parts.push(`RPE ${trimNumber(slot.target_rpe)}`);
-  if (slot.rest_seconds > 0) parts.push(`rest ${formatClock(slot.rest_seconds)}`);
+  if (slot.rest_seconds > 0 && !slot.group_id) parts.push(`rest ${formatClock(slot.rest_seconds)}`);
   return parts.join(' · ');
 }
 

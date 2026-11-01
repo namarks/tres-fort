@@ -150,6 +150,9 @@ p { margin: 0 0 0.75rem; }
 }
 .tag { font-size: 0.72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 0.45rem; font-weight: 400; }
 .steps { margin: 0.25rem 0 0; padding-left: 1.1rem; color: var(--muted); }
+.group-head { display: flex; flex-direction: column; margin-bottom: 0.4rem; }
+.group-head strong { color: var(--amber); font-weight: 650; }
+.group-block > .slots { border-left: 2px solid rgba(245, 158, 11, 0.5); padding-left: 0.75rem; }
 
 @media (max-width: 1000px) {
   .planner { grid-template-columns: 1fr; padding: 16px; }

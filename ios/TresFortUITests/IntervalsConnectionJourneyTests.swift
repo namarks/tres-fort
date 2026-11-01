@@ -66,6 +66,47 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         add(attachment)
     }
 
+    /// No coach needed: a run typed in on Today goes to intervals.icu with its
+    /// distance and time, then shows under Endurance on Progress.
+    func testLogARunWithDistanceAndTimeFromToday() {
+        let app = launch("intervals-connect")
+        connect(app)
+        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: 10))
+
+        tap(app.tabBars.buttons["Today"], in: app)
+        tap(app.buttons["today.moreWaysToTrain"], in: app)
+        tap(app.buttons["today.logActivity"], in: app)
+        XCTAssertTrue(app.navigationBars["Log activity"].waitForExistence(timeout: 5))
+        tap(app.buttons["activity.type"], in: app)
+        tap(app.buttons["Run"], in: app)
+
+        let time = app.textFields["activity.time"]
+        tap(time, in: app)
+        time.typeText("25:00")
+        let distance = app.textFields["activity.distance"]
+        tap(distance, in: app)
+        distance.typeText("3.1")
+        let pace = app.staticTexts["activity.pace"]
+        XCTAssertTrue(pace.waitForExistence(timeout: 5))
+        XCTAssertEqual(pace.label, "8:04 /mi")
+
+        tap(app.buttons["activity.save"], in: app)
+        let sheet = app.navigationBars["Log activity"]
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
+
+        tap(app.tabBars.buttons["Progress"], in: app)
+        let endurance = app.buttons["progress.endurance"]
+        XCTAssertTrue(endurance.waitForExistence(timeout: 10))
+        // The card reads as one button, so its run row is part of its label.
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "3.1 mi"))
+            .firstMatch.waitForExistence(timeout: 10))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Endurance on Progress after logging a run"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testSavedConnectionRetriesImportWithoutAnotherCredentialSubmission() {
         let app = launch("intervals-retry")
         connect(app)

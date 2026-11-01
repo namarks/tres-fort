@@ -70,9 +70,7 @@ struct GroupTabView: View {
                 JoinGroupSheet(groupModel: groupModel)
             }
             .sheet(isPresented: $showLogActivity) {
-                ManualActivitySheet { pending in
-                    await groupModel.logActivity(pending)
-                }
+                LogActivitySheet(groupModel: groupModel)
             }
             .task {
                 // Opening the tab keeps what's showing and refreshes it in

@@ -57,9 +57,7 @@ struct GroupDetailView: View {
             .overlay(alignment: .bottomTrailing) { logActivityButton }
         }
         .sheet(isPresented: $showActivity) {
-            ManualActivitySheet { pending in
-                await groupModel.logActivity(pending)
-            }
+            LogActivitySheet(groupModel: groupModel)
         }
         .sheet(isPresented: $showGroupSettings) {
             GroupSettingsView(group: group, groupModel: groupModel, auth: auth)

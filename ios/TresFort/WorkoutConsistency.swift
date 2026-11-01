@@ -89,7 +89,8 @@ struct WorkoutConsistency {
         return count > 0 ? count : nil
     }
 
-    private static func monday(of date: Date) -> Date {
+    /// The Monday that starts `date`'s week, shared with `EnduranceProgress`.
+    static func monday(of date: Date) -> Date {
         let calendar = CalendarProjection.calendar
         let daysSinceMonday = (calendar.component(.weekday, from: date) + 5) % 7
         return calendar.date(byAdding: .day, value: -daysSinceMonday, to: date)!

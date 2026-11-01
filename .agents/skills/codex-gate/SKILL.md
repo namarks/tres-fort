@@ -119,7 +119,8 @@ request with the summary, never with when `HEAD` was pushed:
 Required, all `success` on `HEAD`:
 
 - `plan graph`
-- `typecheck + tests` (aggregates the three backend shards)
+- `typecheck + tests` (aggregates the three backend shards; passes when a
+  documentation-only diff, `docs/` or Markdown files, skips them)
 - `iOS build + tests` (aggregates the iOS shards; passes when the scope script
   skips iOS for a backend-only diff)
 

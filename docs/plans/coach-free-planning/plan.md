@@ -17,7 +17,7 @@ P5).
 
 ## Phases
 
-- [ ] **P0 — Away dates**
+- [x] **P0 — Away dates**
   - Members add, edit and remove away dates (`plans.meta.trips`): a range
     of days with a reason (travel, rest, injury, other), whether they can
     still train, and a note. These are the ranges the coach writes with
@@ -55,9 +55,12 @@ P5).
 
 ## Next step
 
-**Now (@agent):** Drive the P0 pull request to ready to merge. Its new REST
-routes need a Worker deploy, with the owner's go-ahead, before a TestFlight
-build that shows the Away dates row reaches members.
+**Now (@owner):** P0 merged in PR #295 (2026-11-01). Its new REST routes
+need a Worker deploy, with the owner's go-ahead, before any TestFlight build
+that shows the Away dates row reaches members. An older Worker answers the
+row's writes with 404, which the app shows as an error.
+
+**Next (@agent):** P1, the race goal and training phases in the app.
 
 ## Verification evidence
 

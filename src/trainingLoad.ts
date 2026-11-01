@@ -163,10 +163,14 @@ export function powerStreamLoad(samples: readonly Sample[], movingSec: number | 
 
 /** Load from a heart-rate stream; null when the stream is too sparse. */
 export function heartRateStreamLoad(samples: readonly Sample[], movingSec: number | null, thresholdHr: number | null | undefined, maxGap = MAX_SAMPLE_GAP_SEC): LoadResult | null {
-  if (!positive(thresholdHr) || !coverageOk(samples, movingSec)) return null;
+  // A zero heart rate is a sensor dropout, not a reading: drop it so it leaves
+  // a gap (and counts against coverage) instead of diluting the load. Zero
+  // power, by contrast, is real coasting and stays in the power path.
+  const readings = samples.filter(s => s.v > 0);
+  if (!positive(thresholdHr) || !coverageOk(readings, movingSec)) return null;
   let weighted = 0;
   let seconds = 0;
-  for (const span of spans(samples, maxGap)) {
+  for (const span of spans(readings, maxGap)) {
     const ratio = span.v / thresholdHr;
     weighted += span.dt * ratio * ratio;
     seconds += span.dt;

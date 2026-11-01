@@ -73,6 +73,16 @@ describe('heart-rate load', () => {
     expect(r).toEqual({ load: 41, intensity: 90, method: 'heart_rate' });
   });
 
+  it('treats zero heart rate as a dropout, not a reading', () => {
+    expect(heartRateStreamLoad(steady(0, 3600), 3600, 160)).toBeNull();
+    expect(selectLoad({ moving_time_sec: 3600, distance_m: 10000, hr_samples: steady(0, 3600) }, { threshold_hr: 160, threshold_pace_s_per_km: 300 })?.method)
+      .toBe('pace');
+    // A five-minute dropout inside an hour at threshold leaves a gap rather
+    // than five minutes of zero load.
+    const withDropout = steady(160, 3600).map(s => (s.t >= 1800 && s.t < 2100 ? { ...s, v: 0 } : s));
+    expect(heartRateStreamLoad(withDropout, 3300, 160)).toEqual({ load: 92, intensity: 100, method: 'heart_rate' });
+  });
+
   it('refuses Zwift-style samples every ten minutes', () => {
     expect(heartRateStreamLoad(steady(140, 3600, 600), 3600, 160)).toBeNull();
   });

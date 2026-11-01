@@ -148,9 +148,9 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@owner):** Record the remaining P3 runs on TestFlight build 59
-(main 97856cf), which carries auto-pause, the running layout and planned
-runs.
+**Now (@owner):** Record the remaining P3 runs on TestFlight build 60
+(main 2832d0c), which carries auto-pause, the running layout, planned runs
+and planning them in the app.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls

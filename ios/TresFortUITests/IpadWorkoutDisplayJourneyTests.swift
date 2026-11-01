@@ -28,11 +28,18 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         let entry = app.buttons[linked == nil ? "today.startWorkout" : "today.station"]
         XCTAssertTrue(entry.waitForExistence(timeout: UITestWait.screen))
         reveal(entry, in: app)
-        // Starting a workout isn't safe to repeat, so this waits but never
-        // taps a second time.
         entry.tapWhenReady()
         if linked != "disconnected" {
-            XCTAssertTrue(element("ipadWorkout.display", in: app).waitForExistence(timeout: UITestWait.screen))
+            let display = element("ipadWorkout.display", in: app)
+            // A tap the app receives turns Start into a disabled "Preparing…"
+            // until the workout opens. An enabled "Start workout" halfway
+            // through the wait means the tap was dropped, so tapping again
+            // can't start a second workout.
+            if !display.waitForExistence(timeout: UITestWait.screen / 2), linked == nil,
+               entry.exists, entry.isEnabled, entry.isHittable, entry.label == "Start workout" {
+                entry.tap()
+            }
+            XCTAssertTrue(display.waitForExistence(timeout: UITestWait.screen / 2))
         }
         return app
     }

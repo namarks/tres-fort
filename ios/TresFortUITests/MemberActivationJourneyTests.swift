@@ -326,7 +326,7 @@ final class MemberActivationJourneyTests: XCTestCase {
 
     func testConsumedStarterDoesNotAdvertiseAnotherOneAfterLibraryDeletion() {
         let app = launch("empty-plan", starterUsed: true)
-        XCTAssertTrue(app.staticTexts["YOUR NEXT WORKOUT"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Your next workout"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["today.starterWorkout"].exists)
         XCTAssertTrue(app.buttons["today.createWorkout"].isHittable)
     }
@@ -547,7 +547,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         for fixture in ["load-failure", "cached-empty"] {
             let app = launch(fixture)
             XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))
-            XCTAssertFalse(app.staticTexts["YOUR FIRST WORKOUT"].exists)
+            XCTAssertFalse(app.staticTexts["Your first workout"].exists)
             XCTAssertFalse(app.buttons["Create a workout"].exists)
             tap(app.buttons["Try again"], in: app)
             XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))

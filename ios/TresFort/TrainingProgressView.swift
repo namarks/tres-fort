@@ -2,7 +2,7 @@ import Charts
 import SwiftUI
 
 /// A small overview that leads with workout consistency, then drills down
-/// into strength and optional weight.
+/// into strength, endurance and optional weight.
 struct TrainingProgressView: View {
     @ObservedObject var sync: SyncModel
     var weight: BodyWeightModel? = nil
@@ -26,6 +26,7 @@ struct TrainingProgressView: View {
                         Text("Your training history will appear after syncing.")
                             .foregroundStyle(Theme.muted)
                     }
+                    EnduranceCard(sync: sync)
                     if let weight {
                         WeightProgressCard(model: weight, onHealthSettings: onHealthSettings)
                     }
@@ -196,7 +197,7 @@ struct WorkoutConsistencyView: View {
                 ConsistencyHeatmap(weeks: summary.weeks, maxCell: 30)
                 WorkoutConsistencyChart(weeks: summary.weeks).frame(height: 180)
             } footer: {
-                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday. A streak counts weeks in a row with at least one completed workout; the current week keeps it alive until Sunday ends. Activities imported from other apps or logged separately are in the calendar on Today.")
+                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday. A streak counts weeks in a row with at least one completed workout; the current week keeps it alive until Sunday ends. Runs, rides and swims are under Endurance, and everything else you log is in the calendar on Today.")
             }
             Section("By week") {
                 ForEach(summary.weeks.reversed()) { week in
@@ -360,6 +361,180 @@ private struct WorkoutConsistencyChart: View {
             }
         }
         .accessibilityIdentifier("consistency.chart")
+    }
+}
+
+/// Runs, rides, swims and walks this week, beside lifting. Shown once there
+/// is at least one in the last 12 weeks, from intervals.icu, Apple Health or
+/// logged in the app.
+private struct EnduranceCard: View {
+    @ObservedObject var sync: SyncModel
+    @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
+
+    var body: some View {
+        let summary = EnduranceProgress(activities: sync.activities, today: sync.todayString)
+        let unit = RunDistanceUnit(rawValue: unitRaw) ?? .miles
+        if !summary.isEmpty {
+            NavigationLink {
+                EnduranceHistoryView(sync: sync)
+            } label: {
+                VStack(alignment: .leading, spacing: 14) {
+                    progressHeading("Endurance", icon: "figure.run")
+                    EnduranceStats(summary: summary)
+                    EnduranceWeeksChart(weeks: summary.weeks).frame(height: 96)
+                    ForEach(summary.recent.prefix(3)) { activity in
+                        EnduranceActivityRow(activity: activity, unit: unit)
+                    }
+                    if summary.recent.contains(where: { $0.source_attribution != nil }) {
+                        SourceAttributionLabel(text: SourceAttributionLabel.summary)
+                    }
+                    Text("Runs, rides, swims and walks · weeks run Monday–Sunday")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
+                .progressCard()
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("progress.endurance")
+        }
+    }
+}
+
+private struct EnduranceStats: View {
+    let summary: EnduranceProgress
+
+    var body: some View {
+        let week = EnduranceProgress.duration(summary.thisWeekSeconds)
+        let average = EnduranceProgress.duration(summary.averageWeekSeconds)
+        let count = summary.thisWeekCount
+        ConsistencyStats(stats: [
+            .init(value: week, caption: "this week", accessibility: "\(week) this week"),
+            .init(value: "\(count)", caption: count == 1 ? "session" : "sessions",
+                  accessibility: "\(count) \(count == 1 ? "session" : "sessions") this week"),
+            .init(value: average, caption: "weekly average",
+                  accessibility: "\(average) a week on average over the last \(summary.weeks.count - 1) weeks"),
+        ])
+    }
+}
+
+struct EnduranceHistoryView: View {
+    @ObservedObject var sync: SyncModel
+    @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
+
+    var body: some View {
+        let summary = EnduranceProgress(activities: sync.activities, today: sync.todayString)
+        let unit = RunDistanceUnit(rawValue: unitRaw) ?? .miles
+        List {
+            if sync.isUsingCachedState { CachedStateBanner() }
+            Section {
+                EnduranceStats(summary: summary)
+                EnduranceWeeksChart(weeks: summary.weeks).frame(height: 180)
+                ForEach(summary.thisWeek) { total in
+                    let duration = EnduranceProgress.duration(total.seconds)
+                    LabeledContent {
+                        Text(EnduranceProgress.distance(total.meters, kind: total.kind, unit: unit)
+                            .map { "\($0) · \(duration)" } ?? duration)
+                            .monospacedDigit()
+                    } label: {
+                        Label("\(PendingActivity.label(for: total.kind)) × \(total.count)",
+                              systemImage: ExternalActivity.glyph(forKind: total.kind))
+                    }
+                }
+            } header: {
+                Text("This week")
+            } footer: {
+                Text("Runs, rides, swims and walks from intervals.icu and Apple Health, including ones you log with + on Today. Weeks run Monday–Sunday; the average leaves out this week.")
+            }
+            Section("By week") {
+                ForEach(summary.weeks.reversed()) { week in
+                    LabeledContent {
+                        Text(EnduranceProgress.duration(week.seconds)).monospacedDigit()
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(week.isCurrent ? "This week so far" : "Week of \(shortDate(week.start))")
+                            Text("\(week.count) \(week.count == 1 ? "session" : "sessions")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Section("Activities") {
+                ForEach(summary.recent) { activity in
+                    EnduranceActivityRow(activity: activity, unit: unit)
+                }
+            }
+        }
+        .navigationTitle("Endurance")
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { await sync.load() }
+    }
+}
+
+private struct EnduranceActivityRow: View {
+    let activity: ExternalActivity
+    let unit: RunDistanceUnit
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: activity.glyph)
+                .foregroundStyle(Theme.accent)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(activity.displayTitle)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                    .lineLimit(2)
+                Text(details).font(.caption).foregroundStyle(Theme.muted)
+                SourceAttributionLabel(text: activity.source_attribution)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var details: String {
+        var parts = [shortDate(activity.date)]
+        if let meters = activity.distance_m,
+           let distance = EnduranceProgress.distance(meters, kind: activity.kind, unit: unit) {
+            parts.append(distance)
+        }
+        let seconds = EnduranceProgress.seconds(activity)
+        if seconds > 0 { parts.append(EnduranceProgress.duration(seconds)) }
+        if let pace = EnduranceProgress.pace(activity, unit: unit) { parts.append(pace) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct EnduranceWeeksChart: View {
+    let weeks: [EnduranceProgress.Week]
+
+    var body: some View {
+        let maxMinutes = weeks.map { $0.seconds / 60 }.max() ?? 0
+        Chart(weeks) { week in
+            BarMark(x: .value("Week of", week.start), y: .value("Minutes", week.seconds / 60))
+                .foregroundStyle(week.isCurrent ? Theme.accent : Theme.muted)
+                .accessibilityLabel(week.isCurrent ? "This week so far" : "Week of \(shortDate(week.start))")
+                .accessibilityValue(EnduranceProgress.duration(week.seconds))
+        }
+        .chartYScale(domain: 0...max(60, maxMinutes))
+        .chartYAxis {
+            AxisMarks { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let minutes = value.as(Int.self) { Text(EnduranceProgress.duration(minutes * 60)) }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: weeks.enumerated()
+                .filter { [0, weeks.count / 2, weeks.count - 1].contains($0.offset) }
+                .map { $0.element.start }) { value in
+                AxisValueLabel(anchor: value.index == 0 ? .topLeading
+                    : value.index == value.count - 1 ? .topTrailing : .top) {
+                    if let date = value.as(String.self) { Text(shortDate(date)) }
+                }
+            }
+        }
+        .accessibilityIdentifier("endurance.chart")
     }
 }
 

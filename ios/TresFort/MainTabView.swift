@@ -252,9 +252,7 @@ struct MainTabView: View {
             // feed; if they have no group yet, the optimistic insert
             // silently no-ops on the visible feed (groupModel.selected ==
             // nil) but the POST still hits the server.
-            ManualActivitySheet { pending in
-                await groupModel.logActivity(pending)
-            }
+            LogActivitySheet(groupModel: groupModel)
         }
         .fullScreenCover(isPresented: $showRunRecorder) {
             RunRecorderView(model: models.runs) { showRunRecorder = false }

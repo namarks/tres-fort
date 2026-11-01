@@ -694,6 +694,21 @@ private struct UIFixtureServer {
             intervalsPending = false
             importIntervalsActivity()
             response = ["status": "synced", "connection": intervalsStatus]
+        case ("POST", "/api/activities/endurance") where scenario.isIntervals && intervalsConnected:
+            // Like the Worker: the run lands on intervals.icu and comes back
+            // through the activity sync; a retry with the same id is a no-op.
+            guard let id = body["id"] as? String, let date = body["date"] as? String,
+                  let type = body["type"] as? String, let duration = body["duration_s"] as? Int
+            else { throw URLError(.badServerResponse) }
+            let known = importedActivities.contains { $0["id"] as? String == id }
+            if !known {
+                importedActivities.append(["id": id, "source": "intervals", "external_id": "manual-\(id)",
+                    "date": date, "kind": type, "name": body["title"] as? String ?? type.capitalized,
+                    "moving_time_sec": duration, "distance_m": body["distance_m"] ?? NSNull(),
+                    "synced_at": revision, "attribution_version": 1])
+            }
+            status = known ? 200 : 201
+            response = ["ok": true, "destination": "intervals.icu", "deduplicated": known, "activity_id": id]
         case ("POST", "/api/me/mcp-passphrase"):
             response = ["ok": true]
         case ("GET", "/api/me/group-safety"):

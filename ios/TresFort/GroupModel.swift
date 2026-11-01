@@ -621,6 +621,27 @@ final class GroupModel: ObservableObject {
 
     // MARK: - Manual activities
 
+    /// Sends a hand-entered run, ride, swim or walk to intervals.icu, like
+    /// the coach's log_activity. Nothing is kept on the phone, so a failure
+    /// throws and the sheet keeps the entry to try again with the same id.
+    func logEndurance(_ entry: EnduranceEntry) async throws {
+        guard let jwt = currentJWT else { throw APIError.http(401, "") }
+        _ = try await api.logEndurance(entry, jwt: jwt)
+        guard isCurrentAccount else { return }
+        // The run reaches the feed and calendar through the activity sync,
+        // which the server already refreshed.
+        if let gid = selectedGroupID {
+            await refreshFeed(groupID: gid)
+            await refreshActivitySeries(groupID: gid)
+        }
+        await onActivityPersisted?()
+    }
+
+    /// Whether a hand-entered run, ride, swim or walk can go to intervals.icu.
+    var canLogEndurance: Bool {
+        intervalsStatus?.connected == true && intervalsStatus?.needs_reauth != true
+    }
+
     /// Log a manual activity. The flow per spec §6e:
     ///   1. Save to the outbox, then append to the group's feed cache (the
     ///      row appears immediately, even before the server confirms).

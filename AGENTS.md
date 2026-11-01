@@ -247,7 +247,9 @@ as treadmill or spin; `src/enduranceActivity.ts`) to a manual activity on the
 member's intervals.icu account (`src/services/intervalsActivityWrite.ts`),
 never the local `activities` table, and refreshes the activity sync. Provider
 failure is an error, never a local fallback, and a write 401/403 never
-disconnects the read credential. Other types stay local (migration `0057`
+disconnects the read credential. The app's `POST /api/activities/endurance`
+uses the same write for a run, ride, swim or walk typed in by hand, with
+distance and time. Other types stay local (migration `0057`
 adds `duration_s`, `avg_hr`, `calories`). `delete_activity` deletes only
 intervals.icu activities whose `external_id` Tres Fort set. Current tools:
 `get_coach_brief`, `get_current_plan`, `get_plan_history`, `compare_plan_versions`, `restore_plan`,

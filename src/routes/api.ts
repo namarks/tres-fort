@@ -99,6 +99,8 @@ import {
   swapExercise,
   upsertHealthKitActivity,
   uploadRecordedRun,
+  logEnduranceActivity,
+  getUserTimezone,
   recordingFormat,
   MAX_RECORDING_BYTES,
   writeAudit,
@@ -116,6 +118,7 @@ import {
 } from '../validation';
 import { WEEKDAYS } from '../types';
 import type { Weekday } from '../types';
+import { clockInTz, enduranceAlias, intervalsTypeFor, parseClock } from '../enduranceActivity';
 import { deriveStationLinkKey, STATION_LINK_KEY_VERSION } from '../stationLink';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -1442,6 +1445,56 @@ apiRoutes.post('/activities/recordings', async (c) => {
     file,
     format,
     name: name && name.trim().length > 0 ? name.trim() : null,
+  });
+  if ('error' in result) return c.json(result, RECORDING_ERROR_STATUS[result.error]);
+  return c.json(result, result.deduplicated ? 200 : 201);
+});
+
+// POST /api/activities/endurance — a run, ride, swim or walk entered by hand
+// in the app. Like the coach's log_activity, it is created on the member's
+// intervals.icu account as a manual activity, never in the local activities
+// log, and comes back through the activity sync. A provider failure is an
+// error with nothing saved. `id` (client UUID) is the idempotency key: a
+// retry returns the activity the first attempt created (200).
+// Body: type (run|ride|swim|walk or an alias such as treadmill or spin),
+// date, duration_s; optional distance_m, indoor, start_time ("HH:MM" local,
+// default now in the member's timezone), title, notes and avg_hr.
+const ENDURANCE_MAX_S = 7 * 24 * 3600;
+apiRoutes.post('/activities/endurance', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const optionalText = (max: number) => (v: unknown) => v === null || (typeof v === 'string' && v.length <= max);
+  const invalid = invalidMutationFields(b, {
+    id: (v) => typeof v === 'string' && UUID_RE.test(v),
+    date: (v) => typeof v === 'string' && ISO_DATE_RE.test(v),
+    type: (v) => typeof v === 'string' && enduranceAlias(v) !== null,
+    duration_s: (v) => typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= ENDURANCE_MAX_S,
+  }, {
+    distance_m: (v) => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0),
+    indoor: (v) => typeof v === 'boolean',
+    start_time: (v) => parseClock(v) !== null,
+    title: optionalText(200),
+    notes: optionalText(4000),
+    avg_hr: (v) => v === null || (typeof v === 'number' && Number.isInteger(v) && v >= 20 && v <= 250),
+  });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const userId = c.get('userId');
+  const mapping = intervalsTypeFor(enduranceAlias(b.type as string)!,
+    typeof b.indoor === 'boolean' ? b.indoor : undefined);
+  const title = typeof b.title === 'string' && b.title.trim() ? b.title.trim() : null;
+  const notes = typeof b.notes === 'string' && b.notes.trim() ? b.notes : null;
+  const result = await logEnduranceActivity(c.env.DB, c.env, userId, {
+    activity_id: (b.id as string).toLowerCase(),
+    date: b.date as string,
+    start_time: parseClock(b.start_time) ?? clockInTz(await getUserTimezone(c.env.DB, userId)),
+    mapping,
+    name: title ?? mapping.label,
+    duration_s: Math.round(b.duration_s as number),
+    distance_m: typeof b.distance_m === 'number' ? b.distance_m : null,
+    avg_hr: typeof b.avg_hr === 'number' ? b.avg_hr : null,
+    calories: null,
+    notes,
   });
   if ('error' in result) return c.json(result, RECORDING_ERROR_STATUS[result.error]);
   return c.json(result, result.deduplicated ? 200 : 201);

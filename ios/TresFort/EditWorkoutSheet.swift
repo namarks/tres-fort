@@ -818,6 +818,7 @@ private struct EditExerciseTargetView: View {
     @State private var usesHold: Bool
     @State private var seconds: Int
     @State private var restSeconds: Int
+    @State private var load: SlotLoadDraft
     @State private var working = false
     private let repUpperBound: Int
 
@@ -844,6 +845,7 @@ private struct EditExerciseTargetView: View {
         _usesHold = State(initialValue: slot.isTimed)
         _seconds = State(initialValue: slot.holdSeconds)
         _restSeconds = State(initialValue: max(0, slot.rest_seconds))
+        _load = State(initialValue: SlotLoadDraft(slot: slot))
     }
 
     private var isGrouped: Bool { slot.group_id != nil }
@@ -910,6 +912,8 @@ private struct EditExerciseTargetView: View {
                 }
             }
 
+            if slot.showsLoadControl { loadSection }
+
             Section {
                 Stepper("\(restSeconds)s", value: $restSeconds, in: 0...max(600, slot.rest_seconds), step: 15)
                     .disabled(isGrouped)
@@ -930,7 +934,7 @@ private struct EditExerciseTargetView: View {
                         .font(Theme.mono(15, .bold))
                         .frame(maxWidth: .infinity)
                 }
-                .disabled(working)
+                .disabled(working || !load.isValid)
             }
 
             if let error = sync.loadError {
@@ -950,6 +954,43 @@ private struct EditExerciseTargetView: View {
         .tint(Theme.accent)
     }
 
+    /// Target weight (in the slot's own lb or kg) and target effort, so a
+    /// member can prescribe a load without the coach.
+    private var loadSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                TextField("No target", text: $load.text)
+                    .keyboardType(slot.allowsAssistance ? .numbersAndPunctuation : .decimalPad)
+                    .accessibilityLabel("Target weight in \(load.unit.rawValue)")
+                    .accessibilityIdentifier("slot.targetWeight")
+                WeightUnitPicker(selection: Binding(get: { load.unit }, set: { load.select($0) }),
+                                 identifier: "slot.weightUnit")
+                    .fixedSize()
+            }
+            if !load.isValid {
+                Text(slot.allowsAssistance ? "Enter a number, such as 20 or -20." : "Enter a weight of 0 or more.")
+                    .font(.footnote).foregroundStyle(Theme.danger)
+            }
+            Toggle("Target effort (RPE)", isOn: Binding(
+                get: { load.rpe != nil },
+                set: { load.rpe = $0 ? (slot.target_rpe ?? 8) : nil }))
+                .tint(Theme.accent)
+                .accessibilityIdentifier("slot.targetEffort")
+            if let rpe = load.rpe {
+                Stepper("RPE \(SetValueFormatter.number(rpe))",
+                        value: Binding(get: { rpe }, set: { load.rpe = $0 }),
+                        in: 1...10, step: 0.5)
+                    .accessibilityIdentifier("slot.targetRPE")
+            }
+        } header: {
+            Text(slot.isPerHand ? "Weight · each hand" : "Weight")
+        } footer: {
+            Text(slot.allowsAssistance
+                 ? "Enter 0 for bodyweight, added load as a positive number and assistance as a negative one. Leave it empty to start from your last set."
+                 : "Each set starts at this weight. Leave it empty to start from your last set.")
+        }
+    }
+
     private func save() {
         working = true
         Task {
@@ -965,7 +1006,8 @@ private struct EditExerciseTargetView: View {
                 targetReps: isCardio ? slot.target_reps : (isHold ? seconds : reps),
                 targetRepsMax: rangeMax,
                 restSeconds: restSeconds,
-                targetDurationS: durationS, expectedVersion: expectedVersion)
+                targetDurationS: durationS, load: load.changedFields,
+                expectedVersion: expectedVersion)
             working = false
             if saved { dismiss() }
         }

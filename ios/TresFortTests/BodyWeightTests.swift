@@ -51,6 +51,17 @@ final class BodyWeightHistoryTests: XCTestCase {
         XCTAssertEqual(BodyWeightUnit.pounds.value(80), 176.3698, accuracy: 0.0001)
         XCTAssertEqual(BodyWeightUnit.kilograms.value(80), 80)
     }
+
+    func testBodyWeightReadsInTheAppWeightUnit() {
+        let suite = "body-weight-unit-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(BodyWeightUnit.preferred(defaults), .pounds)
+        defaults.set(WeightUnit.kg.rawValue, forKey: WeightUnit.preferenceKey)
+        XCTAssertEqual(BodyWeightUnit.preferred(defaults), .kilograms)
+        defaults.set(WeightUnit.lb.rawValue, forKey: WeightUnit.preferenceKey)
+        XCTAssertEqual(BodyWeightUnit.preferred(defaults), .pounds)
+    }
 }
 
 private final class WeightTokenStore: AppTokenStore {

@@ -86,6 +86,7 @@ struct WorkoutsView: View {
     @State private var editTarget: IdentifiedString?
     @State private var assignmentTarget: Workout?
     @State private var showHistory = false
+    @State private var showWeeklySchedule = false
 
     var body: some View {
         Group {
@@ -181,6 +182,7 @@ struct WorkoutsView: View {
             .sheet(item: $assignmentTarget) { workout in
                 WorkoutDateSheet(sync: sync, workout: workout)
             }
+            .sheet(isPresented: $showWeeklySchedule) { WeeklyScheduleView(sync: sync) }
             .sheet(isPresented: $showHistory) {
                 PlanHistoryView(sync: sync, onCorrect: { showHistory = false })
             }
@@ -321,6 +323,17 @@ struct WorkoutsView: View {
                         .foregroundStyle(Theme.accent)
                 }
                 .disabled(sync.isRoutineMutationInFlight)
+                // The repeating week lives with the workouts it schedules,
+                // not only behind the calendar.
+                Button {
+                    showWeeklySchedule = true
+                } label: {
+                    Label("Weekly schedule", systemImage: "calendar.badge.clock")
+                        .font(Theme.mono(13, .bold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
+                .accessibilityIdentifier("library.weeklySchedule")
                 }
             } header: {
                 Text(showArchived ? "Archived workouts" : "Workouts")

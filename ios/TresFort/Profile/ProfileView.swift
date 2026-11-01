@@ -30,6 +30,7 @@ struct ProfileView: View {
     @ObservedObject var auth: AuthModel
     @ObservedObject var health: HealthKitSyncModel
     var sync: SyncModel? = nil
+    var runs: RunRecorderModel? = nil
 
     @State private var showJoin = false
     @State private var showCreate = false
@@ -72,6 +73,7 @@ struct ProfileView: View {
                     NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
                 }
                 }
+                PreferencesSection(sync: sync, runs: runs)
                 if let userID = auth.userID {
                     WorkoutReminderSettingsSection(userID: userID)
                 }

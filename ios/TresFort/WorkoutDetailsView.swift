@@ -20,7 +20,7 @@ struct WorkoutDetailsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let workout {
-                        Text(workout.isArchived ? "Archived workout" : date.map { "For \($0)" } ?? "Saved workout")
+                        Text(workout.isArchived ? "Archived workout" : date.map { "For " + DateLabel.long($0) } ?? "Saved workout")
                             .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                         WorkoutExercisePreview(sync: sync, exercises: workout.exercises)
                         if workout.exercises.isEmpty {
@@ -81,7 +81,7 @@ struct WorkoutDetailsView: View {
                 Text("Today only. Weekly schedule unchanged.")
                     .font(.footnote).foregroundStyle(Theme.muted)
             } else if let date {
-                Button(saving ? "Saving…" : "Schedule for \(date)") {
+                Button(saving ? "Saving…" : "Schedule for " + DateLabel.long(date)) {
                     saving = true
                     Task {
                         let accepted = await sync.setCalendarOverride(date: date, dayID: workout.id)

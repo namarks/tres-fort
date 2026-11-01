@@ -647,7 +647,7 @@ struct TodayView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    Text(sync.todayString).font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                    Text(DateLabel.long(sync.todayString)).font(Theme.mono(12)).foregroundStyle(Theme.muted)
                     if sync.isFreestyle {
                         Text("Freestyle").font(Theme.display(30)).foregroundStyle(Theme.text)
                         Text("Add exercises as you go. Your weekly schedule stays unchanged.").foregroundStyle(Theme.muted)
@@ -1976,11 +1976,11 @@ private struct FinishedView: View {
                     // Each unit keeps its own total; lb and kg never sum.
                     let tonnage = sync.tonnageByUnit(for: sets)
                     if !tonnage.isEmpty {
-                        sumRow("External-load volume", WeightUnit.totals(tonnage) { "\(Int($0))" })
+                        sumRow("Volume", WeightUnit.totals(tonnage) { "\(Int($0))" })
                     }
                 }
                 .padding(.top, 20)
-                Text("Completion summary and records are pending until the workout is saved.")
+                Text("Your workout summary and any records appear after you finish.")
                     .font(.caption).foregroundStyle(Theme.muted)
                 ForEach(sync.metricCohorts(for: sets)) { cohort in
                     sumRow(sync.exerciseName(cohort.key.exerciseID), cohort.valueLabel)

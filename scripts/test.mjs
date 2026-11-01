@@ -35,9 +35,16 @@ export function runTests(args, { run = spawnSync, exists = existsSync } = {}) {
       throw new Error(`${binary} is required by npm test. Install it and make it available on PATH.`);
     }
   }
+  // The web app's install, typecheck, tests and build run once: in the full
+  // default command, or with the first CI shard. Focused runs skip them.
+  const shard = /^--shard(?:=|$)/;
+  const shardFlag = args.find(arg => shard.test(arg));
+  const shardValue = shardFlag === '--shard' ? args[args.indexOf(shardFlag) + 1] : shardFlag?.slice(8);
+  const runWeb = runs.length === 3 || shardValue?.startsWith('1/');
   const commands = [
     [process.execPath, ['--test', 'test/test-command.test.mjs']],
     ['npm', ['run', 'test:website']],
+    ...(runWeb ? [['npm', ['run', 'test:web']]] : []),
     ['npm', ['run', 'test:upload-testflight']],
     ['npm', ['run', 'test:query-plans']],
     ...runs.map(args => [process.execPath, [vitest, 'run', ...args]]),

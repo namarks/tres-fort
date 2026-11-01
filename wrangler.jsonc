@@ -48,6 +48,10 @@
   "triggers": { "crons": ["0 * * * *"] },
   "vars": {
     "APPLE_BUNDLE_ID": "com.nmarkspdx.tresfort",
+    // Sign in with Apple Services ID for the web app at app.tresfort.app,
+    // grouped with the app's primary App ID so both yield the same Apple
+    // subject (docs/plans/web-app). Non-sensitive.
+    "APPLE_WEB_SERVICES_ID": "com.nmarkspdx.tresfort.web",
     // intervals.icu OAuth client id (non-sensitive — appears in authorize
     // URLs). Issued by david@intervals.icu for app #431. The paired secret
     // INTERVALS_OAUTH_CLIENT_SECRET is set via `wrangler secret put`.

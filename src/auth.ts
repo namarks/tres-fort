@@ -21,17 +21,22 @@ function jwks() {
   return appleJwks;
 }
 
-/** Verify Apple's identity token; return the stable subject + email. */
+/**
+ * Verify Apple's identity token; return the stable subject + email, plus the
+ * audience it was issued to and its nonce (the web flow binds one).
+ */
 export async function verifyAppleToken(
   identityToken: string,
-  bundleId: string,
-): Promise<{ sub: string; email: string | null }> {
+  audience: string | string[],
+): Promise<{ sub: string; email: string | null; audience: string | null; nonce: string | null }> {
   const { payload } = await jwtVerify(identityToken, jwks(), {
     issuer: APPLE_ISS,
-    audience: bundleId,
+    audience,
   });
   if (!payload.sub) throw new Error('apple_token_missing_sub');
-  return { sub: payload.sub, email: (payload.email as string) ?? null };
+  const aud = typeof payload.aud === 'string' ? payload.aud : null;
+  const nonce = typeof payload.nonce === 'string' ? payload.nonce : null;
+  return { sub: payload.sub, email: (payload.email as string) ?? null, audience: aud, nonce };
 }
 
 export async function issueAppJwt(

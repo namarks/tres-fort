@@ -1,6 +1,12 @@
 export interface Env {
   DB: D1Database;
   APPLE_BUNDLE_ID: string;
+  /**
+   * Sign in with Apple Services ID used by the web app (non-secret). When set,
+   * /auth/apple also accepts identity tokens issued to it; those must carry
+   * the nonce the web gateway bound to the browser that started sign-in.
+   */
+  APPLE_WEB_SERVICES_ID?: string;
   /** Apple Developer Team ID used to sign the server-to-server client secret. */
   APPLE_TEAM_ID?: string;
   /** Sign in with Apple private-key identifier (`wrangler secret put`). */

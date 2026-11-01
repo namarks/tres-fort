@@ -19,11 +19,14 @@ struct ManualActivitySheet: View {
     /// and time (GroupModel.logEndurance). Nil when intervals.icu isn't
     /// connected; those activities then stay in the local log as before.
     var onLogEndurance: ((EnduranceEntry) async throws -> Void)? = nil
+    /// The app's clock, so the default date and the newest one the picker
+    /// allows are the same "today" the rest of the app shows.
+    private let now: () -> Date
 
     @State private var kind: String = "pilates"
     @State private var title: String = ""
     @State private var durationMin: Int = 45
-    @State private var date: Date = Date()
+    @State private var date: Date
     @State private var notes: String = ""
     @State private var saving = false
     // Endurance entries going to intervals.icu.
@@ -38,6 +41,15 @@ struct ManualActivitySheet: View {
     @State private var failure: String?
     @FocusState private var focusedField: Field?
     private enum Field { case time, distance }
+
+    init(onSave: @escaping (PendingActivity) async -> Void,
+         onLogEndurance: ((EnduranceEntry) async throws -> Void)? = nil,
+         now: @escaping () -> Date = Date.init) {
+        self.onSave = onSave
+        self.onLogEndurance = onLogEndurance
+        self.now = now
+        _date = State(initialValue: now())
+    }
 
     /// A run, ride, swim or walk goes to intervals.icu when it's connected.
     private var isEndurance: Bool {
@@ -204,7 +216,7 @@ struct ManualActivitySheet: View {
     /// revisit if users complain.
     private var dateRange: ClosedRange<Date> {
         let cal = Calendar(identifier: .gregorian)
-        let now = Date()
+        let now = self.now()
         let past = cal.date(byAdding: .day, value: -7, to: now) ?? now
         return past...now
     }
@@ -291,13 +303,17 @@ private extension PendingActivity {
 /// Group has ever loaded it.
 struct LogActivitySheet: View {
     @ObservedObject var groupModel: GroupModel
+    /// The app's clock (fixed in UI fixtures), so an entry dated "today"
+    /// lands on the day Today and Progress show.
+    var now: () -> Date = Date.init
 
     var body: some View {
         ManualActivitySheet(
             onSave: { await groupModel.logActivity($0) },
             onLogEndurance: groupModel.canLogEndurance
                 ? { try await groupModel.logEndurance($0) }
-                : nil)
+                : nil,
+            now: now)
         .task {
             if groupModel.intervalsStatus == nil { await groupModel.refreshMe() }
         }

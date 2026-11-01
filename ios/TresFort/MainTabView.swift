@@ -14,10 +14,12 @@ private final class MainTabModels: ObservableObject {
     let connectivity: SetConnectivityMonitor
     let stationLink = StationLinkController()
     let agenda: TrainingAgendaPublisher
+    let now: () -> Date
     private var syncObservation: AnyCancellable?
 
     init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date,
          weightReader: (any BodyWeightReading)?) {
+        self.now = now
         let sync = SyncModel(
             auth: auth, defaults: defaults, now: now,
             automaticWorkoutWriteRetryEnabled: true)
@@ -252,7 +254,7 @@ struct MainTabView: View {
             // feed; if they have no group yet, the optimistic insert
             // silently no-ops on the visible feed (groupModel.selected ==
             // nil) but the POST still hits the server.
-            LogActivitySheet(groupModel: groupModel)
+            LogActivitySheet(groupModel: groupModel, now: models.now)
         }
         .fullScreenCover(isPresented: $showRunRecorder) {
             RunRecorderView(model: models.runs) { showRunRecorder = false }

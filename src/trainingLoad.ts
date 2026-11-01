@@ -146,7 +146,11 @@ export function normalizedPower(samples: readonly Sample[], maxGap = MAX_SAMPLE_
   return count === 0 ? null : (sum4 / count) ** 0.25;
 }
 
-/** Load from normalized power over the moving time. */
+/** Load from normalized power over the moving time. Zero normalized power
+ * counts as no power data, not as a zero load: a whole workout at 0 W (or a
+ * source reporting 0) means a meter that was paired but not measuring, and
+ * coasting inside a ride already lowers NP without zeroing it. The selector
+ * then falls through to heart rate or pace. */
 export function powerSummaryLoad(normalizedWatts: number | null | undefined, movingSec: number | null, ftp: number | null | undefined, method: LoadMethod = 'power_summary'): LoadResult | null {
   if (!positive(normalizedWatts) || !positive(movingSec) || !positive(ftp)) return null;
   const ratio = normalizedWatts / ftp;

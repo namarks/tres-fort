@@ -56,6 +56,19 @@ describe('power load', () => {
     expect(powerSummaryLoad(198, 3446, 229)).toEqual({ load: 72, intensity: 86.5, method: 'power_summary' });
   });
 
+  it('keeps coasting zeros inside a ride', () => {
+    // 50 minutes at 250 W then 10 minutes coasting at 0 W still has power load.
+    const r = powerStreamLoad([...steady(250, 3000), ...steady(0, 600, 1, 3000)], 3600, 250);
+    expect(r?.method).toBe('power');
+    expect(r!.load).toBeGreaterThan(80);
+  });
+
+  it('treats a whole ride at 0 W as a meter that was not measuring', () => {
+    expect(powerStreamLoad(steady(0, 3600), 3600, 250)).toBeNull();
+    expect(selectLoad({ moving_time_sec: 3600, power_samples: steady(0, 3600), hr_samples: steady(160, 3600) }, { ftp_w: 250, threshold_hr: 160 })?.method)
+      .toBe('heart_rate');
+  });
+
   it('refuses a stream that covers too little of the workout', () => {
     expect(powerStreamLoad(steady(250, 1200), 3600, 250)).toBeNull();
   });

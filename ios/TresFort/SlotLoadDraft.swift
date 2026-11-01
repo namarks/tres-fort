@@ -41,7 +41,9 @@ struct SlotLoadDraft {
     /// The load in `unit`: nil when the field is empty or unreadable.
     var weight: Double? {
         if isUntouched { return sourceWeight.map { sourceUnit.convert($0, to: unit) } }
-        guard let value = Double(trimmed), value.isFinite else { return nil }
+        // A decimal pad shows a comma in some regions.
+        guard let value = Double(trimmed.replacingOccurrences(of: ",", with: ".")),
+              value.isFinite else { return nil }
         return value
     }
 
@@ -56,7 +58,15 @@ struct SlotLoadDraft {
     mutating func select(_ next: WeightUnit) {
         guard next != unit else { return }
         if !isUntouched {
-            sourceWeight = trimmed.isEmpty ? nil : weight
+            if trimmed.isEmpty {
+                sourceWeight = nil
+            } else if let value = weight {
+                sourceWeight = value
+            } else {
+                // Keep unreadable text for the member to fix, never a clear.
+                unit = next
+                return
+            }
             sourceUnit = unit
         }
         unit = next

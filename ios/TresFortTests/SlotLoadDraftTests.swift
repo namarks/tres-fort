@@ -49,6 +49,25 @@ final class SlotLoadDraftTests: XCTestCase {
         XCTAssertTrue(draft.changedFields.isEmpty)
     }
 
+    func testUnreadableLoadSurvivesAUnitSwitch() {
+        var draft = SlotLoadDraft(weight: 135, unit: .lb, rpe: nil, allowsAssistance: false)
+        draft.text = "60kg"
+        draft.select(.kg)
+        XCTAssertEqual(draft.text, "60kg")
+        XCTAssertEqual(draft.unit, .kg)
+        XCTAssertFalse(draft.isValid)
+        XCTAssertNil(draft.changedFields["target_weight"])
+    }
+
+    func testCommaDecimalReadsAsADecimal() throws {
+        var draft = SlotLoadDraft(weight: nil, unit: .kg, rpe: nil, allowsAssistance: false)
+        draft.text = "60,5"
+        XCTAssertTrue(draft.isValid)
+        XCTAssertEqual(draft.changedFields["target_weight"] as? Double, 60.5)
+        draft.select(.lb)
+        XCTAssertEqual(try XCTUnwrap(draft.weight), 133.379, accuracy: 0.001)
+    }
+
     func testOnlyAssistanceExercisesMayGoNegative() {
         var lifted = SlotLoadDraft(weight: nil, unit: .lb, rpe: nil, allowsAssistance: false)
         lifted.text = "-20"

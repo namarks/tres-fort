@@ -246,20 +246,16 @@ else: print('synthetic-tool-version')
             self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
             self.assertEqual(self.calls(),calls_before)
 
-    def test_smoke_is_bounded_to_twelve_real_journeys_and_all_unit_tests(self):
-        selections=[]
-        for shard in ['1','2']:
-            result=self.run_script(['--runtime','runtime','--device','device',
-                                    '--ui-suite','smoke','--ci-shard',shard])
-            self.assertEqual(result.returncode,0,result.stderr)
-            args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
-            selected=[arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:')]
-            self.assertEqual(len([s for s in selected if s!='TresFortTests']),6)
-            selections.extend(selected)
-        self.assertEqual(len(selections),13)
-        self.assertEqual(len(set(selections)),13)
+    def test_smoke_is_one_job_of_six_real_journeys_and_all_unit_tests(self):
+        result=self.run_script(['--runtime','runtime','--device','device',
+                                '--ui-suite','smoke','--ci-shard','1'])
+        self.assertEqual(result.returncode,0,result.stderr)
+        args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
+        selections=[arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:')]
+        self.assertFalse(any(arg.startswith('-skip-testing:') for arg in args))
+        self.assertEqual(len(selections),7)
+        self.assertEqual(len(set(selections)),7)
         self.assertEqual(selections.count('TresFortTests'),1)
-        self.assertIn('TresFortUITests/MemberActivationJourneyTests/testMobileCoachApprovalRequiresExplicitDecision',selections)
         self.assertIn('TresFortUITests/TrainingJourneyTests/testOrdinarySetLogsAndCompletesThroughAcknowledgement',selections)
         root=SCRIPT.parents[1]/'ios'
         for selection in selections:
@@ -274,6 +270,7 @@ else: print('synthetic-tool-version')
         args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
         self.assertEqual([arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:')],selections)
         for extra in [['--ui-suite','invalid'],
+                      ['--ui-suite','smoke','--ci-shard','2'],
                       ['--ui-suite','smoke','--ci-shard','3'],
                       ['--ui-suite','smoke','--ci-shard','6'],
                       ['--ui-suite','smoke','--only-testing','TresFortTests']]:

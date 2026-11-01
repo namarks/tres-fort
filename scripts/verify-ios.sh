@@ -60,29 +60,19 @@ if [[ -n "$ci_shard" || "$ui_suite" == smoke ]]; then
   [[ ${#test_args[@]} -eq 0 ]] || { echo 'CI selection cannot be combined with --only-testing' >&2; exit 2; }
 fi
 if [[ "$ui_suite" == smoke ]]; then
-  [[ -z "$ci_shard" || "$ci_shard" == 1 || "$ci_shard" == 2 ]] || { echo 'Smoke coverage uses shards 1 and 2' >&2; exit 2; }
-  # Bound the PR gate to twelve representative journeys. Select methods, never
-  # whole UI classes: adding a regression must not silently grow the smoke run.
-  # Every unit test still runs; all UI methods remain in weekly/manual full runs.
-  if [[ -z "$ci_shard" || "$ci_shard" == 1 ]]; then
-    test_args+=("-only-testing:TresFortTests")
-    for method in testMixedSportSetupCreatesFirstWorkoutAndKeepsProfile \
-      testCoachSetupOffersCodexClaudeAndOtherApps testMobileCoachApprovalRequiresExplicitDecision; do
-      test_args+=("-only-testing:TresFortUITests/MemberActivationJourneyTests/$method")
-    done
-    test_args+=("-only-testing:TresFortUITests/TrainingJourneyTests/testOrdinarySetLogsAndCompletesThroughAcknowledgement")
-    test_args+=("-only-testing:TresFortUITests/TrainingJourneyTests/testWeightEntryAndKeyboardCanSaveExactLoad")
-    test_args+=("-only-testing:TresFortUITests/IntervalsConnectionJourneyTests/testConnectImmediatelyRefreshesCalendar")
-  fi
-  if [[ -z "$ci_shard" || "$ci_shard" == 2 ]]; then
-    test_args+=("-only-testing:TresFortUITests/TodayNavigationJourneyTests/testTodayButtonsOpenNamedDetailsLibraryCreatorAndActivity")
-    for method in testVerifiedEmptyPlanCanCreateRoutineAndFirstWorkout testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine; do
-      test_args+=("-only-testing:TresFortUITests/TrainingJourneyTests/$method")
-    done
-    test_args+=("-only-testing:TresFortUITests/PlanChangeJourneyTests/testDismissRelaunchRevisitBothActorsAndRestore")
-    test_args+=("-only-testing:TresFortUITests/WorkoutFeedbackJourneyTests/testVoiceEditedTranscriptAndFatigueReachAcknowledgedWorkout")
-    test_args+=("-only-testing:TresFortUITests/GroupSafetyJourneyTests/testReportFallbackBlockAndUnblock")
-  fi
+  [[ -z "$ci_shard" || "$ci_shard" == 1 ]] || { echo 'Smoke coverage is one job; use --ci-shard 1 or none' >&2; exit 2; }
+  # Bound the PR gate to one job: every unit test plus six core iPhone
+  # journeys. Select methods, never whole UI classes: adding a regression must
+  # not silently grow the smoke run. All UI methods and the iPad Station and
+  # App Store device jobs stay in the nightly/manual full run (release check).
+  test_args+=("-only-testing:TresFortTests")
+  test_args+=("-only-testing:TresFortUITests/MemberActivationJourneyTests/testMixedSportSetupCreatesFirstWorkoutAndKeepsProfile")
+  test_args+=("-only-testing:TresFortUITests/TodayNavigationJourneyTests/testTodayButtonsOpenNamedDetailsLibraryCreatorAndActivity")
+  for method in testOrdinarySetLogsAndCompletesThroughAcknowledgement testWeightEntryAndKeyboardCanSaveExactLoad \
+    testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine; do
+    test_args+=("-only-testing:TresFortUITests/TrainingJourneyTests/$method")
+  done
+  test_args+=("-only-testing:TresFortUITests/PlanChangeJourneyTests/testDismissRelaunchRevisitBothActorsAndRestore")
 elif [[ -n "$ci_shard" ]]; then
   # Keep full-suite jobs near 30 minutes, including a cold build. The CI
   # limit for full runs is 40 minutes only as headroom for slow runners.

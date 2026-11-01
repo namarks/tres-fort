@@ -1,5 +1,6 @@
 """The fast CI policy must not skip iOS changes or hide missing Git evidence."""
 import importlib.util
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -49,11 +50,21 @@ class IOSScopeTests(unittest.TestCase):
                          'test/ci-ios-scope.test.py']:
                 self.assertEqual(policy.select_suite(event, ['docs/note.md', path]), 'full')
 
-    def test_device_test_lists_run_smoke_not_full(self):
-        # Adding a class to a device job must not escalate to all six shards.
+    def test_device_test_lists_run_full_because_smoke_has_no_device_jobs(self):
         for name in ['station', 'app-store-iphone', 'app-store-ipad']:
             self.assertEqual(policy.select_suite(
-                'pull_request', [f'.github/ios-tests/{name}.txt']), 'smoke')
+                'pull_request', [f'.github/ios-tests/{name}.txt']), 'full')
+
+    def test_smoke_is_one_iphone_job_and_full_adds_every_device_job(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        matrix = re.search(r"shard: \$\{\{ fromJSON\(needs\.plans\.outputs\.ios-suite == 'full'"
+                           r" && '([^']+)' \|\| '([^']+)'\) \}\}", workflow)
+        self.assertIsNotNone(matrix)
+        full, smoke = (json.loads(group) for group in matrix.groups())
+        self.assertEqual(smoke, [1])
+        self.assertEqual(full, [1, 2, 3, 4, 5, 6, 'station', 'app-store-iphone', 'app-store-ipad'])
+        self.assertNotIn('include:', workflow)
+        self.assertRegex(workflow, r"schedule:\n(?:\s+#[^\n]*\n)*\s+- cron: '\S+ \S+ \* \* \*'")
 
     def test_device_test_lists_name_real_suites(self):
         ios = ROOT / 'ios'
@@ -78,7 +89,6 @@ class IOSScopeTests(unittest.TestCase):
         lists = device_lists()
         for family, device in [('iPhone', 'iPhone-17-Pro'), ('iPad', 'iPad-Pro-13-inch-M4-8GB')]:
             step = steps[f'{family} App Store build and tests']
-            self.assertIn(f'- shard: app-store-{family.lower()}', workflow)
             self.assertIn(f"matrix.shard == 'app-store-{family.lower()}' && '{family} App Store'", job_name)
             self.assertIn("APP_STORE_BUILD: '1'", step)
             self.assertIn(f'--device com.apple.CoreSimulator.SimDeviceType.{device}', step)

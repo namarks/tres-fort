@@ -132,12 +132,14 @@ gh pr checks "$PR"
 - Red on `HEAD` is this PR's to root-cause from the job logs. Failed UI tests
   print a `---- trace:` section with their own steps. Re-run only when a job
   died before any test ran.
-- PRs run the two-shard iOS smoke suite plus the iPad Station and App Store
-  device jobs. The six-shard full suite runs weekly on `main`, and on a PR
-  that changes `.github/workflows/ci.yml`, `scripts/verify-ios.sh`,
-  `scripts/ci-ios-scope.py` or their tests. To add a test to a device job,
-  edit its list in `.github/ios-tests/`, not `ci.yml`, so the PR stays on
-  the smoke tier.
+- PRs run one iOS smoke job on iPhone: every unit test plus six core UI
+  journeys. The release check (six full UI shards plus the iPad Station and
+  App Store device jobs) runs nightly on `main`, on demand with **Run
+  workflow**, and on a PR that changes `.github/workflows/ci.yml`,
+  `scripts/verify-ios.sh`, `scripts/ci-ios-scope.py`, their tests or a list
+  in `.github/ios-tests/`. A green smoke run does not cover iPad, Station or
+  App Store packaging: for a PR that changes those, run the workflow on its
+  branch and report that result too.
 
 ## 5. Ready to merge
 

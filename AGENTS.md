@@ -30,6 +30,10 @@ plain Markdown any agent can read. Drive a PR by following
 after every fix push too, and `plan graph`, `typecheck + tests` and
 `iOS build + tests` must be green on that commit. Agents stop at ready to
 merge; Nick merges.
+PRs run one iPhone smoke job; the full UI suite and the iPad Station and App
+Store jobs run as the nightly release check on `main`. Confirm the release
+check passed on the exact commit before a TestFlight or App Store upload (see
+`docs/IOS-VERIFICATION.md`).
 
 ## Commands
 

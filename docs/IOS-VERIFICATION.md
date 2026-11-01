@@ -30,31 +30,43 @@ or `--only-testing TresFortUITests/TrainingJourneyTests`. A focused result does
 not substitute for the required CI unit and smoke coverage before merging an
 iOS change.
 
-CI uses `--ui-suite smoke` for ordinary iOS changes on pull requests and pushes to main.
-Changes to the workflow, verifier, scope selector, or their contract tests select
-`full` on the PR and push, so changes to full coverage prove the full job budget
-before merging.
-The smoke suite includes every `TresFortTests` unit test and twelve UI journeys:
-sign-in through starter setup and first workout, provider setup, mobile AI
-approval/disconnect access, Today navigation, manual workout creation,
-logging/finishing, exact keyboard load entry, exercise swap, plan history/restore,
-saved feedback, Intervals connection, and group report/block controls.
-Each selector names one method. Keep this a small representative gate: new
-regressions normally join the full suite, with focused verification on the PR
-that changes their behavior. Replacing a smoke journey is an explicit coverage
-decision. Script checks enforce twelve valid, unique methods and all unit tests.
+CI uses `--ui-suite smoke` for ordinary iOS changes on pull requests and pushes
+to main: one iPhone job. Changes to the workflow, verifier, scope selector,
+their contract tests, or a device job's list in `.github/ios-tests/` select
+`full` on the PR and push, so they prove the full job budget before merging.
+The smoke job runs every `TresFortTests` unit test and six core UI journeys:
+sign-in through starter setup and first workout, Today navigation,
+logging/finishing, exact keyboard load entry, exercise swap, and plan
+history/restore. Each selector names one method. Keep this a small
+representative gate: new regressions normally join the full suite, with focused
+verification on the PR that changes their behavior. Replacing a smoke journey
+is an explicit coverage decision. Script checks enforce six valid, unique
+methods and all unit tests.
 
-Full UI runs are periodic, rather than required on every merge. The weekly
-GitHub Actions schedule runs Mondays at 11:17 UTC on main (early morning Pacific
-time), so a regression in full-only coverage surfaces within a week.
-Use the CI workflow's **Run workflow** action for an additional full run. Both
-select `--ui-suite full`, including history measurements, accessibility audits,
-and the broader UI journeys. Schedules run only after the workflow lands on
-main and may be delayed by GitHub; inspect the Actions result for actual evidence.
+## Release check
 
-Smoke uses two standard runners with six UI journeys each; shard 1 also runs
-all unit tests. Full runs use six standard runners, partitioned using the hosted
-runner timings (including cold build time):
+The full run is the release check. It runs the six full UI shards plus the
+iPad Station, iPhone App Store and iPad App Store device jobs, all on GitHub's
+hosted macOS runners (not the Mac mini). Pull requests do not run it, so a
+regression that only those jobs catch surfaces the next morning instead of on
+its PR. It runs:
+
+- nightly on main at 11:17 UTC (early morning Pacific time);
+- on demand with the CI workflow's **Run workflow** action, on main or on a
+  risky PR's branch (for example a Station or App Store packaging change);
+- on a PR that changes the CI machinery or a device test list, as above.
+
+Before a TestFlight or App Store upload, confirm the release check passed on
+the exact main commit being built: use that night's run if main has not moved,
+otherwise run it on main and wait for it. A failure is fixed on main before the
+upload. Nothing enforces this automatically; uploads run by hand from the Mac
+mini. Worker deploys need no extra check because backend tests run on every PR.
+Full runs include history measurements, accessibility audits and the broader UI
+journeys. Schedules run only after the workflow lands on main and may be
+delayed by GitHub; inspect the Actions result for actual evidence.
+
+Full runs use six standard runners for the UI shards, partitioned using the
+hosted runner timings (including cold build time):
 
 | Shard | Coverage |
 | --- | --- |
@@ -73,7 +85,7 @@ baseline had 124 UI methods: two of the previous three partitions still had
 unrun tests at timeout.
 An October 3 audit of the three largest suites folded five duplicated methods
 into the tests that already covered their assertions.
-Smoke jobs keep a 30-minute limit. Full jobs allow 40 minutes: on October 3,
+The smoke job keeps a 30-minute limit. Full jobs allow 40 minutes: on October 3,
 slow hosted runners took shard 3 to 29 minutes, 8 of them building. The extra
 time is headroom for slow runners, not room for more tests. Existing
 assertions and element waits are unchanged.
@@ -81,8 +93,9 @@ Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
 The iPad Station and App Store device jobs read their selectors from
 `.github/ios-tests/*.txt` through `--only-testing-file` (one selector per line,
-`#` comments allowed). Editing those lists selects smoke, which runs every
-device job; `test/ci-ios-scope.test.py` checks each selector names a real test.
+`#` comments allowed). They run only in the release check, so editing those
+lists selects full; `test/ci-ios-scope.test.py` checks each selector names a
+real test.
 
 CI prioritizes the current iPhone 17 layout and normal text sizes. The optional
 `--content-size` argument can set a simulator system preference for a focused

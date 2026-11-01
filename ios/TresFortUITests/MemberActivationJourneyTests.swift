@@ -419,7 +419,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertTrue(sets.waitForExistence(timeout: 5))
         sets.buttons["Decrement"].tap()
         app.steppers["2 sets"].buttons["Decrement"].tap()
-        tap(app.buttons["Save targets"], in: app)
+        scrollAndTap(app.buttons["Save targets"], in: app)
         tap(app.navigationBars["Edit Workout 1"].buttons["Done"], in: app)
         tap(app.navigationBars["Workout 1"].buttons["Done"], in: app)
         completeFirstWorkout(app)

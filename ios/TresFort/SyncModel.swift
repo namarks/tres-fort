@@ -5502,17 +5502,21 @@ final class SyncModel: ObservableObject {
         targetRepsMax: Int?,
         restSeconds: Int,
         targetDurationS: Int?,
+        load: [String: Any] = [:],
         expectedVersion: Int? = nil
     ) async -> Bool {
         guard canInitiateBoundFeatureAction, let jwt = currentJWT,
               !workoutEditorRefreshNeeded,
               let version = expectedVersion ?? plan?.version else { return false }
-        var fields: [String: Any] = [
+        // Target weight, its unit and target RPE, only when the member changed
+        // them (SlotLoadDraft.changedFields).
+        var fields: [String: Any] = load
+        fields.merge([
             "is_warmup": isWarmup,
             "target_sets": targetSets,
             "target_reps": targetReps,
             "rest_seconds": restSeconds,
-        ]
+        ]) { _, new in new }
         if plan?.workouts.first(where: { $0.id == dayID })?.exercises.first(where: { $0.id == teID })?.group_id != nil {
             fields.removeValue(forKey: "target_sets")
             fields.removeValue(forKey: "rest_seconds")

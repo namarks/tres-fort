@@ -4655,6 +4655,35 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.plan?.workouts[0].exercises[0].target_reps, ex.target_reps)
     }
 
+    func testTargetSaveSendsAChangedLoadUnitAndEffort() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.updateHandler = { APIClient.SlotIDRow(id: ex.id) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        var load = SlotLoadDraft(weight: nil, unit: .lb, rpe: nil, allowsAssistance: false)
+        load.select(.kg)
+        load.text = "60"
+        load.rpe = 8
+
+        let saved = await model.updateSlot(
+            dayID: "day-a", teID: ex.id, isWarmup: false, targetSets: 3, targetReps: 5,
+            targetRepsMax: nil, restSeconds: 120, targetDurationS: nil, load: load.changedFields)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(editor.updatedFields["target_weight"] as? Double, 60)
+        XCTAssertEqual(editor.updatedFields["target_weight_unit"] as? String, "kg")
+        XCTAssertEqual(editor.updatedFields["target_rpe"] as? Double, 8)
+        XCTAssertEqual(editor.updatedFields["target_sets"] as? Int, 3)
+    }
+
     func testRunStepsSaveSendsTheSteps() async throws {
         let defaults = defaults()
         let ex = exercise()

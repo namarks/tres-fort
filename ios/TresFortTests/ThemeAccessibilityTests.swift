@@ -5,27 +5,48 @@ import XCTest
 
 @MainActor
 final class ThemeAccessibilityTests: XCTestCase {
+    private let styles: [UIUserInterfaceStyle] = [.light, .dark]
+
     // The gradient interpolates between bg and bgTop. All component channels
     // lie within these surfaces, so testing each bounds the text contrast.
     // The native iOS 26.2 contrast audit reports false positives over this
-    // gradient. This policy checks the resolved colors themselves; decorative
-    // dim and intentionally disabled text have a different purpose.
-    func testEnabledTextContrastAcrossDarkSurfaces() {
-        for foreground in [Theme.text, Theme.muted, Theme.accent, Theme.done, Theme.danger] {
-            for background in [Theme.bg, Theme.bgTop, Theme.surface, Theme.surface2] {
-                let ratio = (luminance(foreground) + 0.05) / (luminance(background) + 0.05)
-                XCTAssertGreaterThanOrEqual(ratio, 4.5, "Enabled text must retain WCAG AA contrast")
+    // gradient. This policy checks the resolved colors themselves, in both
+    // light and dark mode; decorative dim and intentionally disabled text
+    // have a different purpose.
+    func testEnabledTextContrastAcrossSurfaces() {
+        let foregrounds = [Theme.text, Theme.muted, Theme.accent, Theme.done, Theme.danger]
+            + BrandPalette.categorical
+        for style in styles {
+            for foreground in foregrounds {
+                for background in [Theme.bg, Theme.bgTop, Theme.surface, Theme.surface2] {
+                    XCTAssertGreaterThanOrEqual(contrast(foreground, background, style), 4.5,
+                                                "Enabled text must retain WCAG AA contrast (\(style == .dark ? "dark" : "light"))")
+                }
             }
         }
     }
 
     func testPrimaryActionTextContrast() {
-        XCTAssertGreaterThanOrEqual((luminance(Theme.accent) + 0.05) / 0.05, 4.5)
+        for style in styles {
+            XCTAssertGreaterThanOrEqual(contrast(Theme.onAccent, Theme.accent, style), 4.5)
+            // Older call sites label accent fills with the page background.
+            XCTAssertGreaterThanOrEqual(contrast(Theme.bg, Theme.accent, style), 4.5)
+        }
     }
 
-    private func luminance(_ color: Color) -> Double {
+    func testLightAndDarkResolveDifferently() {
+        XCTAssertNotEqual(luminance(Theme.bg, .light), luminance(Theme.bg, .dark))
+        XCTAssertNotEqual(luminance(Theme.accent, .light), luminance(Theme.accent, .dark))
+    }
+
+    private func contrast(_ a: Color, _ b: Color, _ style: UIUserInterfaceStyle) -> Double {
+        let x = luminance(a, style), y = luminance(b, style)
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
+
+    private func luminance(_ color: Color, _ style: UIUserInterfaceStyle) -> Double {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
-        let resolved = UIColor(color).resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        let resolved = UIColor(color).resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
         XCTAssertTrue(resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
         XCTAssertEqual(alpha, 1)
         let linear = [red, green, blue].map { component -> Double in

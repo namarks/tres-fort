@@ -62,7 +62,6 @@ struct GroupTabView: View {
                     }
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .sheet(isPresented: $showCreate) {
                 CreateGroupSheet(groupModel: groupModel)
             }

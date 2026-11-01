@@ -81,7 +81,6 @@ struct HeartRateMonitorSetupView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .onAppear { monitor.startSearching() }
         .onDisappear { monitor.stopSearching() }
     }

@@ -107,7 +107,6 @@ struct WorkoutsView: View {
                     }
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var libraryContent: some View {
@@ -133,7 +132,6 @@ struct WorkoutsView: View {
                     }
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .sheet(isPresented: $addingDay) {
                 CreateWorkoutView(sync: sync, onStart: onStart.map { start in
                     { id in

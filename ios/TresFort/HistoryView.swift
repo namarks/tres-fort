@@ -18,8 +18,6 @@ struct HistoryView: View {
         }
         .navigationTitle("Calendar")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(isPresented: $showWeeklySchedule) { WeeklyScheduleView(sync: sync) }
-        .preferredColorScheme(.dark)
     }
 }

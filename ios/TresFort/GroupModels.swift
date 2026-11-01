@@ -637,10 +637,7 @@ func avatarInitials(from name: String) -> String {
 /// view's palette so the same friend has the same color across rows.
 extension Color {
     static func stableAvatarColor(forUserID id: String) -> Color {
-        let palette: [Color] = [
-            Color(hex: 0xF59E0B), Color(hex: 0x84CC16), Color(hex: 0x06B6D4),
-            Color(hex: 0xA855F7), Color(hex: 0xEC4899), Color(hex: 0xF97316),
-        ]
+        let palette = BrandPalette.categorical
         // Swift's hashValue is per-process-randomized — use a stable hash
         // (FNV-1a 32-bit) so a user keeps their colour across app restarts
         // and across devices. The palette is small (6), so even a weak

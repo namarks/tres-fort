@@ -47,7 +47,6 @@ struct OnboardingView: View {
                 .id(step)
             }
         }
-        .preferredColorScheme(.dark)
         .sheet(isPresented: $showTrainingSetup) {
             let checkpoint = flow.checkpoint
             TrainingSetupView(auth: auth, onStarterSaved: { receipt in
@@ -399,7 +398,7 @@ private struct OnboardingPrimaryButton: View {
                 .padding(.vertical, 15)
                 .background(enabled ? Theme.accent : Theme.surface2,
                             in: RoundedRectangle(cornerRadius: 12))
-                .foregroundStyle(enabled ? Color.black : Theme.dim)
+                .foregroundStyle(enabled ? Theme.onAccent : Theme.dim)
         }
         .disabled(!enabled)
     }

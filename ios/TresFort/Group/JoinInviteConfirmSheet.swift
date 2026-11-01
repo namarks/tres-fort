@@ -48,7 +48,7 @@ struct JoinInviteConfirmSheet: View {
                             HStack {
                                 Spacer()
                                 if joining {
-                                    ProgressView().tint(.black)
+                                    ProgressView().tint(Theme.onAccent)
                                 } else {
                                     Text("Join \(groupName)").font(.headline)
                                 }
@@ -56,7 +56,7 @@ struct JoinInviteConfirmSheet: View {
                             }
                             .padding(.vertical, 15)
                             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12))
-                            .foregroundStyle(.black)
+                            .foregroundStyle(Theme.onAccent)
                         }
                         .disabled(joining)
                     }
@@ -73,7 +73,6 @@ struct JoinInviteConfirmSheet: View {
             }
             .task { await load() }
         }
-        .preferredColorScheme(.dark)
         // Don't let a swipe-dismiss yank the sheet out from under an in-flight
         // join — otherwise the success/failure result posts to a detached view
         // and the user never sees it (and the tab silently switches).

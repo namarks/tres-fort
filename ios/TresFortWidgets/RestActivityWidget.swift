@@ -3,7 +3,7 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-private let accent = Color(red: 0.96, green: 0.62, blue: 0.04)
+private let accent = BrandPalette.liveAccent
 
 struct RestActivityWidget: Widget {
     var body: some WidgetConfiguration {
@@ -29,7 +29,7 @@ struct RestActivityWidget: Widget {
                 }
             }
             .padding(16)
-            .activityBackgroundTint(.black)
+            .activityBackgroundTint(BrandPalette.liveBackground)
             .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { ctx in
             DynamicIsland {

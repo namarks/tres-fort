@@ -3,7 +3,7 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-private let accent = Color(red: 0.96, green: 0.62, blue: 0.04)
+private let accent = BrandPalette.liveAccent
 
 /// A recorded run on the Lock Screen and in the Dynamic Island. Finishing
 /// takes a pause first, so a pocket tap can't end the run.
@@ -26,7 +26,7 @@ struct RunActivityWidget: Widget {
                 }
             }
             .padding(16)
-            .activityBackgroundTint(.black)
+            .activityBackgroundTint(BrandPalette.liveBackground)
             .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { ctx in
             DynamicIsland {

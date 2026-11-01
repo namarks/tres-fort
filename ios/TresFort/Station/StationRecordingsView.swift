@@ -55,7 +55,6 @@ struct StationRecordingsView: View {
                     }
                 }
         }
-        .preferredColorScheme(.dark)
         .onReceive(access.$isActive) { active in
             guard !active else { return }
             recordings = []

@@ -53,7 +53,6 @@ struct BodyWeightFixtureView: View {
                     .toolbar { Button("Done") { showSettings = false } }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 #endif

@@ -169,13 +169,11 @@ struct AwayDatesView: View {
         .background(Theme.background)
         .navigationTitle("Away dates")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(item: $editing) { target in
             NavigationStack {
                 AwayDatesEditor(sync: sync, tripID: target.id == "new" ? nil : target.id,
                                 draft: target.draft, expectedVersion: target.version)
             }
-            .preferredColorScheme(.dark)
         }
     }
 
@@ -283,7 +281,6 @@ struct AwayDatesEditor: View {
                     .accessibilityIdentifier("away.save")
             }
         }
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .tint(Theme.accent)
         .alert("Remove these away dates?", isPresented: $confirmingRemove) {
             Button("Remove", role: .destructive) { remove() }

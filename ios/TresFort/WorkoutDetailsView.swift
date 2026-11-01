@@ -29,7 +29,6 @@ struct WorkoutDetailsView: View {
         Group {
             if isPushed { content } else { NavigationStack { content } }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var content: some View {
@@ -122,14 +121,14 @@ struct WorkoutDetailsView: View {
     }
 }
 
-/// The app's one primary action style: full width, amber, bold system text,
+/// The app's one primary action style: full width, accent fill, bold system text,
 /// and a muted fill when disabled. `.large` is for the set runner's main
 /// action (log, start, finish), which wants a bigger target, not another look.
 struct WorkoutPrimaryButtonStyle: ButtonStyle {
     enum Size { case regular, large }
     var size: Size = .regular
     /// Still available but not the loudest thing on screen (logging during
-    /// rest, stopping a timed set): amber outline instead of an amber fill.
+    /// rest, stopping a timed set): accent outline instead of an accent fill.
     var quiet = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
@@ -139,7 +138,7 @@ struct WorkoutPrimaryButtonStyle: ButtonStyle {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: size == .large ? 58 : 48)
-            .foregroundStyle(!isEnabled ? Theme.muted : quiet ? Theme.accent : Theme.bg)
+            .foregroundStyle(!isEnabled ? Theme.muted : quiet ? Theme.accent : Theme.onAccent)
             .background(isEnabled && !quiet ? Theme.accent : Theme.surface2)
             .overlay(shape.strokeBorder(Theme.accent.opacity(isEnabled && quiet ? 0.6 : 0), lineWidth: 1))
             .clipShape(shape)
@@ -229,7 +228,6 @@ struct WeeklyScheduleView: View {
             }
         }
         .interactiveDismissDisabled(hasChanges || saving)
-        .preferredColorScheme(.dark)
     }
 
     private func save() {

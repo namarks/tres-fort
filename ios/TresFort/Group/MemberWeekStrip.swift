@@ -23,9 +23,9 @@ enum WorkoutCategory: Hashable {
 
     var color: Color {
         switch self {
-        case .lift:      return Theme.accent          // amber
-        case .endurance: return Color(hex: 0x06B6D4)  // cyan
-        case .activity:  return Color(hex: 0xA855F7)  // purple (matches feed row)
+        case .lift:      return Theme.accent
+        case .endurance: return BrandPalette.categorical[3]  // teal
+        case .activity:  return BrandPalette.categorical[4]  // violet (matches feed row)
         case .other:     return Theme.muted
         }
     }

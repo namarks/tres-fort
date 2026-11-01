@@ -99,10 +99,8 @@ struct ExerciseInformationSheet: View {
                     Button("Done") { dismiss() }.accessibilityIdentifier("exerciseInfo.done")
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .tint(Theme.accent)
-        .preferredColorScheme(.dark)
     }
 
     private var history: some View {

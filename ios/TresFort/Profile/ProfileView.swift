@@ -83,9 +83,7 @@ struct ProfileView: View {
             }
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .preferredColorScheme(.dark)
         .sheet(isPresented: $showTrainingProfile) {
             TrainingSetupView(auth: auth, showStarters: false) { showTrainingProfile = false }
         }
@@ -443,7 +441,6 @@ private struct EditDisplayNameSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private func save() async {

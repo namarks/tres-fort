@@ -41,7 +41,6 @@ struct RunRecorderView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
         }
-        .preferredColorScheme(.dark)
         // On opening, and whenever a discarded run returns to the start screen.
         .task(id: model.phase) {
             if model.phase == .idle || isFailed { await model.warmUpGPS() }
@@ -292,7 +291,7 @@ struct RunRecorderView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(Theme.accent)
-        .foregroundStyle(.black)
+        .foregroundStyle(Theme.onAccent)
         .accessibilityIdentifier("runRecorder.\(id)")
     }
 

@@ -121,7 +121,6 @@ struct EditWorkoutSheet: View {
                 }
             }
         }
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(isPresented: $adding) {
             AddExerciseSheet(sync: sync, dayID: dayID, presetWarmup: addPresetWarmup)
         }
@@ -140,7 +139,6 @@ struct EditWorkoutSheet: View {
                     dayID: dayID,
                     slot: target.exercise, expectedVersion: target.version)
             }
-            .preferredColorScheme(.dark)
         }
         .sheet(item: $replacingExercise) { target in
             ReplaceExerciseSheet(sync: sync, dayID: dayID, target: target)
@@ -163,7 +161,6 @@ struct EditWorkoutSheet: View {
             selectedSlots = []
             selectingGroup = false
         }
-        .preferredColorScheme(.dark)
     }
 
     private func refreshError(_ error: String?) -> some View {
@@ -490,10 +487,9 @@ private struct EditExerciseGroupSheet: View {
                     Button("Cancel") { dismiss() }.disabled(working)
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .interactiveDismissDisabled(working)
-        .preferredColorScheme(.dark).tint(Theme.accent)
+        .tint(Theme.accent)
     }
 }
 
@@ -581,10 +577,8 @@ private struct ReplaceExerciseSheet: View {
             } message: {
                 Text("Saved targets carry over. Targets that are invalid for the new exercise will be rejected.")
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .interactiveDismissDisabled(working)
-        .preferredColorScheme(.dark)
         .tint(Theme.accent)
     }
 }
@@ -626,9 +620,7 @@ private struct AddExerciseSheet: View {
                     Button("Cancel") { dismiss() }.foregroundStyle(Theme.muted)
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -972,7 +964,6 @@ private struct EditExerciseTargetView: View {
                 Button("Cancel") { dismiss() }.foregroundStyle(Theme.muted)
             }
         }
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .tint(Theme.accent)
     }
 

@@ -29,15 +29,15 @@ struct RootView: View {
                 }
             default:
                 ZStack {
-                    Color.black.ignoresSafeArea()
+                    Theme.bg.ignoresSafeArea()
                     GeometryReader { geometry in
                         ScrollView {
                             VStack(spacing: 28) {
                                 Text("TRÈS FORT")
                                     .font(Theme.display(40)).tracking(2)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(Theme.text)
                                 if case let .working(msg) = model.phase {
-                                    ProgressView(msg).tint(.white).foregroundStyle(.white)
+                                    ProgressView(msg).tint(Theme.text).foregroundStyle(Theme.text)
                                 } else {
                                     signedOut
                                 }
@@ -47,7 +47,6 @@ struct RootView: View {
                         }
                     }
                 }
-                .preferredColorScheme(.dark)
             }
         }
         .safeAreaInset(edge: .top) {
@@ -135,7 +134,7 @@ struct RootView: View {
 
     private func accountCheck(error: String?) -> some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Theme.bg.ignoresSafeArea()
             GeometryReader { geometry in
                 ScrollView {
                     VStack(spacing: 24) {
@@ -158,18 +157,17 @@ struct RootView: View {
                                 .accessibilityIdentifier("onboarding.resolve.signOut")
                         } else {
                             ProgressView("Looking for your existing workouts…")
-                                .tint(.white)
+                                .tint(Theme.text)
                                 .accessibilityIdentifier("onboarding.resolve.checking")
                         }
                     }
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .padding(32)
                     .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -178,6 +176,8 @@ struct RootView: View {
 /// the signed-in host presents their confirmation or setup destination.
 private struct SignedOutView: View {
     @ObservedObject var model: AuthModel
+    // Apple's guidelines: a white button on dark backgrounds, black on light.
+    @Environment(\.colorScheme) private var colorScheme
     var body: some View {
         VStack(spacing: 16) {
             Text("Build your workouts or connect your own AI coach.\nSign in to keep your training in sync.")
@@ -237,7 +237,8 @@ private struct SignedOutView: View {
             } label: {
                 Label("Sign in with Apple", systemImage: "apple.logo")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .foregroundStyle(.black).background(.white)
+                    .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                    .background(colorScheme == .dark ? Color.white : Color.black)
             }
         } else {
             nativeSignInControl
@@ -253,6 +254,6 @@ private struct SignedOutView: View {
                                       req.requestedScopes = [.fullName, .email]
                                   },
                                   onCompletion: model.handleAppleResult)
-                .signInWithAppleButtonStyle(.white)
+                .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
     }
 }

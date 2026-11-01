@@ -369,7 +369,6 @@ struct TodayView: View {
             .toolbar(
                 workoutFocused || fullRestOverlayVisible ? .hidden : .visible,
                 for: .tabBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .alert(
                 "Discard this workout?",
                 isPresented: $showDiscardConfirm
@@ -442,7 +441,6 @@ struct TodayView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
         .task(id: auth.featureSessionEpoch) {
             guard UIDevice.current.userInterfaceIdiom == .phone else { return }
@@ -996,7 +994,6 @@ private struct WorkoutDoneView<QuickStarts: View>: View {
                         Text("The logged sets will be removed and this workout will no longer count.")
                     }
             }
-            .preferredColorScheme(.dark)
         }
     }
 }
@@ -1466,7 +1463,6 @@ private struct RunnerView: View {
                     .accessibilityIdentifier("runner.outline.done")
             } }
         }
-        .preferredColorScheme(.dark)
     }
 
     /// The current exercise's actions, one tap from its name. The outline
@@ -1732,7 +1728,6 @@ private struct WeightEditorSheet: View {
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .preferredColorScheme(.dark)
         .onAppear { focused = true }
     }
 }
@@ -1941,7 +1936,7 @@ private struct RestOverlay: View {
             Text(t).font(Theme.mono(13, .bold))
                 .padding(.horizontal, 18).padding(.vertical, 14)
                 .background(primary ? Theme.accent : Theme.surface)
-                .foregroundStyle(primary ? .black : Theme.text)
+                .foregroundStyle(primary ? Theme.onAccent : Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
@@ -1975,7 +1970,7 @@ private struct RestPill: View {
                         Button { sync.skipRest() } label: {
                             Text("End rest").font(.subheadline.weight(.semibold))
                                 .padding(.horizontal, 12).frame(minHeight: 44)
-                                .background(Theme.accent).foregroundStyle(.black)
+                                .background(Theme.accent).foregroundStyle(Theme.onAccent)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
                         .accessibilityIdentifier("rest.done")

@@ -115,8 +115,6 @@ struct CoachConnectView: View {
         }
         .navigationTitle("Connect your coach")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .preferredColorScheme(.dark)
         .task { await groupModel.refreshMe() }
     }
 

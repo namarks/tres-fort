@@ -167,13 +167,11 @@ struct StationView: View {
                         .accessibilityIdentifier("station.done")
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
         } else {
             ContentUnavailableView("Account session ended", systemImage: "lock")
         }
         }
-        .preferredColorScheme(.dark)
         .onAppear {
             idleTimer.begin()
             refreshIdleTimer()

@@ -197,7 +197,7 @@ struct GroupDetailView: View {
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.black)
+                .foregroundStyle(Theme.onAccent)
                 .frame(width: 56, height: 56)
                 .background(Theme.accent)
                 .clipShape(Circle())

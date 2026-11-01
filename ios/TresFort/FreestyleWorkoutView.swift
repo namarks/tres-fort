@@ -38,7 +38,6 @@ struct FreestyleExercisePicker: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) } }
         }
         .interactiveDismissDisabled(saving)
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -88,7 +87,6 @@ struct SaveFreestyleWorkoutView: View {
             }
         }
         .interactiveDismissDisabled(saving)
-        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder private func slotSection(_ index: Int, slot: FreestyleSlot) -> some View {

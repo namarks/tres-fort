@@ -245,7 +245,6 @@ struct MainTabView: View {
                         }
                     }
             }
-            .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showActivitySheet) {
             // Shared sheet — the Today tab toolbar dispatches the same

@@ -35,13 +35,11 @@ struct TrainingProgressView: View {
             }
             .background(Theme.background)
             .navigationTitle("Progress")
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .refreshable {
                 await sync.load()
                 await weight?.refresh()
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var strength: some View {

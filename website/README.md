@@ -75,8 +75,10 @@ matching tokens in `privacy.mjs`, which the app Worker also serves at
 `/privacy`). Change colors there, not in individual rules. The site uses the Ink palette:
 one hue (OKLCH 255) as a tonal scale, neutrals tinted toward it, and a single
 dusty-navy accent (ink 700, 7:1 on the page). Text and controls meet WCAG AA.
-The app screenshots and icon still show the app's old dark and amber look until
-the app adopts the same palette and they are recaptured.
+The app uses the same values (`ios/Shared/BrandPalette.swift`), and
+`assets/app-icon.png` is the app's icon. The two app screenshots still show the
+old dark and amber app until they are recaptured from a build with the new
+palette.
 
 ## Assets
 

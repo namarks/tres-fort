@@ -157,10 +157,11 @@ enum StateSnapshotStore {
             storedWatermarks, certifiedVersion: current.planGroupsVersion)
         // Older snapshots predate source attribution. Re-fetch this collection
         // once even when unchanged provider rows sit behind the delta cursor.
-        // Likewise, a cache written before this app knew a newer activity
-        // representation (training load) reloads activities once.
+        // Likewise, cached activities written before this app knew a newer
+        // activity representation (training load) reload once. An empty
+        // collection has no rows that lost fields, so its cursor stays.
         if current.state?.external_activities.contains(where: { ($0.attribution_version ?? 0) < 1 }) == true
-            || (current.state != nil
+            || (current.state?.external_activities.isEmpty == false
                 && (current.activityRepresentation ?? 0) < activityRepresentationVersion) {
             watermarks = StateSyncWatermarks(
                 planVersion: watermarks.planVersion, setsSince: watermarks.setsSince,

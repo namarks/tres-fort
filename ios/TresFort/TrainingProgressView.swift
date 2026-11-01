@@ -428,6 +428,18 @@ struct EnduranceHistoryView: View {
             Section {
                 EnduranceStats(summary: summary)
                 EnduranceWeeksChart(weeks: summary.weeks).frame(height: 180)
+                if summary.hasLoad {
+                    let week = summary.thisWeekLoad.map { "\($0)" } ?? "unknown"
+                    let average = summary.averageWeekLoad.map { " · avg \($0)" } ?? ""
+                    LabeledContent {
+                        Text(week + average).monospacedDigit()
+                    } label: {
+                        Label("Training load", systemImage: "gauge.with.dots.needle.67percent")
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Training load \(week) this week"
+                        + (summary.averageWeekLoad.map { ", \($0) a week on average" } ?? ""))
+                }
                 ForEach(summary.thisWeek) { total in
                     let duration = EnduranceProgress.duration(total.seconds)
                     LabeledContent {
@@ -444,10 +456,20 @@ struct EnduranceHistoryView: View {
             } footer: {
                 Text("Runs, rides, swims and walks from intervals.icu and Apple Health, including ones you log with + on Today. Weeks run Monday–Sunday; the average leaves out this week.")
             }
+            if summary.unscoredCount > 0 {
+                Section {
+                    Text(summary.unscoredCount == 1
+                         ? "1 activity has no training load. Add your FTP, threshold heart rate or threshold pace in Profile → Training thresholds to score it."
+                         : "\(summary.unscoredCount) activities have no training load. Add your FTP, threshold heart rate or threshold pace in Profile → Training thresholds to score them.")
+                        .font(.footnote).foregroundStyle(Theme.muted)
+                }
+                .accessibilityIdentifier("endurance.unscored")
+            }
             Section("By week") {
                 ForEach(summary.weeks.reversed()) { week in
                     LabeledContent {
-                        Text(EnduranceProgress.duration(week.seconds)).monospacedDigit()
+                        Text(weekLine(week))
+                            .monospacedDigit()
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(week.isCurrent ? "This week so far" : "Week of \(shortDate(week.start))")
@@ -466,6 +488,13 @@ struct EnduranceHistoryView: View {
         .navigationTitle("Endurance")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await sync.load() }
+    }
+
+    /// "3h 10m · load 210", or just the time when the week has no known load.
+    private func weekLine(_ week: EnduranceProgress.Week) -> String {
+        let duration = EnduranceProgress.duration(week.seconds)
+        guard let load = week.load, load > 0 else { return duration }
+        return "\(duration) · load \(load)"
     }
 }
 
@@ -500,6 +529,9 @@ private struct EnduranceActivityRow: View {
         let seconds = EnduranceProgress.seconds(activity)
         if seconds > 0 { parts.append(EnduranceProgress.duration(seconds)) }
         if let pace = EnduranceProgress.pace(activity, unit: unit) { parts.append(pace) }
+        if let load = activity.shownLoad {
+            parts.append(activity.loadMethodLabel.map { "load \(load) (\($0))" } ?? "load \(load)")
+        }
         return parts.joined(separator: " · ")
     }
 }

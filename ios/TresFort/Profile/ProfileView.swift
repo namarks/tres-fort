@@ -58,6 +58,16 @@ struct ProfileView: View {
                 Section("Your training") {
                     Button("Training profile") { showTrainingProfile = true }
                         .accessibilityIdentifier("profile.trainingProfile")
+                    NavigationLink {
+                        AthleteThresholdsView(auth: auth)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Training thresholds")
+                            Text("FTP, threshold heart rate and pace, used to score runs and rides.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("profile.thresholds")
                 }
                 }
                 if auth.isReviewAccount {

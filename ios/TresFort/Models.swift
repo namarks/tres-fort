@@ -659,6 +659,13 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
     let elevation_gain_m: Double?
     let synced_at: Int?
     let deleted_at: Int?             // non-null ⇒ hidden
+    /// The load Très Fort shows (migration 0060): the provider's own, else
+    /// one computed from the member's thresholds. Nil when nothing usable
+    /// exists; older Workers omit all three.
+    var effective_load: Double? = nil
+    var effective_intensity: Double? = nil
+    /// provider / power / power_summary / heart_rate / heart_rate_average / pace.
+    var load_method: String? = nil
 
     /// A tombstoned activity must never be shown.
     var isDeleted: Bool { deleted_at != nil }
@@ -732,9 +739,26 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
         return "\(ft) ft"
     }
 
-    var tssLabel: String? {
-        guard let t = training_load, t > 0 else { return nil }
-        return "\(t) TSS"
+    /// The training load to show: Très Fort's effective load, else the
+    /// provider's own (an older Worker sends only that). Nil, never zero,
+    /// when the load is unknown.
+    var shownLoad: Int? {
+        if let load = effective_load, load.isFinite, load >= 0 { return Int(load.rounded()) }
+        if load_method == nil, let t = training_load, t > 0 { return t }
+        return nil
+    }
+
+    /// How the load was found, in a word or two: "power", "heart rate",
+    /// "avg heart rate", "pace", or "intervals.icu" for its own load.
+    var loadMethodLabel: String? {
+        guard shownLoad != nil else { return nil }
+        switch load_method {
+        case "power", "power_summary": return "power"
+        case "heart_rate": return "heart rate"
+        case "heart_rate_average": return "avg heart rate"
+        case "pace": return "pace"
+        default: return source == "intervals" ? "intervals.icu" : nil
+        }
     }
 
     var caloriesLabel: String? {

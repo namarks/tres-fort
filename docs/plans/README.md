@@ -201,10 +201,11 @@ integration or social breadth.
 Give a member honest, private views of their own body and training trends
 without adding provider accounts, server collection or new data stores.
 
-- [App design pass](app-design-pass/plan.md) — **active**; make everyday use
+- [App design pass](app-design-pass/plan.md) — **gated**; make everyday use
   less clunky: unplanned training one tap from Today, one-tap exercise actions,
   one finish screen, fewer stacked sheets, a Plan tab, endurance logging
-  without AI and one visual system. P0 is merged in PR #287.
+  without AI and one visual system. P0 to P4 are merged (PRs #287 to #291).
+  A Worker deploy, a TestFlight build and an owner device check remain.
 - [Progress and Apple Health weight](apple-health-weight/plan.md) — **gated**;
   the private weight view and Progress tab are merged and included in internal
   TestFlight build 42. Owner verification on a real iPhone with Health readings

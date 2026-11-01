@@ -28,7 +28,7 @@ struct WorkoutDatePickerView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("For \(date)").font(.subheadline).foregroundStyle(Theme.muted)
+                    Text("For " + DateLabel.long(date)).font(.subheadline).foregroundStyle(Theme.muted)
                         .accessibilityIdentifier("workoutPicker.date")
                     if let reason = unavailableReason {
                         Text(reason).font(.subheadline).foregroundStyle(Theme.muted)

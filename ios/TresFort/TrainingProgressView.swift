@@ -86,6 +86,7 @@ private struct WeightProgressCard: View {
     @ObservedObject var model: BodyWeightModel
     let onHealthSettings: () -> Void
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = WeightUnit.lb.rawValue
 
     var body: some View {
         Group {
@@ -96,7 +97,7 @@ private struct WeightProgressCard: View {
                     VStack(alignment: .leading, spacing: 12) {
                         progressHeading("Weight", icon: "scalemass")
                         if let latest = model.history?.latest {
-                            let unit: BodyWeightUnit = Locale.current.measurementSystem == .us ? .pounds : .kilograms
+                            let unit = BodyWeightUnit(rawValue: weightUnitRaw) ?? .pounds
                             Text("\(unit.value(latest.kilograms).formatted(.number.precision(.fractionLength(1)))) \(unit.rawValue)")
                                 .font(.title2.bold()).foregroundStyle(Theme.text)
                             Text(latest.date.formatted(date: .abbreviated, time: .omitted))

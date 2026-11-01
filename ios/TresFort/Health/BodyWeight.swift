@@ -14,6 +14,12 @@ enum BodyWeightUnit: String, CaseIterable {
         // Exact international avoirdupois pound, in kilograms.
         self == .pounds ? kilograms / 0.45359237 : kilograms
     }
+
+    /// Body weight reads in the app's weight unit, the one lifting uses, so
+    /// one choice in Profile governs every weight on screen.
+    static func preferred(_ defaults: UserDefaults = .standard) -> BodyWeightUnit {
+        defaults.string(forKey: WeightUnit.preferenceKey).flatMap(BodyWeightUnit.init(rawValue:)) ?? .pounds
+    }
 }
 
 /// Health remains the store. This disposable, in-memory projection selects the

@@ -140,7 +140,8 @@ struct MainTabView: View {
             }
                 .tabItem { Label("Group", systemImage: "person.2.fill") }
                 .tag(Tab.group)
-            ProfileView(groupModel: groupModel, auth: auth, health: health, sync: sync)
+            ProfileView(groupModel: groupModel, auth: auth, health: health, sync: sync,
+                        runs: models.runs)
                 .tabItem { Label("Profile", systemImage: "person.crop.circle") }
                 .tag(Tab.profile)
         }

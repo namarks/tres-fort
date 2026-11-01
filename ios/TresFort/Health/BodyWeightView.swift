@@ -6,7 +6,7 @@ struct BodyWeightView: View {
     var onManageAccess: () -> Void = {}
     @Environment(\.scenePhase) private var scenePhase
     @State private var days = 30
-    @State private var unit: BodyWeightUnit = Locale.current.measurementSystem == .us ? .pounds : .kilograms
+    @State private var unit: BodyWeightUnit = .preferred()
 
     var body: some View {
         Form {

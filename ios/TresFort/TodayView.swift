@@ -180,7 +180,6 @@ private struct PendingTerminalBanner: View {
 struct TodayView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
-    @State private var feedbackPresentation: WorkoutFeedbackPresentation?
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
     @ObservedObject var stationLink: StationLinkController
@@ -201,6 +200,9 @@ struct TodayView: View {
     /// A partner workout owns the link while it is open.
     var onPartnerOpenChange: ((Bool) -> Void)? = nil
     @State private var isLocallyMinimized = false
+    /// The member chose Finish workout before every exercise was done. Shows
+    /// the finish screen without changing the runner's own progress.
+    @State private var reviewingEarlyFinish = false
     private var workoutFocused: Bool { sync.running && !sync.finished && isWorkoutFocused && !isLocallyMinimized }
 
     /// Opens the saved workout library from the explicit Today action.
@@ -296,12 +298,13 @@ struct TodayView: View {
                 if hasMoreWaysToTrain {
                     ToolbarItem(placement: .topBarTrailing) { moreWaysToTrain }
                 }
-                if UIDevice.current.userInterfaceIdiom == .phone && !auth.isReviewAccount {
+                // Once this phone has turned the iPad display on, its status
+                // earns a toolbar icon. Before that it waits in a menu.
+                if showsLinkedDisplayButton {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { showStationConnection = true } label: {
                             Label("iPad display", systemImage: stationLink.isConnected ? "checkmark.circle.fill" : "ipad.landscape")
-                                .labelStyle(.titleAndIcon)
-                                .font(.subheadline.weight(.semibold))
+                                .labelStyle(.iconOnly)
                         }
                         .accessibilityIdentifier("today.ipadDisplay")
                         .accessibilityValue(stationLink.isConnected ? "Connected" : "")
@@ -329,12 +332,18 @@ struct TodayView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            if !sync.finished {
+                            if !sync.finished && !reviewingEarlyFinish {
+                                // Finishing early opens the same finish screen
+                                // the last set leads to.
                                 Button("Finish workout", systemImage: "checkmark.circle") {
-                                    guard let target = sync.terminalActionTarget else { return }
-                                    feedbackPresentation = WorkoutFeedbackPresentation(target: target)
+                                    restExpanded = false
+                                    reviewingEarlyFinish = true
                                 }
                                 .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
+                            }
+                            if offersDisplayInMenu {
+                                Button("iPad display", systemImage: "ipad.landscape") { showStationConnection = true }
+                                    .accessibilityIdentifier("today.ipadDisplay")
                             }
                             Button("Discard workout", systemImage: "trash", role: .destructive) {
                                 discardTarget = sync.terminalActionTarget
@@ -372,9 +381,6 @@ struct TodayView: View {
                 Button("Keep workout", role: .cancel) {}
             } message: {
                 Text("The sets you logged will be deleted and this session won't count. The day goes back to its normal schedule. This can't be undone.")
-            }
-            .sheet(item: $feedbackPresentation) { item in
-                WorkoutFeedbackSheet(sync: sync, target: item.target, finishAfterSave: true)
             }
             .sheet(isPresented: $showStationConnection) {
                 StationPhoneSetupView(auth: auth, link: stationLink) {
@@ -464,9 +470,13 @@ struct TodayView: View {
         .onChange(of: sync.running) { _, running in
             if !running {
                 isLocallyMinimized = false
+                reviewingEarlyFinish = false
                 stationLink.resetWorkout()
             }
         }
+        // Once every exercise is done the regular finish screen takes over, so
+        // reopened work later returns to the runner, not to an early finish.
+        .onChange(of: sync.finished) { _, finished in if finished { reviewingEarlyFinish = false } }
         // Only the open runner logs counts, so a minimized workout is not armed;
         // resuming arms the current set again.
         .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }
@@ -483,9 +493,20 @@ struct TodayView: View {
     private var canOfferRecordRun: Bool {
         onRecordRun != nil && !sync.partnerReserved && !sync.running
     }
+    /// The iPad display is an iPhone feature, kept from the App Review account.
+    private var canOfferIPadDisplay: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && !auth.isReviewAccount
+    }
+    private var showsLinkedDisplayButton: Bool { canOfferIPadDisplay && stationLinkAccount != nil }
+    /// Until the display is turned on it lives in the + menu, or in the
+    /// workout menu while a workout is open.
+    private var offersDisplayInMenu: Bool { canOfferIPadDisplay && !showsLinkedDisplayButton }
     private var hasMoreWaysToTrain: Bool {
         canOfferFreestyle || canOfferLogActivity || canOfferRecordRun || canOfferTrainTogether
+            || (offersDisplayInMenu && !sync.running)
     }
+    /// Something else to do today, shown on the Today screen itself.
+    private var hasQuickStarts: Bool { canOfferFreestyle || canOfferLogActivity || canOfferRecordRun }
 
     /// Occasional ways to train, kept off the main screen so today's workout,
     /// the library and the week stay in front.
@@ -515,6 +536,13 @@ struct TodayView: View {
                     Label("Train together", systemImage: "person.2")
                 }
                 .accessibilityIdentifier("today.trainTogether")
+            }
+            if offersDisplayInMenu && !sync.running {
+                Divider()
+                Button { showStationConnection = true } label: {
+                    Label("iPad display", systemImage: "ipad.landscape")
+                }
+                .accessibilityIdentifier("today.ipadDisplay")
             }
         } label: {
             Image(systemName: "plus")
@@ -558,8 +586,9 @@ struct TodayView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if sync.finished {
-            FinishedView(sync: sync, stationLink: stationLink, onExpandRest: scrollableRestExpansion)
+        if sync.finished || (reviewingEarlyFinish && sync.running) {
+            FinishedView(sync: sync, stationLink: stationLink, onExpandRest: scrollableRestExpansion,
+                         onKeepWorking: sync.finished ? nil : { reviewingEarlyFinish = false })
         } else if sync.running && !workoutFocused {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
@@ -637,7 +666,7 @@ struct TodayView: View {
             // (user,date)), so we never offer an action the data model
             // can't safely honor.
             VStack(spacing: 0) {
-                WorkoutDoneView(sync: sync, onOpenCalendar: { showCalendar = true })
+                WorkoutDoneView(sync: sync, onOpenCalendar: { showCalendar = true }) { quickStarts }
                 Button { showOverridePicker = true } label: {
                     todayRoute("Workouts", subtitle: "Your saved workouts")
                 }
@@ -722,9 +751,10 @@ struct TodayView: View {
                         Button("Refresh workout") { Task { await sync.load() } }.frame(minHeight: 44)
                     } else {
                         Text("Nothing scheduled").font(Theme.display(30)).foregroundStyle(Theme.text)
-                        Text("Choose a saved workout or create one for today.")
+                        Text("Choose a saved workout, or lift, run or log something without a plan.")
                             .foregroundStyle(Theme.muted)
                     }
+                    quickStarts
                     Button { showOverridePicker = true } label: {
                         todayRoute("Workouts", subtitle: "Browse, create, and edit")
                     }
@@ -738,6 +768,59 @@ struct TodayView: View {
             }
             .refreshable { await sync.load() }
         }
+    }
+
+    /// Unplanned training one tap from Today: a freestyle lift, a run to
+    /// record or an activity that's already done. The + menu keeps the same
+    /// choices plus the occasional ones.
+    @ViewBuilder private var quickStarts: some View {
+        if hasQuickStarts {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("SOMETHING ELSE")
+                    .font(Theme.mono(11, .bold)).tracking(2)
+                    .foregroundStyle(Theme.muted)
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(spacing: 8))
+                    : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+                layout {
+                    if canOfferFreestyle {
+                        quickStart(sync.isFreestyle ? "Continue freestyle" : "Freestyle lift",
+                                   systemImage: "figure.strengthtraining.traditional",
+                                   identifier: "today.quick.freestyle") { showFreestyle = true }
+                    }
+                    if canOfferRecordRun, let onRecordRun {
+                        quickStart("Record a run", systemImage: "figure.run",
+                                   identifier: "today.quick.recordRun", action: onRecordRun)
+                    }
+                    if canOfferLogActivity, let onLogActivity {
+                        quickStart("Log an activity", systemImage: "square.and.pencil",
+                                   identifier: "today.quick.logActivity", action: onLogActivity)
+                    }
+                }
+            }
+        }
+    }
+
+    private func quickStart(_ title: String, systemImage: String, identifier: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.title3).foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 76)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
     }
 
     /// A workout that is one outdoor run and nothing else.
@@ -819,9 +902,11 @@ struct TodayView: View {
 /// re-open and double-log the completed row. The week strip and upcoming
 /// days still tell you what's next; pull-to-refresh remains so a server
 /// change is reflected.
-private struct WorkoutDoneView: View {
+private struct WorkoutDoneView<QuickStarts: View>: View {
     @ObservedObject var sync: SyncModel
     let onOpenCalendar: () -> Void
+    /// A run or an activity can still follow a finished workout.
+    @ViewBuilder let quickStarts: QuickStarts
     /// Confirms discarding the just-completed session ("didn't really do
     /// this" — e.g. an accidental/test End workout).
     @State private var recordDate: IdentifiedString?
@@ -874,6 +959,8 @@ private struct WorkoutDoneView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                quickStarts
 
                 TodayWeekSection(sync: sync, onOpenCalendar: onOpenCalendar)
 
@@ -987,6 +1074,10 @@ private struct RunnerView: View {
     }
 
     @State private var showingOutline = false
+    /// One tap from the exercise menu, instead of through the outline.
+    @State private var swapping: WorkoutSwapTarget?
+    @State private var addingExercise = false
+    @State private var showingPlates = false
     @State private var loadRevealedFor: Set<String> = []
     @StateObject private var displayIdleTimer = StationIdleTimerOverride()
 
@@ -1030,8 +1121,12 @@ private struct RunnerView: View {
                                 Button("Technique & history", systemImage: "info.circle") { informationFor = ex }
                                     .font(.subheadline).frame(minHeight: 44)
                                     .accessibilityLabel("Exercise information for " + ex.exercise_name)
+                                exerciseMenu(ex)
                             } else {
-                                ExerciseInfoButton(exerciseName: ex.exercise_name) { informationFor = ex }
+                                HStack(spacing: 0) {
+                                    ExerciseInfoButton(exerciseName: ex.exercise_name) { informationFor = ex }
+                                    exerciseMenu(ex)
+                                }
                             }
                         }
                         if let group {
@@ -1064,6 +1159,11 @@ private struct RunnerView: View {
             }
             }
             .sheet(isPresented: $showingOutline) { workoutOutline(blocks: blocks) }
+            .sheet(item: $swapping) { target in WorkoutExerciseSwapSheet(sync: sync, target: target) }
+            .sheet(isPresented: $addingExercise) { FreestyleExercisePicker(sync: sync) }
+            .sheet(isPresented: $showingPlates) {
+                BarbellLoadingView(target: sync.weight, unit: ex.targetWeightUnit)
+            }
             #if DEBUG && targetEnvironment(simulator)
             .onAppear { UIFixtureStartTrace.record(.runnerAppeared) }
             #endif
@@ -1171,16 +1271,16 @@ private struct RunnerView: View {
 
     private func runnerActions(_ ex: TemplateExercise) -> some View {
         VStack(spacing: 4) {
-            // A reserved row keeps the current inputs and the logging action in
-            // place as rest starts/ends. End rest never becomes a logging button.
-            RestPill(sync: sync, horizontalPadding: 0, onExpand: { onExpandRest?() })
+            // Rest and the last-set shortcut appear only when they have
+            // something to show, so the inputs keep the room otherwise. The
+            // footer grows upward from the logging action, which stays put;
+            // End rest is its own row and never becomes a logging button.
+            if sync.restEndDate != nil {
+                RestPill(sync: sync, horizontalPadding: 0, onExpand: { onExpandRest?() })
+            }
             if hasLastSetReview {
                 LastRunnerSetReview(sync: sync, compact: true)
                     .frame(minHeight: 44, alignment: .leading)
-            } else {
-                // Reserve layout without mounting an empty correction view or
-                // a Color-backed container, which SwiftUI exposes to AX audits.
-                Spacer(minLength: 0).frame(height: 44)
             }
             if showsStationLink && stationLinkEnabled.wrappedValue {
                 #if APP_STORE_BUILD
@@ -1377,6 +1477,41 @@ private struct RunnerView: View {
             } }
         }
         .preferredColorScheme(.dark)
+    }
+
+    /// The current exercise's actions, one tap from its name. The outline
+    /// keeps the same actions for browsing other exercises.
+    private func exerciseMenu(_ ex: TemplateExercise) -> some View {
+        Menu {
+            if sync.isFreestyle {
+                Button("Add an exercise", systemImage: "plus") { addingExercise = true }
+                    .disabled(sync.timedActive)
+                    .accessibilityIdentifier("runner.menu.addExercise")
+            } else if let target = sync.workoutSwapTarget {
+                Button("Swap exercise", systemImage: "arrow.triangle.swap") { swapping = target }
+                    .accessibilityIdentifier("runner.menu.swap")
+            }
+            if ex.exercise_modality == "barbell" {
+                Button("Plates & warm-up guide", systemImage: "scalemass") { showingPlates = true }
+                    .accessibilityIdentifier("runner.menu.plates")
+            }
+            Button("Skip this exercise", systemImage: "forward.end") { sync.skip() }
+                .disabled(sync.timedActive)
+                .accessibilityIdentifier("runner.menu.skip")
+        } label: {
+            if dynamicTypeSize.isAccessibilitySize {
+                Label("Exercise options", systemImage: "ellipsis.circle")
+                    .font(.subheadline).frame(minHeight: 44)
+            } else {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+        }
+        .accessibilityLabel("Options for " + ex.exercise_name)
+        .accessibilityIdentifier("runner.exerciseMenu")
     }
 
     private func outlineOptions(_ ex: TemplateExercise) -> some View {
@@ -1852,8 +1987,8 @@ private struct RestOverlay: View {
 
 // MARK: - Compact rest controls
 
-/// Rest owns a stable, separate row. Its End rest target remains an End rest
-/// action after the deadline; logging is always a different button below it.
+/// Rest owns a separate row while it runs. Its End rest target remains an End
+/// rest action after the deadline; logging is always a different button below it.
 private struct RestPill: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
@@ -1883,13 +2018,6 @@ private struct RestPill: View {
                         }
                         .accessibilityIdentifier("rest.done")
                     }
-                }
-            } else {
-                HStack(spacing: 10) {
-                    Label(sync.timedActive ? "Timer running" : "Ready when you are", systemImage: sync.timedActive ? "timer" : "checkmark.circle")
-                        .font(.subheadline).foregroundStyle(Theme.muted)
-                        .frame(minHeight: 44)
-                    Spacer(minLength: 0)
                 }
             }
         }
@@ -1923,10 +2051,15 @@ private struct RestNextSetValues: View {
 
 // MARK: - Finished
 
+/// The one finish screen. The last set leads here, and so does Finish
+/// workout in the workout menu while exercises remain (`onKeepWorking` set).
 private struct FinishedView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var stationLink: StationLinkController
     var onExpandRest: (() -> Void)? = nil
+    /// Set when the member chose to finish before the runner did. Returns to
+    /// the exercises without changing anything.
+    var onKeepWorking: (() -> Void)? = nil
 
     /// All live WORKING sets in today's session (warm-ups excluded), taken
     /// straight from the session rather than per-slot so the same movement in
@@ -1938,10 +2071,22 @@ private struct FinishedView: View {
         }
     }
 
+    /// Sets the plan asks for that aren't logged or skipped. They don't count
+    /// once the workout is finished.
+    private var hasUnloggedSets: Bool {
+        !sync.isFreestyle && sync.exercises.contains {
+            !sync.isSkipped($0) && sync.runnerSetsDone($0) < $0.target_sets
+        }
+    }
+
     var body: some View {
         let finishPending = sync.currentTerminalIntent?.action == .finish
             && sync.currentTerminalIntent?.deliveryState != .acknowledged
-        let readyToFinish = sync.canFinishResolvedWorkout
+        let earlyFinish = onKeepWorking != nil
+        // Finishing early is always allowed. Otherwise a correction that
+        // reopens work sends the member back to it first.
+        let readyToFinish = earlyFinish || sync.canFinishResolvedWorkout
+        let finishingEarly = earlyFinish && hasUnloggedSets
         ScrollView {
             VStack(spacing: 16) {
                 if let onExpandRest {
@@ -1950,14 +2095,24 @@ private struct FinishedView: View {
                 if let logged = stationLink.lastLogged {
                     StationLinkUndoRow(sync: sync, link: stationLink, logged: logged)
                 }
-                Text(finishPending ? "WAITING" : readyToFinish ? "SETS DONE" : "REVIEW SETS")
+                Text(finishPending ? "WAITING" : finishingEarly ? "FINISH EARLY"
+                     : readyToFinish ? "SETS DONE" : "REVIEW SETS")
                     .font(Theme.display(finishPending ? 64 : 58))
-                    .foregroundStyle(Theme.done)
-                Text(finishPending
-                    ? "FINISH SAVED ON THIS DEVICE"
-                    : readyToFinish ? "READY TO FINISH" : "EXERCISES TO COMPLETE")
-                    .font(Theme.mono(11, .bold)).tracking(2)
-                    .foregroundStyle(Theme.muted)
+                    .foregroundStyle(finishingEarly && !finishPending ? Theme.accent : Theme.done)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                if finishingEarly && !finishPending {
+                    Text("UNLOGGED SETS WON'T COUNT")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("feedback.earlyFinishNote")
+                } else {
+                    Text(finishPending
+                        ? "FINISH SAVED ON THIS DEVICE"
+                        : readyToFinish ? "READY TO FINISH" : "EXERCISES TO COMPLETE")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                }
 
                 let sets = todaysSets
                 // Match the WorkoutDoneView rollup: reps count both sides;
@@ -1990,7 +2145,12 @@ private struct FinishedView: View {
                     $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
                 }, pending: pendingToday)
                 WorkoutFeedbackEntry(sync: sync)
-                if readyToFinish {
+                if let onKeepWorking {
+                    Button(action: onKeepWorking) {
+                        Text("Keep working").frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
+                } else if readyToFinish {
                     Button { sync.jump(to: sync.exerciseIndex) } label: {
                         Text("Return to exercises").frame(minHeight: 44).contentShape(Rectangle())
                     }
@@ -2004,7 +2164,11 @@ private struct FinishedView: View {
             Button {
                 guard readyToFinish else { sync.reviewIncompleteExercises(); return }
                 guard let target = sync.terminalActionTarget else { return }
-                Task { await sync.finishResolvedWorkout(expected: target) }
+                if earlyFinish {
+                    Task { await sync.finishWorkout(expected: target) }
+                } else {
+                    Task { await sync.finishResolvedWorkout(expected: target) }
+                }
             } label: {
                 Text(finishPending ? "WAITING TO SYNC" : readyToFinish ? "FINISH WORKOUT" : "REVIEW EXERCISES")
                     .font(Theme.display(24)).tracking(1.5)

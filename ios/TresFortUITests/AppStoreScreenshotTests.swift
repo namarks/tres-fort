@@ -126,13 +126,16 @@ final class AppStoreScreenshotTests: XCTestCase {
         capture("02-runner")
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        XCTAssertTrue(app.staticTexts["feedback.finishSummary"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["feedback.finishWithoutChanges"].isHittable)
+        // Finishing early lands on the same finish screen as the last set.
+        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["FINISH"].isHittable)
         XCTAssertFalse(app.textViews["feedback.note"].exists)
         capture("05-finish-summary")
-        tap(app.buttons["feedback.expand"], in: app)
-        // iPad presents a shorter form sheet. Its note editor is lazy and
-        // appears only after scrolling the foreground Form, not the runner.
+        tap(app.buttons["feedback.open"], in: app)
+        // The feedback Form's note editor is lazy and appears only after
+        // scrolling the foreground Form, not the finish screen beneath it.
+        let toolbar = app.navigationBars["Feedback"]
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
         XCTAssertEqual(app.collectionViews.count, 1)
         let form = app.collectionViews.firstMatch
         UITestScrolling.reveal(app.textViews["feedback.note"], in: app,
@@ -144,17 +147,15 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertEqual(app.textViews["feedback.note"].value as? String,
                        "Steady reps today. Keep this weight next time.")
         // The keyboard can leave the Form scrolled beneath its toolbar. Restore
-        // the disclosure before capturing this collection surface, without
-        // scrolling the runner underneath the sheet or the note's TextEditor.
+        // the privacy note before capturing, without scrolling the screen
+        // underneath the sheet or the note's TextEditor.
         let privacy = app.staticTexts["Optional. Saved feedback is shared with your coach and kept out of group feeds."]
-        let toolbar = app.navigationBars["Finish workout"]
-        let save = app.buttons["feedback.saveAndFinish"]
         XCTAssertTrue(privacy.waitForExistence(timeout: 5))
         XCTAssertTrue(form.exists)
         for _ in 0..<4 {
             let top = max(form.frame.minY, toolbar.frame.maxY) + 12
             if privacy.isHittable && privacy.frame.minY >= top { break }
-            let bottom = min(form.frame.maxY, save.frame.minY) - 12
+            let bottom = form.frame.maxY - 12
             let height = bottom - top
             guard height > 80 else { break }
             let distance = min(height * 0.3, max(32, top - privacy.frame.minY))
@@ -166,7 +167,6 @@ final class AppStoreScreenshotTests: XCTestCase {
         }
         XCTAssertTrue(privacy.isHittable)
         XCTAssertGreaterThanOrEqual(privacy.frame.minY, toolbar.frame.maxY + 8)
-        XCTAssertLessThanOrEqual(privacy.frame.maxY, save.frame.minY)
         capture("05-feedback")
     }
 }

@@ -64,11 +64,13 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
+    /// Finishing early opens the same finish screen the last set leads to.
     private func openFinishSummary(_ app: XCUIApplication) {
         let actions = app.buttons["today.workoutActions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 5)); actions.tap()
         app.buttons["Finish workout"].tap()
-        XCTAssertTrue(app.staticTexts["feedback.finishSummary"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Keep working"].exists)
     }
     private func openCompletedWorkout(_ app: XCUIApplication) {
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
@@ -82,32 +84,32 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["feedback.earlyFinishNote"].exists)
         XCTAssertFalse(app.textViews["feedback.note"].exists)
         XCTAssertFalse(app.buttons["feedback.talk"].exists)
-        XCTAssertTrue(app.buttons["feedback.finishWithoutChanges"].isHittable)
+        XCTAssertTrue(app.buttons["FINISH"].isHittable)
         screenshot("feedback-optional-finish-summary")
-        app.buttons["feedback.finishWithoutChanges"].tap()
+        app.buttons["FINISH"].tap()
         openCompletedWorkout(app)
         XCTAssertFalse(app.staticTexts["feedback.saved-note"].exists)
         XCTAssertFalse(app.staticTexts["feedback.saved-fatigue"].exists)
     }
 
-    func testExpandedEarlyFinishSavesOnlyReviewedFeedback() {
+    func testEarlyFinishSavesOnlyReviewedFeedback() {
         let app = launch(scenario: "workout-swap")
         openFinishSummary(app)
-        app.buttons["feedback.expand"].tap()
+        openFeedback(app)
         type("Finished early after one set", app: app)
-        XCTAssertTrue(app.buttons["feedback.saveAndFinish"].isHittable)
-        app.buttons["feedback.saveAndFinish"].tap()
-        openCompletedWorkout(app)
+        app.buttons["Save feedback"].tap()
+        XCTAssertTrue(app.staticTexts["feedback.saved-note"].waitForExistence(timeout: 5))
+        finish(app)
         XCTAssertEqual(app.staticTexts["feedback.saved-note"].label, "Finished early after one set")
     }
 
-    func testFinishWithoutFeedbackDoesNotSaveExpandedDraft() {
+    func testEarlyFinishDoesNotSaveACanceledDraft() {
         let app = launch(scenario: "workout-swap")
         openFinishSummary(app)
-        app.buttons["feedback.expand"].tap()
+        openFeedback(app)
         type("Unapproved draft", app: app)
-        app.buttons["feedback.finishWithoutChanges"].tap()
-        openCompletedWorkout(app)
+        app.buttons["Cancel"].tap()
+        finish(app)
         XCTAssertFalse(app.staticTexts["feedback.saved-note"].exists)
     }
 
@@ -124,13 +126,12 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         XCTAssertLessThanOrEqual(returnToExercises.frame.maxY, finishAction.frame.minY)
         returnToExercises.tap()
         openFinishSummary(app)
-        XCTAssertTrue(app.staticTexts["Your saved feedback will be included."].exists)
+        XCTAssertEqual(app.staticTexts["feedback.saved-note"].label, "Previously saved feedback")
         XCTAssertFalse(app.textViews["feedback.note"].exists)
-        app.buttons["feedback.expand"].tap()
+        openFeedback(app)
         type("Unapproved replacement", app: app, replacing: true)
-        XCTAssertEqual(app.buttons["feedback.finishWithoutChanges"].label, "Finish with saved feedback")
-        app.buttons["feedback.finishWithoutChanges"].tap()
-        openCompletedWorkout(app)
+        app.buttons["Cancel"].tap()
+        finish(app)
         XCTAssertEqual(app.staticTexts["feedback.saved-note"].label, "Previously saved feedback")
     }
 

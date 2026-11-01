@@ -306,7 +306,9 @@ unvalidated. The retained device receipts below describe earlier installations.
 **Next physical trial (@owner):** With build 52 installed on both devices,
 use the same account and allow Local Network access. In iPad Station, tap
 "Connect iPhone". Until the QR failure is resolved, open Très Fort on iPhone,
-tap "iPad display" at the top of Today and confirm "Connect iPad". Fetch the
+tap "iPad display" at the top of Today and confirm "Connect iPad" (in builds
+with [app design pass](../app-design-pass/plan.md) P1 it is in Today's + menu
+until the display is turned on, then an icon at the top). Fetch the
 link key online once. Check that opening the phone app and iPad Station
 reconnects after this first opt-in, including before and after a workout.
 Repeat the QR route and the connection loss/recovery checks when a build

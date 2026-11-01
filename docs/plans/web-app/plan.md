@@ -18,8 +18,9 @@ Apple Health, iPad Station and partner training are not web features.
 ## Phases
 
 - [ ] **P0 — Scope and owner setup**
-  - The owner confirms who the first version serves (recommended: existing
-    members, signing in with Apple) and the P1 to P4 scope.
+  - Decided by the owner on 2026-11-01: the app stays iOS-only for now, and
+    the first web version serves existing members signing in with Apple.
+    Android may come later, so sign-in must stay replaceable (see notes).
   - The owner creates a Sign in with Apple **Services ID** grouped with the
     app's primary App ID, so the web and the app receive the same Apple
     `sub` and therefore the same account. Its domain is `app.tresfort.app`
@@ -33,7 +34,9 @@ Apple Health, iPad Station and partner training are not web features.
     JWT in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie that page scripts
     cannot read, and forwards `/api/*` to the API Worker over a service
     binding with the bearer added. Writes require a same-origin `Origin` and a
-    custom request header. No CORS is opened on the API Worker.
+    custom request header. No CORS is opened on the API Worker. The gateway
+    and cookie handling do not depend on the sign-in provider, so another
+    provider later only adds a sign-in route.
   - API Worker: `/auth/apple` also accepts the web Services ID as an Apple
     audience (new non-secret `APPLE_WEB_SERVICES_ID` setting) and checks the
     web nonce. Requests from the gateway are audited as `actor='web'`, not
@@ -78,7 +81,7 @@ Apple Health, iPad Station and partner training are not web features.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | gated_by | external:owner-web-app-scope | Who the web app serves and what it covers first are the owner's choices. |
+| P0 | gated_by | external:owner-apple-web-services-id | The Services ID and the Cloudflare custom domain are created in the owner's Apple and Cloudflare accounts. |
 | P1 | gated_by | external:owner-apple-web-services-id | Sign in with Apple on the web needs the owner's Services ID, domain and return URL before it can be tested end to end. |
 | P2 | coordinates_with | plan:coach-free-planning | Both add member-facing planning over the same REST endpoints; new endpoints land once and both clients use them. |
 | P5 | gated_by | external:owner-web-deploy-approval | A new public site and an API Worker change need the owner's written go-ahead. |
@@ -86,8 +89,8 @@ Apple Health, iPad Station and partner training are not web features.
 
 ## Next step
 
-**Now (@owner):** Confirm the first-version audience and the P1 to P4 scope,
-then create the Sign in with Apple Services ID for `app.tresfort.app`.
+**Now (@owner):** Create the Sign in with Apple Services ID for
+`app.tresfort.app`, grouped with the app's primary App ID.
 
 ## Notes / open questions
 
@@ -96,6 +99,12 @@ then create the Sign in with Apple Services ID for `app.tresfort.app`.
   use, phone-sized layouts beyond "usable", and sign-in without an Apple ID.
   People without an iPhone would need another sign-in method and a way to log
   workouts; that is a separate decision.
+- Adding Android or non-Apple sign-in later is contained: all data hangs off
+  Tres Fort's own user ID, and Apple's `sub` is one column on `users`. A
+  later migration would let one account hold several sign-in identities and
+  add a "link another sign-in" screen. Sign in with Apple also works on
+  Android through the same Services ID. Members who used Hide My Email cannot
+  be matched by email, so linking happens while signed in.
 - Size estimate: P1 about three PRs, P2 five to seven (the largest), P3 two to
   three, P4 two. The Worker change is small because the REST API already
   covers planning, history and settings.

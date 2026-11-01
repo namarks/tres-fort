@@ -62,11 +62,22 @@ provider connection.
     so restoring one shows the right load.
   - `get_recent_activities` and the coach brief report `load` and
     `load_method` beside the provider's `training_load`.
-- [ ] **P2 — Thresholds and load in the app**
-  - Profile screen to view, add and correct thresholds with their dates,
-    offering the intervals.icu athlete's sport settings as starting values
-    when connected; load and its method shown on activity rows and in
-    Progress.
+- [x] **P2 — Thresholds and load in the app**
+  - Profile → Training thresholds shows the cycling and running values in
+    effect today and any value already set for a later date, and lists the
+    history. A member adds a value from a chosen date, corrects one (the new
+    row is added, then the old one removed) or removes one. Pace is typed per
+    mile or kilometer, following the recorder's unit, and stored per
+    kilometer. Every change refreshes the app, since the Worker has already
+    rescored activities.
+  - `ExternalActivity` decodes `effective_load`, `effective_intensity` and
+    `load_method`; the day agenda shows the load with its method, and
+    Progress → Endurance shows weekly load, per-activity load and a prompt to
+    add thresholds when activities have none. An older Worker's provider load
+    still shows.
+  - Covered by `AthleteThresholdsTests.swift` (history rules matching the
+    Worker, pace conversion, validation, request body, correction order,
+    failures) and load display and weekly totals tests.
 - [ ] **P3 — Detail streams from Apple Health and the run recorder**
   - The iOS import reads heart rate, cycling power, cadence and running power
     samples inside each workout, sends compact streams only when they are
@@ -81,6 +92,10 @@ provider connection.
 - [ ] **P6 — Effort fallback**
   - A one-tap "How hard was it?" (1 to 10) on imported workouts with no usable
     data gives a session-RPE load, labeled as an estimate.
+- [ ] **P7 — Starting values from intervals.icu**
+  - When intervals.icu is connected, offer its sport settings (FTP, threshold
+    heart rate, threshold pace) as suggestions on the thresholds screen; the
+    member confirms each one, and the saved row records `source='intervals'`.
 
 ## Dependencies
 
@@ -91,10 +106,11 @@ provider connection.
 
 ## Next step
 
-**Now (@agent):** P2, the thresholds screen and load display in the app. P0
-(PR #298) and P1 are in the repository; P1 is covered by
-`test/activity_load.test.ts`. Migrations `0059` and `0060` and the Worker need
-the owner's separate go-ahead to reach production.
+**Now (@agent):** P3, detail streams from Apple Health and the run recorder,
+so Health workouts get power or heart-rate load instead of average heart rate
+or pace. P0, P1 and P2 are in the repository. Migrations `0059` and `0060`
+and the Worker need the owner's separate go-ahead to reach production, and the
+app's thresholds screen needs that Worker before it can load.
 
 ## Notes / open questions
 

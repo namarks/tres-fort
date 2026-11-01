@@ -11,6 +11,10 @@ struct EnduranceProgress {
         let end: String
         let seconds: Int
         let count: Int
+        /// Sum of the activities' known training loads.
+        var load: Int = 0
+        /// Activities in the week with no known load.
+        var unscored: Int = 0
         let isCurrent: Bool
     }
 
@@ -44,6 +48,17 @@ struct EnduranceProgress {
         guard !finished.isEmpty else { return 0 }
         return finished.reduce(0) { $0 + $1.seconds } / finished.count
     }
+    var thisWeekLoad: Int { weeks.last?.load ?? 0 }
+    /// Mean load over the finished weeks.
+    var averageWeekLoad: Int {
+        let finished = weeks.dropLast()
+        guard !finished.isEmpty else { return 0 }
+        return finished.reduce(0) { $0 + $1.load } / finished.count
+    }
+    /// Whether any counted activity has a load; without one, load stats stay hidden.
+    var hasLoad: Bool { recent.contains { $0.shownLoad != nil } }
+    /// Counted activities with no known load.
+    var unscoredCount: Int { recent.filter { $0.shownLoad == nil }.count }
 
     init(activities: [ExternalActivity], today: String, weekCount: Int = 12) {
         let calendar = CalendarProjection.calendar
@@ -72,7 +87,10 @@ struct EnduranceProgress {
             let inWeek = counted.filter { $0.date >= start && $0.date <= end }
             return Week(start: start, end: end,
                         seconds: inWeek.reduce(0) { $0 + Self.seconds($1) },
-                        count: inWeek.count, isCurrent: offset == 0)
+                        count: inWeek.count,
+                        load: inWeek.reduce(0) { $0 + ($1.shownLoad ?? 0) },
+                        unscored: inWeek.filter { $0.shownLoad == nil }.count,
+                        isCurrent: offset == 0)
         }
         let currentStart = weeks.last?.start ?? today
         let current = counted.filter { $0.date >= currentStart }

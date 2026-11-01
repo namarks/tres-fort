@@ -655,7 +655,9 @@ struct DayAgendaView: View {
         if let v = a.normPowerLabel { out.append((label: "Norm Power", value: v)) }
         if let v = a.hrLabel { out.append((label: "Heart Rate", value: v)) }
         if let v = a.elevationLabel { out.append((label: "Elevation", value: v)) }
-        if let v = a.tssLabel { out.append((label: "Load", value: v)) }
+        if let load = a.shownLoad {
+            out.append((label: a.loadMethodLabel.map { "Load · \($0)" } ?? "Load", value: "\(load)"))
+        }
         if let v = a.caloriesLabel { out.append((label: "Calories", value: v)) }
         return out
     }

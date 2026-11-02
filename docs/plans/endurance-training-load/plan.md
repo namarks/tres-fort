@@ -149,9 +149,11 @@ provider connection.
 **Now (@owner):** P5 waits on Garmin's Starter API approval, so the next
 agent phase is P6, a labeled effort estimate for workouts with no usable data,
 or P7, starting values from intervals.icu, whichever the owner prefers. P0 to
-P4 are in the repository. Migrations `0059` to `0062` and the Worker
-need the owner's separate go-ahead to reach production, and the app's
-thresholds screen and file import need that Worker.
+P4 are in the repository. Migrations `0059` and `0060` reached production on
+2026-11-02 with the Worker from main `ab21d04`, so the thresholds screen works.
+Migrations `0061` and `0062`, and a Worker that includes P3 and P4, still need
+the owner's separate go-ahead; Apple Health stream summaries and file import
+need that Worker.
 
 ## Notes / open questions
 

@@ -17,11 +17,13 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/auth/*"]
+    "run_worker_first": ["/api/*", "/auth/*", "/maps/*"]
   },
   "services": [
     { "binding": "API", "service": "tres-fort" }
   ],
+  // MAPKIT_TOKEN (Apple Maps under recorded routes) is set with
+  // `wrangler secret put MAPKIT_TOKEN --config wrangler.jsonc`; see README.md.
   "vars": {
     "APPLE_WEB_SERVICES_ID": "com.nmarkspdx.tresfort.web",
     "WEB_ORIGIN": "https://app.tresfort.app"

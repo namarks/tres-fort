@@ -38,6 +38,29 @@ Sign in by posting to `/auth/dev` from the page (for example
 `fetch('/auth/dev', { method: 'POST' })` in the browser console), which is
 only routed when `DEV_AUTH_SECRET` is set. Rebuild after changing `src/`.
 
+## Maps under recorded routes
+
+A run recorded in the iPhone app shows its route under the run in the day
+panel, on Apple Maps (MapKit JS), as in the app. The page asks the gateway for
+the site's MapKit JS token at `/maps/token` (signed-in pages of this site
+only) and loads MapKit JS from Apple only when a day with a route is opened.
+Without a token, or when MapKit can't load or refuses the token, it draws the
+route's shape without a map.
+
+Make the token once in the Apple Developer account: Certificates, Identifiers
+& Profiles → Services → Maps → Configure → Tokens → (+), Token Type
+**MapKit JS**, Restriction Type **Domain**, validity **No Expiration**,
+Websites `app.tresfort.app`. Then, at deploy time:
+
+```bash
+npx wrangler secret put MAPKIT_TOKEN --config wrangler.jsonc
+```
+
+For local development, a token whose websites include `localhost` can go in
+`web/.dev.vars` as `MAPKIT_TOKEN`. The content security policy in
+`public/_headers` allows Apple's map hosts (`*.apple-mapkit.com`),
+WebAssembly and inline styles, which MapKit JS adds to the page.
+
 ## Deploying
 
 Deploying `tres-fort-web`, and the API Worker it depends on, needs the owner's

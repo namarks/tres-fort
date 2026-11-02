@@ -323,3 +323,54 @@ describe('API forwarding', () => {
     expect(unknownAuth.status).toBe(404);
   });
 });
+
+describe('Apple Maps token', () => {
+  const pageHeaders = { cookie: `${SESSION_COOKIE}=${WEB_JWT}`, 'x-tres-fort-web': '1', 'sec-fetch-site': 'same-origin' };
+  const tokenRequest = (headers: Record<string, string>, method = 'GET') =>
+    new Request(`${ORIGIN}/maps/token`, { method, headers });
+
+  it('gives a signed-in page of this site the MapKit JS token', async () => {
+    const { env, apiFetch, assetFetch } = makeEnv();
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    const response = await handle(tokenRequest(pageHeaders), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ token: 'mapkit-token' });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(assetFetch).not.toHaveBeenCalled();
+  });
+
+  it('says maps are not set up when the site has no token', async () => {
+    const { env } = makeEnv();
+    const response = await handle(tokenRequest(pageHeaders), env);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'not_configured' });
+  });
+
+  it('refuses other sites, calls without the page header, and signed-out or app sessions', async () => {
+    const { env } = makeEnv();
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    const crossSite = await handle(tokenRequest({ ...pageHeaders, 'sec-fetch-site': 'cross-site' }), env);
+    expect(crossSite.status).toBe(403);
+    const otherOrigin = await handle(tokenRequest({ ...pageHeaders, origin: 'https://evil.example' }), env);
+    expect(otherOrigin.status).toBe(403);
+    const { 'x-tres-fort-web': _header, ...withoutHeader } = pageHeaders;
+    expect((await handle(tokenRequest(withoutHeader), env)).status).toBe(403);
+    const { cookie: _cookie, ...signedOut } = pageHeaders;
+    expect((await handle(tokenRequest(signedOut), env)).status).toBe(401);
+    const appSession = await handle(tokenRequest({ ...pageHeaders, cookie: `${SESSION_COOKIE}=${APP_JWT}` }), env);
+    expect(appSession.status).toBe(401);
+    expect(cookieValue(appSession, SESSION_COOKIE)).toBe('');
+    for (const response of [crossSite, otherOrigin, appSession]) {
+      expect(JSON.stringify(await response.json())).not.toContain('mapkit-token');
+    }
+  });
+
+  it('answers nothing else under /maps', async () => {
+    const { env, assetFetch } = makeEnv();
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    expect((await handle(tokenRequest({ ...pageHeaders, origin: ORIGIN }, 'POST'), env)).status).toBe(404);
+    expect((await handle(new Request(`${ORIGIN}/maps/other`, { headers: pageHeaders }), env)).status).toBe(404);
+    expect(assetFetch).not.toHaveBeenCalled();
+  });
+});

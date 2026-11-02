@@ -185,6 +185,12 @@ p { margin: 0 0 0.75rem; }
 .slots > li { border-top: 1px solid var(--line); padding-top: 0.5rem; }
 .slots > li.warmup { opacity: 0.85; }
 .slot-name { font-weight: 600; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.route-map {
+  height: 220px; margin-top: 0.5rem; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--surface-2);
+}
+.route-map.outline svg { display: block; width: 100%; height: 100%; }
+.route-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .group {
   font-family: JetBrains, monospace; font-size: 0.75rem; color: var(--on-accent); background: var(--accent);
   border-radius: 4px; padding: 0 0.3rem;

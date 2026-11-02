@@ -117,10 +117,48 @@ enum RunPlanFormat {
         .joined(separator: " · ")
     }
 
+    /// What the step lasts: "0.5 mi", "800 m", "10 min".
+    static func amount(_ step: RunPlan.Step, unit: RunDistanceUnit) -> String {
+        step.distanceMeters.map { distance($0, unit: unit) } ?? duration(step.durationSeconds ?? 0)
+    }
+
+    /// The step type as a structured workout labels it.
+    static func kindTitle(_ kind: RunPlan.Kind) -> String {
+        switch kind {
+        case .warmup: return "Warm up"
+        case .work: return "Run"
+        case .recovery: return "Recover"
+        case .cooldown: return "Cool down"
+        }
+    }
+
+    /// "Heart rate 130–145 bpm", "Pace 8:03–8:51 /mi".
+    static func targetTitle(_ target: RunPlan.Target, unit: RunDistanceUnit) -> String {
+        switch target {
+        case .pace: return "Pace " + self.target(target, unit: unit)
+        case .heartRate: return "Heart rate " + self.target(target, unit: unit)
+        }
+    }
+
+    static func repeatTitle(_ times: Int) -> String { "REPEAT \(times)×" }
+
+    /// The whole run once repeats are counted: "3.5 mi", "20 min + 2 mi",
+    /// or nil for an empty plan.
+    static func total(_ plan: RunPlan, unit: RunDistanceUnit) -> String? {
+        var meters = 0.0, seconds = 0
+        for expanded in plan.expandedSteps {
+            if let distance = expanded.step.distanceMeters { meters += distance }
+            else { seconds += expanded.step.durationSeconds ?? 0 }
+        }
+        var parts: [String] = []
+        if seconds > 0 { parts.append(duration(seconds)) }
+        if meters > 0 { parts.append(distance(meters, unit: unit)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " + ")
+    }
+
     /// "10 min warm-up", "800 m at 4:05–4:15 /km", "40 min at 130–145 bpm".
     static func text(_ step: RunPlan.Step, unit: RunDistanceUnit) -> String {
-        let amount = step.distanceMeters.map { distance($0, unit: unit) }
-            ?? duration(step.durationSeconds ?? 0)
+        let amount = Self.amount(step, unit: unit)
         let kind: String
         switch step.kind {
         case .warmup: kind = " warm-up"
@@ -143,10 +181,25 @@ enum RunPlanFormat {
         }
     }
 
-    /// Under a kilometer reads in meters, as track intervals are planned.
+    /// Under a kilometer reads in meters, as track intervals are planned,
+    /// except a short distance planned in miles, such as a half-mile warm-up.
     static func distance(_ meters: Double, unit: RunDistanceUnit) -> String {
-        if meters < 1_000 { return "\(Int(meters.rounded())) m" }
+        if readsInMeters(meters, unit: unit) { return "\(Int(meters.rounded())) m" }
         return "\(number(meters / unit.meters)) \(unit.abbreviation)"
+    }
+
+    /// True under a kilometer, unless the run is in miles and the distance is
+    /// within a meter of a tenth or a quarter of a mile (0.5 mi is 804.7 m;
+    /// track distances such as 400 m and 800 m are not).
+    static func readsInMeters(_ meters: Double, unit: RunDistanceUnit) -> Bool {
+        guard meters < 1_000 else { return false }
+        guard unit == .miles, meters >= 150 else { return true }
+        let miles = meters / unit.meters
+        for step in [0.1, 0.25] {
+            let nearest = (miles / step).rounded() * step
+            if abs(nearest * unit.meters - meters) <= 1 { return false }
+        }
+        return true
     }
 
     /// "45 s", "10 min", "2 min 30 s", "1 h 15 min".

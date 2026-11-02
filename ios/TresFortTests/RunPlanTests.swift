@@ -92,6 +92,39 @@ final class RunPlanTests: XCTestCase {
         XCTAssertEqual(RunPlanFormat.distance(5_500, unit: .kilometers), "5.5 km")
         XCTAssertEqual(RunPlanFormat.distance(5_000, unit: .miles), "3.11 mi")
         XCTAssertEqual(RunPlanFormat.distance(1_609.344, unit: .miles), "1 mi")
+        // A short distance planned in miles reads in miles; track distances
+        // stay in meters.
+        XCTAssertEqual(RunPlanFormat.distance(805, unit: .miles), "0.5 mi")
+        XCTAssertEqual(RunPlanFormat.distance(804.672, unit: .miles), "0.5 mi")
+        XCTAssertEqual(RunPlanFormat.distance(402.336, unit: .miles), "0.25 mi")
+        XCTAssertEqual(RunPlanFormat.distance(321.869, unit: .miles), "0.2 mi")
+        XCTAssertEqual(RunPlanFormat.distance(800, unit: .miles), "800 m")
+        XCTAssertEqual(RunPlanFormat.distance(200, unit: .miles), "200 m")
+        XCTAssertEqual(RunPlanFormat.distance(100, unit: .miles), "100 m")
+        XCTAssertEqual(RunPlanFormat.distance(805, unit: .kilometers), "805 m")
+        XCTAssertEqual(RunPlanFormat.spokenDistance(805, unit: .miles), "0.5 miles")
+        XCTAssertEqual(RunPlanFormat.spokenDistance(800, unit: .miles), "800 meters")
+    }
+
+    func testStructuredStepText() throws {
+        let plan = try XCTUnwrap(RunPlan(json: intervals))
+        XCTAssertEqual(RunPlanFormat.total(plan, unit: .kilometers), "26 min + 3.2 km")
+        let zone = RunPlan(items: [
+            .step(.init(kind: .warmup, durationSeconds: nil, distanceMeters: 805, target: nil)),
+            .step(.init(kind: .work, durationSeconds: nil, distanceMeters: 4_828,
+                        target: .heartRate(minBPM: 145, maxBPM: 158))),
+        ])
+        XCTAssertEqual(RunPlanFormat.total(zone, unit: .miles), "3.5 mi")
+        XCTAssertEqual(RunPlanFormat.amount(.init(kind: .warmup, durationSeconds: nil, distanceMeters: 805, target: nil),
+                                            unit: .miles), "0.5 mi")
+        XCTAssertEqual(RunPlanFormat.summary(zone, unit: .miles), "0.5 mi warm-up · 3 mi at 145–158 bpm")
+        XCTAssertEqual([RunPlan.Kind.warmup, .work, .recovery, .cooldown].map(RunPlanFormat.kindTitle),
+                       ["Warm up", "Run", "Recover", "Cool down"])
+        XCTAssertEqual(RunPlanFormat.targetTitle(.heartRate(minBPM: 145, maxBPM: 158), unit: .miles),
+                       "Heart rate 145–158 bpm")
+        XCTAssertEqual(RunPlanFormat.targetTitle(.pace(fastestSecondsPerKm: 300, slowestSecondsPerKm: 330), unit: .miles),
+                       "Pace 8:03–8:51 /mi")
+        XCTAssertEqual(RunPlanFormat.repeatTitle(4), "REPEAT 4×")
     }
 
     func testDurations() {

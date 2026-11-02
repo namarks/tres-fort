@@ -193,8 +193,9 @@ integration or social breadth.
   with spoken on/off-target cues. Completed runs still upload to
   intervals.icu. P0's step format, migration 0058 and MCP tools, P1's
   display in the app with a Start run button, P2's step-by-step guidance
-  while recording, P3's spoken step and target cues and P5's in-app step
-  editor are in the repository; P4 is the owner's real runs.
+  while recording, P3's spoken step and target cues, P5's in-app step
+  editor and P6's watch-style step layout are in the repository; P4 is the
+  owner's real runs.
 - [Real training load for endurance workouts](endurance-training-load/plan.md) —
   **active**; members set FTP, threshold heart rate and threshold pace in the
   app, and one Worker load engine gives every run, ride and swim a labeled

@@ -190,8 +190,9 @@ coach sees it in the same place as Garmin runs.
       as the app.
     - The page loads MapKit JS 6 (map and overlay libraries only) when a day
       with a route is opened, with the site's domain-restricted MapKit JS
-      token from the gateway's `/maps/token` (signed-in pages of this site
-      only; the `MAPKIT_TOKEN` secret of `tres-fort-web`). Without a token
+      token from the gateway's `/maps/token` (pages of this site whose
+      session the API accepts; the `MAPKIT_TOKEN` secret of
+      `tres-fort-web`). Without a token
       it asks Apple for nothing; then, or when MapKit fails to load or
       refuses the token, it draws the route's shape without a map.
   - [ ] **(d) Delete a recorded run in the app**
@@ -290,9 +291,10 @@ the scene delegate is left to P3's force-quit check.
   map (fitted inside its margin, not stretched, north up), reading a route
   and the map token with a 404 read as none, and loading MapKit JS only
   with a token, with only the map and overlay libraries. `web/test/gateway.test.ts`
-  covers `/maps/token`: the token for a signed-in page of this site, 404
-  without one, and refusals for other sites, a missing page header, and
-  signed-out or app sessions. In Chromium against stubbed API answers, a
+  covers `/maps/token`: the token for a signed-in page of this site once
+  the API accepts its session, 404 without one, and refusals for other
+  sites, a missing page header, signed-out or app sessions, and a session
+  the API refuses. In Chromium against stubbed API answers, a
   site without a token showed the route's shape and loaded nothing from
   Apple; a stand-in MapKit received two lines in the theme's accent color;
   a failed script and a refused token fell back to the shape, the latter

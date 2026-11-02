@@ -268,14 +268,20 @@ async function forwardToApi(request: Request, env: GatewayEnv, url: URL): Promis
  * The MapKit JS token, for a signed-in page of this site only. Apple accepts
  * the token only from this domain, so it is not a secret; the checks keep
  * other sites and signed-out visitors from spending the site's map quota.
+ * The gateway can't verify the session itself, so the API does (`/api/me`).
  */
-function mapsToken(request: Request, env: GatewayEnv): Response {
+async function mapsToken(request: Request, env: GatewayEnv): Promise<Response> {
   if (!isSameOrigin(request, env, { requireOrigin: false }) || request.headers.get(WEB_HEADER) !== '1') {
     return json({ error: 'forbidden' }, 403);
   }
   const jwt = readCookie(request, SESSION_COOKIE);
   if (!jwt) return json({ error: 'signed_out' }, 401);
   if (!isWebSession(jwt)) return signedOut();
+  const session = await env.API.fetch(new Request(`${API_ORIGIN}/api/me`, {
+    headers: { authorization: `Bearer ${jwt}`, accept: 'application/json' },
+  }));
+  if (session.status === 401) return signedOut();
+  if (!session.ok) return json({ error: 'unavailable' }, 502);
   if (!env.MAPKIT_TOKEN) return json({ error: 'not_configured' }, 404);
   return json({ token: env.MAPKIT_TOKEN }, 200);
 }

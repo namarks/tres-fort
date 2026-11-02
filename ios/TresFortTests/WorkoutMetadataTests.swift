@@ -39,6 +39,7 @@ final class WorkoutMetadataTests: XCTestCase {
         let rows = WorkoutLibraryPolicy.weekRows(plan: plan)
         XCTAssertEqual(rows.map(\.weekdayKey), ["mon", "tue", "wed", "thu", "fri", "sat", "sun"])
         XCTAssertEqual(rows.map(\.workoutName), ["Gym", nil, nil, nil, nil, "Gym", nil])
+        XCTAssertEqual(rows.map(\.workoutID), ["gym", nil, nil, nil, nil, "gym", nil])
         XCTAssertTrue(WorkoutLibraryPolicy.hasScheduledDay(plan: plan))
 
         let unscheduled = PlanTree(id: "p", name: "Library", version: 2, workouts: [gym], meta: nil)

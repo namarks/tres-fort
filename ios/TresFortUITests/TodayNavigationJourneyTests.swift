@@ -350,18 +350,31 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertTrue(plan.waitForExistence(timeout: 5))
         XCTAssertFalse(plan.buttons["Done"].exists)
         // The tab leads with the repeating week and the one action that
-        // changes it; there is no Active/Archived toggle.
+        // changes it. The workout list sits behind one row, with no
+        // Active/Archived toggle anywhere.
         XCTAssertTrue(app.buttons["library.weeklySchedule"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.buttons["library.weeklySchedule"].label, "Edit weekly schedule")
-        XCTAssertTrue(app.descendants(matching: .any)["plan.week.tue"].exists)
+        XCTAssertTrue(app.buttons["plan.week.thu"].exists)
+        XCTAssertFalse(app.buttons["plan.week.mon"].exists, "A rest day opens nothing")
+        XCTAssertFalse(app.buttons["library.workout.strength-b"].exists)
         XCTAssertFalse(app.segmentedControls.firstMatch.exists)
-        XCTAssertFalse(app.buttons["library.archived"].exists)
         capture("plan-tab")
         tap(app.buttons["library.weeklySchedule"], in: app)
         XCTAssertTrue(app.navigationBars["Weekly schedule"].waitForExistence(timeout: 5))
         tap(app.buttons["weeklySchedule.cancel"], in: app)
         XCTAssertTrue(plan.waitForExistence(timeout: 5))
 
+        // A scheduled day opens its workout.
+        tap(app.buttons["plan.week.thu"], in: app)
+        XCTAssertTrue(app.navigationBars["Strength B"].waitForExistence(timeout: 5))
+        tap(app.navigationBars["Strength B"].backButton, in: app)
+        XCTAssertTrue(plan.waitForExistence(timeout: 5))
+
+        tap(app.buttons["plan.workouts"], in: app)
+        let library = app.navigationBars["Workouts"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5))
+        XCTAssertFalse(library.buttons["Done"].exists)
+        XCTAssertFalse(app.buttons["library.archived"].exists)
         tap(app.buttons["library.workout.strength-b"], in: app)
         let details = app.navigationBars["Strength B"]
         XCTAssertTrue(details.waitForExistence(timeout: 5))
@@ -372,12 +385,11 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(editor.buttons["Done"], in: app)
         XCTAssertTrue(details.waitForExistence(timeout: 5))
         tap(details.backButton, in: app)
+        XCTAssertTrue(library.waitForExistence(timeout: 5))
+        tap(library.backButton, in: app)
         XCTAssertTrue(plan.waitForExistence(timeout: 5))
 
-        let calendar = app.buttons["plan.calendar"]
-        XCTAssertTrue(calendar.waitForExistence(timeout: 5))
-        for _ in 0..<6 where !calendar.isHittable { app.swipeDown() }
-        tap(calendar, in: app)
+        tap(app.buttons["plan.calendar"], in: app)
         XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
         tap(app.navigationBars["Calendar"].backButton, in: app)
         XCTAssertTrue(plan.waitForExistence(timeout: 5))
@@ -395,6 +407,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.buttons["runner.minimize"], in: app)
 
         tap(app.tabBars.buttons["Plan"], in: app)
+        tap(app.buttons["plan.workouts"], in: app)
         tap(app.buttons["library.workout.strength-b"], in: app)
         XCTAssertTrue(app.navigationBars["Strength B"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["workoutDetails.start"].isEnabled,

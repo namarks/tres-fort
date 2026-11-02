@@ -24,6 +24,7 @@ enum WorkoutLibraryPolicy {
     struct WeekRow: Equatable {
         let weekdayKey: String
         /// nil is a rest day.
+        let workoutID: String?
         let workoutName: String?
     }
 
@@ -33,8 +34,8 @@ enum WorkoutLibraryPolicy {
     static func weekRows(plan: PlanTree?) -> [WeekRow] {
         let available = Dictionary(uniqueKeysWithValues: (plan?.availableWorkouts ?? []).map { ($0.id, $0.name) })
         return PlanSchedule.weekdayKeys.map { key in
-            WeekRow(weekdayKey: key,
-                    workoutName: plan?.schedule?.templateID(forWeekdayKey: key).flatMap { available[$0] })
+            let id = plan?.schedule?.templateID(forWeekdayKey: key).flatMap { id -> String? in available[id] == nil ? nil : id }
+            return WeekRow(weekdayKey: key, workoutID: id, workoutName: id.flatMap { available[$0] })
         }
     }
 
@@ -53,31 +54,52 @@ enum WorkoutLibraryPolicy {
 }
 
 /// The repeating week at the top of the Plan tab: what each weekday holds.
+/// A day with a workout opens that workout.
 struct PlanWeekSummary: View {
     @ObservedObject var sync: SyncModel
+    var onOpen: (String) -> Void
     private static let names = ["mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
                                 "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"]
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(WorkoutLibraryPolicy.weekRows(plan: sync.plan), id: \.weekdayKey) { row in
-                HStack(spacing: 12) {
-                    Text(row.weekdayKey.uppercased())
-                        .font(Theme.mono(11, .bold)).foregroundStyle(Theme.muted)
-                        .frame(width: 40, alignment: .leading)
-                    Text(row.workoutName ?? "Rest")
-                        .font(Theme.mono(14, row.workoutName == nil ? .medium : .bold))
-                        .foregroundStyle(row.workoutName == nil ? Theme.muted : Theme.text)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
+                if let id = row.workoutID {
+                    Button { onOpen(id) } label: { line(row, opens: true) }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): \(row.workoutName ?? "")")
+                        .accessibilityHint("Opens workout details")
+                        .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
+                } else {
+                    line(row, opens: false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): Rest")
+                        .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
                 }
-                .frame(minHeight: 30)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): \(row.workoutName ?? "Rest")")
-                .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+
+    private func line(_ row: WorkoutLibraryPolicy.WeekRow, opens: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(row.weekdayKey.uppercased())
+                .font(Theme.mono(11, .bold)).foregroundStyle(Theme.muted)
+                .frame(width: 40, alignment: .leading)
+            Text(row.workoutName ?? "Rest")
+                .font(Theme.mono(15, opens ? .bold : .medium))
+                .foregroundStyle(opens ? Theme.text : Theme.muted)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if opens {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 36)
+        .contentShape(Rectangle())
     }
 }
 

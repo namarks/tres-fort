@@ -31,6 +31,7 @@ import {
   type WeightUnit,
 } from './editing';
 import { describeGroup, describeRunSteps, describeSlot, slotBlocks, type Slot, type SlotBlock, type Workout } from './model';
+import { RunPlanEditor } from './RunPlanEditor';
 
 /** Runs one plan write against the version on screen; true when it saved. */
 export type Write = (action: (at: Reviewed) => Promise<unknown>) => Promise<boolean>;
@@ -173,6 +174,7 @@ type Panel =
   | { kind: 'delete' }
   | { kind: 'add'; warmup: boolean; exercise: CatalogExercise | null }
   | { kind: 'edit'; slotId: string }
+  | { kind: 'run'; slotId: string }
   | { kind: 'replace'; slotId: string }
   | { kind: 'remove'; slotId: string }
   /** A new group (from selected exercises) or an existing one. */
@@ -241,6 +243,17 @@ function WorkoutEditor(props: {
           submitLabel="Save targets"
           onCancel={close}
           onSubmit={(fields) => run((at) => planWrites.updateSlot(workout.id, slot.id, fields, at))}
+        />
+      );
+    }
+    if (panel.kind === 'run') {
+      return (
+        <RunPlanEditor
+          slot={slot}
+          miles={miles}
+          busy={busy}
+          onCancel={close}
+          onSave={(steps) => run((at) => planWrites.updateSlot(workout.id, slot.id, { run_steps: steps }, at))}
         />
       );
     }
@@ -474,7 +487,7 @@ function SlotRow(props: {
   move: (direction: -1 | 1) => (() => void) | null;
   /** Said after "Move <name> up" for a screen reader, e.g. "within its group". */
   moveLabel?: string;
-  onOpen: (kind: 'edit' | 'replace' | 'remove') => void;
+  onOpen: (kind: 'edit' | 'run' | 'replace' | 'remove') => void;
   /** While choosing exercises to group, a tick box replaces the actions. */
   choose?: { checked: boolean; onChange: (on: boolean) => void };
   panel: ReactNode;
@@ -504,13 +517,14 @@ function SlotRow(props: {
           ) : (
             <div className="muted">{run ? 'No steps planned' : describeSlot(slot)}</div>
           )}
-          {run && <div className="fine">Plan this run’s steps in the iPhone app for now.</div>}
         </div>
         {!archived && !choose && (
           <div className="row-actions">
             <button type="button" className="icon" disabled={busy || !up} onClick={() => up?.()} aria-label={`Move ${name} up${within}`}>↑</button>
             <button type="button" className="icon" disabled={busy || !down} onClick={() => down?.()} aria-label={`Move ${name} down${within}`}>↓</button>
-            {!run && <button type="button" className="ghost small" disabled={busy} onClick={() => onOpen('edit')} aria-label={`Edit ${name}`}>Edit</button>}
+            {run
+              ? <button type="button" className="ghost small" disabled={busy} onClick={() => onOpen('run')} aria-label={`Plan ${name}`}>Plan run</button>
+              : <button type="button" className="ghost small" disabled={busy} onClick={() => onOpen('edit')} aria-label={`Edit ${name}`}>Edit</button>}
             {!slot.run_steps && <button type="button" className="ghost small" disabled={busy} onClick={() => onOpen('replace')} aria-label={`Replace ${name}`}>Replace</button>}
             <button type="button" className="ghost small danger" disabled={busy} onClick={() => onOpen('remove')} aria-label={`Remove ${name}`}>Remove</button>
           </div>

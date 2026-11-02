@@ -100,6 +100,12 @@ partner training are not web features.
     round; edit, ungroup, move the whole group, and reorder exercises within
     it) through `PUT /api/workouts/:id/groups`, and moving workouts up and
     down the list.
+  - Then the run step editor: a run's steps and repeats, each ending after a
+    time or a distance with an optional pace (per mile or kilometer, by the
+    browser's region) or heart rate range, checked with the Worker's own
+    `parseRunSteps` and saved as the slot's `run_steps`. Stored distances and
+    paces are kept exactly until their text changes; steps in a format the
+    web can't read can only be removed.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
     rest, and superset or circuit groups.
@@ -146,8 +152,8 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** Continue P2 with the planned run step editor, then the
-weekly routine, single dates and away dates. The workout, slot and group
+**Now (@agent):** Continue P2 with the weekly routine, single dates, away
+dates and restoring a plan version. The workout, slot, group and run step
 editor is built and waits for the owner's written go-ahead to deploy (the API
 Worker and `tres-fort-web` together). The rest of P1 (plan
 history, week view, delete-account link, first-run for web sign-ups, invite

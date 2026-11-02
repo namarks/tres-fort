@@ -282,6 +282,25 @@ ul.problem { margin: 0.5rem 0; padding-left: 1.1rem; }
 }
 .matches button:hover { background: var(--surface); border-color: var(--line); }
 
+/* ---- run steps -------------------------------------------------------- */
+.run-parts { list-style: none; margin: 0 0 0.75rem; padding: 0; display: grid; gap: 0.5rem; }
+.run-part.repeat { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.75rem; }
+.run-part.repeat > ol { list-style: none; margin: 0.25rem 0 0.5rem; padding: 0 0 0 0.75rem; display: grid; gap: 0.4rem;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+.repeat-head { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.repeat-count { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--text); font-weight: 600; font-size: 0.875rem; }
+.repeat-count input { width: 4rem; }
+.run-step { border: 0; margin: 0; padding: 0; min-width: 0; }
+.run-step legend { font-size: 0.8125rem; color: var(--muted); padding: 0; margin-bottom: 0.2rem; }
+.run-step-fields { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.run-step-fields .row-actions { margin-left: auto; }
+.run-step .problem { margin: 0.3rem 0 0; font-size: 0.8125rem; }
+input.short { width: 5.5rem; }
+.range { display: inline-flex; align-items: center; gap: 0.35rem; }
+.run-plan > small { display: block; margin: 0.6rem 0; font-size: 0.8125rem; }
+.preview { margin: 0.5rem 0; }
+.preview .steps { color: var(--text); }
+
 @media (max-width: 1000px) {
   .planner { grid-template-columns: 1fr; padding: 16px; }
   .workouts { grid-template-columns: 1fr; padding: 16px; }

@@ -8,6 +8,12 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
     }
 
     private func tap(_ element: XCUIElement, in app: XCUIApplication) {
+        // Form rows below the fold are not in the accessibility tree yet, and
+        // Profile's Integrations row sits below the training rows. Scroll
+        // toward it before requiring that it exists.
+        if !element.waitForExistence(timeout: UITestWait.screen) {
+            for _ in 0..<6 where !element.exists { app.swipeUp() }
+        }
         XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen), element.description)
         for _ in 0..<10 {
             if element.isHittable { element.tap(); return }

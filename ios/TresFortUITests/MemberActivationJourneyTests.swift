@@ -43,16 +43,15 @@ final class MemberActivationJourneyTests: XCTestCase {
 
     // Form rows below the viewport are not materialized in the accessibility
     // tree yet. Scroll before requiring existence for the longer coach setup.
+    // Short drags, not swipes: a fling can carry a mid-form row such as
+    // "Manage AI access" past the visible area between two checks.
     private func scrollAndTap(_ element: XCUIElement, in app: XCUIApplication,
                               file: StaticString = #filePath, line: UInt = #line) {
-        for _ in 0..<8 {
-            if element.exists && element.isHittable {
-                element.tap()
-                return
-            }
-            app.swipeUp()
+        guard app.scroll(toReveal: element) else {
+            XCTFail("Control is not reachable after scrolling: \(element.description)", file: file, line: line)
+            return
         }
-        XCTFail("Control is not reachable after scrolling: \(element.description)", file: file, line: line)
+        element.tap()
     }
 
     func testMobileCoachApprovalRequiresExplicitDecision() {

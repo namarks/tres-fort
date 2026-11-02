@@ -146,7 +146,9 @@ GitHub it appears as a "Flaky iOS test" warning on the run and in the job
 summary. Fix a listed test rather than accepting it: the usual causes are a
 wait shorter than `UITestWait.screen` (15 seconds), a tap before the control
 can be tapped (use `tapWhenReady` or `tap(until:)` from `UITestTapping.swift`),
-or a step that drives another app such as Settings.
+a `swipeUp()` loop that flings a row past the screen between two checks (use
+`app.scroll(toReveal:)`, which scrolls in short slow drags), or a step that
+drives another app such as Settings.
 
 ## Synthetic UI fixtures
 

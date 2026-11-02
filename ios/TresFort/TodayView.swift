@@ -905,8 +905,25 @@ private struct WorkoutDoneView<QuickStarts: View>: View {
     @State private var showDiscardConfirm = false
     @State private var discardTarget: WorkoutTerminalActionTarget?
 
-    private var doneTemplateTitle: String {
-        sync.sessionDisplayTemplate(forDateString: sync.todayString, allowScheduleInference: false)?.name ?? "Workout"
+    private var doneWorkout: Workout? {
+        sync.sessionDisplayTemplate(forDateString: sync.todayString, allowScheduleInference: false)
+    }
+
+    private var doneTemplateTitle: String { doneWorkout?.name ?? "Workout" }
+
+    /// A workout that is only a planned run reads as the run, not as sets.
+    private var isRunWorkout: Bool {
+        guard let workout = doneWorkout else { return false }
+        return !workout.exercises.isEmpty && workout.exercises.allSatisfy(\.isOutdoorRun)
+    }
+
+    private var doneRunSummary: String {
+        guard let run = PlannedRunRecord.matchingRun(
+            workoutName: doneWorkout?.name, among: sync.activities(on: sync.todayString)) else {
+            return "Your run shows here once it syncs."
+        }
+        let line = PlannedRunRecord.headline(run, unit: RunDistanceUnit.preferred())
+        return line.isEmpty ? "Run saved." : line
     }
 
     /// Logged WORKING sets for today's completed session — warmups
@@ -929,7 +946,7 @@ private struct WorkoutDoneView<QuickStarts: View>: View {
                         Image(systemName: "checkmark.seal.fill")
                             .font(.system(size: 26))
                             .foregroundStyle(Theme.done)
-                        Text("WORKOUT COMPLETE")
+                        Text(isRunWorkout ? "RUN COMPLETE" : "WORKOUT COMPLETE")
                             .font(.title2.weight(.heavy))
                             .foregroundStyle(Theme.text)
                             .lineLimit(2).minimumScaleFactor(0.6)
@@ -938,7 +955,9 @@ private struct WorkoutDoneView<QuickStarts: View>: View {
                         .font(Theme.mono(13, .bold)).tracking(1)
                         .foregroundStyle(Theme.accent)
                     let exerciseCount = Set(sets.map(\.exercise_id)).count
-                    Text("\(sets.count) working \(sets.count == 1 ? "set" : "sets") · \(exerciseCount) \(exerciseCount == 1 ? "exercise" : "exercises")")
+                    Text(isRunWorkout
+                         ? doneRunSummary
+                         : "\(sets.count) working \(sets.count == 1 ? "set" : "sets") · \(exerciseCount) \(exerciseCount == 1 ? "exercise" : "exercises")")
                         .font(.subheadline).foregroundStyle(Theme.muted)
                         .accessibilityIdentifier("today.completedSummary")
                     Button("View workout", systemImage: "chevron.right") {
@@ -1302,7 +1321,7 @@ private struct RunnerView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("PLANNED RUN").font(Theme.mono(12, .bold)).tracking(1).foregroundStyle(Theme.accent)
             PlannedRunPrescription(exercise: ex)
-            Text("Start the run to record it with GPS. It uploads to intervals.icu when you save it.")
+            Text("Start the run to record it with GPS. Saving it marks this run done.")
                 .font(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }

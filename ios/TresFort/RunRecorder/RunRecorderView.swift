@@ -69,7 +69,9 @@ struct RunRecorderView: View {
         } message: {
             Text(model.isTooShortToSave
                  ? "Runs under a minute or 100 m aren’t saved."
-                 : "Saving adds the run to Apple Health and uploads it to intervals.icu.")
+                 : (model.plannedRun == nil
+                    ? "Saving adds the run to Apple Health, and to intervals.icu if it’s connected."
+                    : "Saving adds the run to Apple Health, and to intervals.icu if it’s connected. It also marks the planned run done."))
         }
     }
 
@@ -266,6 +268,12 @@ struct RunRecorderView: View {
     }
 
     @ViewBuilder private var notes: some View {
+        if let workout = model.completedWorkoutName {
+            Label("\(workout) is marked done.", systemImage: "checkmark.circle.fill")
+                .font(.callout.weight(.semibold)).foregroundStyle(Theme.done)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("runRecorder.workoutDone")
+        }
         if let note = model.note {
             Text(note).font(.callout).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
         }
@@ -276,9 +284,10 @@ struct RunRecorderView: View {
     private var uploadText: String {
         switch model.uploadStatus {
         case .idle: ""
-        case .uploading: "Uploading to intervals.icu…"
-        case .uploaded: "Uploaded to intervals.icu."
+        case .uploading: "Sending the route to intervals.icu…"
+        case .uploaded: "Saved to Apple Health and intervals.icu."
         case .waiting: "Saved on this iPhone. It uploads to intervals.icu when it can, so check your intervals.icu connection in Profile if it doesn’t appear."
+        case .notConnected: "Saved to Apple Health with its route. intervals.icu isn’t connected, so nothing else was sent."
         }
     }
 

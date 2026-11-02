@@ -223,7 +223,32 @@ struct DayAgendaView: View {
     /// the user asked for. No endurance → the bare lift title, unchanged.
     private func withBike(_ liftTitle: String) -> String {
         guard let noun = sync.enduranceNoun(on: dateString) else { return liftTitle }
+        // A workout's own planned run isn't extra training on top of it.
+        if noun == "Run", sessionRunSlot != nil { return liftTitle }
         return "\(liftTitle) + \(noun.uppercased())"
+    }
+
+    // MARK: planned run in the record (docs/plans/planned-runs P7)
+
+    /// The outdoor run this date's session planned, if its workout has one.
+    private var sessionRunSlot: TemplateExercise? {
+        sync.workout(id: realSession?.workout_id)?.exercises.first(where: \.isOutdoorRun)
+    }
+
+    /// The completed workout is a run and nothing else, so its record is
+    /// the run rather than sets.
+    private var recordIsRunOnly: Bool {
+        guard realSession?.status == "completed",
+              let workout = sync.workout(id: realSession?.workout_id) else { return false }
+        return !workout.exercises.isEmpty && workout.exercises.allSatisfy(\.isOutdoorRun)
+    }
+
+    /// The day's run that carried out the completed workout's planned run.
+    private var recordRun: ExternalActivity? {
+        guard realSession?.status == "completed", sessionRunSlot != nil else { return nil }
+        return PlannedRunRecord.matchingRun(
+            workoutName: sync.workout(id: realSession?.workout_id)?.name,
+            among: sync.activities(on: dateString))
     }
 
     /// "BIKE DAY" / "PILATES DAY" / … when this no-lift date carries any
@@ -432,17 +457,27 @@ struct DayAgendaView: View {
         let orderedIDs = logged.map(\.exercise_id).reduce(into: [String]()) {
             if !$0.contains($1) { $0.append($1) }
         }
+        let runOnly = recordIsRunOnly
+        let runSlot = realSession?.status == "completed" ? sessionRunSlot : nil
+        let run = recordRun
         return VStack(alignment: .leading, spacing: 12) {
-            if let session = realSession, session.status == "completed" {
+            if let session = realSession, session.status == "completed", !runOnly {
                 WorkoutSummaryView(sync: sync, session: session)
                     .padding(16).background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            // A planned run's record is the run itself, against its plan,
+            // not a count of sets.
+            if let runSlot {
+                PlannedRunRecordView(slot: runSlot, run: run)
             }
             if let session = realSession {
                 let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
                 if !feedback.isEmpty { SavedWorkoutFeedbackView(feedback: feedback) }
             }
-            if logged.isEmpty {
+            if runOnly {
+                EmptyView()
+            } else if logged.isEmpty {
                 note("No sets logged.")
             } else {
                 Text("Exercises")
@@ -480,9 +515,12 @@ struct DayAgendaView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
             }
-            if let session = realSession, session.status == "completed",
+            if let session = realSession, session.status == "completed", !runOnly,
                let summary = sync.completionSummary(for: session.id) {
-                WorkoutTargetComparisonView(summary: summary)
+                // A recorded run settles its slot, whatever sets say.
+                WorkoutTargetComparisonView(
+                    summary: summary,
+                    settledSlotIDs: run == nil ? [] : Set(runSlot.map { [$0.id] } ?? []))
                     .padding(16).background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             }
@@ -583,7 +621,10 @@ struct DayAgendaView: View {
     // READ-ONLY — recorded upstream, never editable here.
 
     @ViewBuilder private var completedActivitiesSection: some View {
+        // The run a planned run workout records shows in that record instead.
+        let shownRunID = recordRun?.id
         let dayActivities = sync.activities(on: dateString)   // non-deleted
+            .filter { $0.id != shownRunID }
         if !dayActivities.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {

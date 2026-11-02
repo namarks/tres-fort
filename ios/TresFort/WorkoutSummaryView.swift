@@ -76,12 +76,16 @@ struct WorkoutSummaryView: View {
 /// Optional analysis follows the single set-by-set workout log.
 struct WorkoutTargetComparisonView: View {
     let summary: WorkoutSummary
+    /// Slots done some other way, such as a planned run its recorded run
+    /// settles, so their set counts aren't differences.
+    var settledSlotIDs: Set<String> = []
 
     var body: some View {
+        let targets = summary.targets.filter { !settledSlotIDs.contains($0.slot_id) }
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 12) {
                 if summary.targets_available {
-                    let differences = summary.targets.filter(\.differs)
+                    let differences = targets.filter(\.differs)
                     ForEach(differences) { target in
                         VStack(alignment: .leading, spacing: 3) {
                             Text("\(target.name) · \(target.actual_sets)/\(target.sets) sets")
@@ -91,7 +95,7 @@ struct WorkoutTargetComparisonView: View {
                             if target.below_target_sets > 0 { Text("\(target.below_target_sets) below the rep or duration target") }
                         }
                     }
-                    if summary.targets.contains(where: { $0.comparison_available == false }) {
+                    if targets.contains(where: { $0.comparison_available == false }) {
                         Text("Some starting targets can no longer be matched to their original slots.")
                     } else if differences.isEmpty {
                         Text("No differences recorded for the available targets.")

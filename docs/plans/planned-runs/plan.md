@@ -75,8 +75,9 @@ intervals.icu, which stays the store of completed runs.
   - The workout editor shows a run's steps read-only: it doesn't open the
     sets and load editor, and a run with steps can't be replaced. Removing
     the slot still works.
-  - Not covered: a recorded run doesn't mark the planned workout done, and
-    the iPad runner and partner workouts show run slots as before.
+  - Not covered: a recorded run doesn't mark the planned workout done (P7
+    adds this), and the iPad runner and partner workouts show run slots as
+    before.
 - [x] **P2 — Follow the plan while recording**
   - A run started from a planned slot keeps its steps in the run's
     checkpoint (`RecordedRun.plan`), so a recovered run picks up at the same
@@ -121,6 +122,9 @@ intervals.icu, which stays the store of completed runs.
     planned.
   - Check step timing and how useful and well-timed the cues are. Check that
     the uploaded run in intervals.icu lines up with the plan.
+  - Progress: the first heart rate run was on 2026-11-01 (0.5 mi warm-up,
+    then 3 mi at 147–153 bpm): 3.29 mi, 25:37 moving, average 150 bpm. It
+    found the gaps P7 closes. An interval session is still to do.
 - [x] **P5 — Plan runs in the app**
   - The owner's rule (2026-11-01): every feature must be usable in the app
     without an AI coach. Until P5, only the coach could write steps.
@@ -158,6 +162,28 @@ intervals.icu, which stays the store of completed runs.
     miles"). Track distances such as 400 m and 800 m still read in meters.
     One-line summaries (the week strip and the step banner) keep their
     format.
+- [x] **P7 — Finish a planned run**
+  - The owner's first planned run (2026-11-01) stayed open on Today, its
+    record read "0 working sets" and "Outdoor Run 0/1 sets", and the
+    recorder only talked about intervals.icu.
+  - Saving a run started from a planned slot logs that slot as one timed set
+    of the run's moving time (`SyncModel.logRecordedRun`), the way a timed
+    set is logged in the runner. Inside a started workout the runner moves
+    on; a workout that is only that run starts and finishes, so Today shows
+    "RUN COMPLETE" with the run's distance, time and heart rate. The
+    recorder says the workout is marked done.
+  - A finished run workout's record shows the run instead of set counts:
+    distance, moving time, pace, heart rate and load, each against the plan
+    where it has one (planned distance or time, and a pace or heart rate
+    target shared by every targeted step). The planned steps follow. The run
+    is the day's run named after the workout, else its longest run, and it
+    leaves the list of other activities. The day's title drops "+ RUN" for
+    the workout's own run, and a recorded run settles its slot in "Compare
+    with starting targets".
+  - intervals.icu is optional for recorded runs. Without a connection the
+    Worker answers 409 `intervals_not_connected`; a run Apple Health saved
+    with its route then leaves this iPhone's queue and the recorder says so.
+    A run Apple Health didn't save stays queued, since it is the only copy.
 
 ## Dependencies
 
@@ -169,8 +195,8 @@ intervals.icu, which stays the store of completed runs.
 
 ## Next step
 
-**Now (@owner):** On TestFlight build 60, plan an interval session and a
-heart rate run in the app (P5) or through the coach, then run them (P4).
+**Now (@owner):** Run an interval session (P4); the first heart rate run
+is done. P6 and P7 reach the phone with the next TestFlight build.
 Run-recorder P3's real runs can use the same build.
 
 Released on 2026-10-31 with the owner's go-ahead: migration 0058 was applied
@@ -206,6 +232,15 @@ migration, since P5 saves through the existing slot route.
 - P6: `RunPlanTests` covers the total with repeats counted, the step type,
   amount and target titles, the repeat title, and short distances in miles
   versus track distances in meters, written and spoken.
+- P7: `PlannedRunRecordTests` covers finding the workout's run, the
+  distance, time, pace and heart rate rows against the plan, pace verdicts,
+  plans without a shared target, and Today's one-line run summary.
+  `SetOutboxTests` covers a recorded run logging its slot and finishing a
+  run-only workout, and refusing another day, a workout not started and a
+  run with no time. `RunRecorderTests` covers marking the workout done,
+  a plain or refused run marking nothing, and both intervals.icu
+  not-connected cases. `RunRecordingTests` covers the uploader letting go
+  only of runs Apple Health saved.
 - P5: `RunPlanEditingTests` covers saving steps in the plan's format and
   reading them back, the draft's add, move, edit and remove operations,
   repeat defaults, the server's limits and each step problem, and pace and
@@ -220,8 +255,10 @@ migration, since P5 saves through the existing slot route.
   plan, not as intervals.icu calendar events. The alternative would have
   synced the workout to the Garmin, and the owner chose not to take it. This
   is an exception to MULTISPORT §11's "no structured-step workout DSL".
-  Completed runs still go only to intervals.icu, so §11's single store for
-  endurance results holds.
+  Completed runs still go to intervals.icu when it is connected, so §11's
+  single store for endurance results holds there. Without a connection
+  (P7), Apple Health keeps the run and Tres Fort reads it through the
+  Apple Health import.
 - Targets are absolute (min/km, bpm) in P0. Zones relative to threshold pace
   or maximum heart rate need the member's values stored somewhere; that's
   left open.

@@ -6,8 +6,10 @@ import UIKit
 /// Records one outdoor run at a time (docs/plans/run-recorder P1(b)). The
 /// workout engine saves it to Apple Health; the route, totals and heart rate
 /// are checkpointed into `RunRecordingStore` every few seconds, so a crash or
-/// a dead battery keeps the run, and a finished run uploads to intervals.icu
-/// through `RunRecordingUploader` on finish, launch and foreground. While it
+/// a dead battery keeps the run, and a finished run uploads to intervals.icu,
+/// when the account is connected, through `RunRecordingUploader` on finish,
+/// launch and foreground. A run started from a planned workout logs that
+/// slot as done when saved (docs/plans/planned-runs P7). While it
 /// records, a Live Activity mirrors it on the Lock Screen with pause, resume
 /// and finish, and each mile or kilometer can be announced (P2). A Bluetooth
 /// heart rate strap the member set up reconnects while the recorder is open
@@ -34,6 +36,9 @@ final class RunRecorderModel: ObservableObject {
         /// The run stays on this iPhone and retries on the next launch or
         /// foreground.
         case waiting
+        /// intervals.icu isn't connected. Apple Health has the run with its
+        /// route, so nothing waits on this iPhone.
+        case notConnected
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -49,6 +54,8 @@ final class RunRecorderModel: ObservableObject {
     /// The plan slot the recorder was opened for, if any. It stays through
     /// the run and clears when the member closes the recorder.
     @Published var plannedRun: PlannedRun?
+    /// The planned workout a saved run marked done, by name. Nil until then.
+    @Published private(set) var completedWorkoutName: String?
     /// The steps the recording run follows, read from its checkpoint. Empty
     /// for a run without a plan.
     @Published private(set) var planSteps: [RunPlan.ExpandedStep] = []
@@ -112,6 +119,9 @@ final class RunRecorderModel: ObservableObject {
     private let jwt: @MainActor () -> String?
     private let onUnauthorized: @MainActor () -> Void
     private let onUploaded: @MainActor () -> Void
+    /// Logs a saved planned run against its slot (slot id, run date, moving
+    /// seconds); true when the plan recorded it.
+    private let onPlannedRunSaved: @MainActor (String, String, Int) async -> Bool
     private let makeEngine: @MainActor () -> RunWorkoutEngine?
     private let makeLocation: @MainActor () -> RunLocationSource
     private let now: @MainActor () -> Date
@@ -167,6 +177,7 @@ final class RunRecorderModel: ObservableObject {
          jwt: @escaping @MainActor () -> String?,
          onUnauthorized: @escaping @MainActor () -> Void = {},
          onUploaded: @escaping @MainActor () -> Void = {},
+         onPlannedRunSaved: @escaping @MainActor (String, String, Int) async -> Bool = { _, _, _ in false },
          makeEngine: (@MainActor () -> RunWorkoutEngine?)? = nil,
          makeLocation: (@MainActor () -> RunLocationSource)? = nil,
          now: @escaping @MainActor () -> Date = Date.init,
@@ -180,6 +191,7 @@ final class RunRecorderModel: ObservableObject {
         self.jwt = jwt
         self.onUnauthorized = onUnauthorized
         self.onUploaded = onUploaded
+        self.onPlannedRunSaved = onPlannedRunSaved
         self.makeEngine = makeEngine ?? {
             guard #available(iOS 26.0, *) else { return nil }
             return HealthRunWorkoutEngine()
@@ -292,6 +304,7 @@ final class RunRecorderModel: ObservableObject {
         phase = .starting
         note = nil
         uploadStatus = .idle
+        completedWorkoutName = nil
         latestHeartRate = nil
         builderMoving = 0
         guard store(creating: true) != nil else {
@@ -421,15 +434,18 @@ final class RunRecorderModel: ObservableObject {
         location?.stop()
         run.closePause(at: endedAt)
         self.run = run
+        var savedToHealth = false
         if let engine {
             do {
                 apply(try await engine.end(at: endedAt))
+                savedToHealth = true
             } catch {
-                note = "Apple Health didn’t save this workout. The run still uploads to intervals.icu."
+                note = "Apple Health didn’t save this workout. The run stays on this iPhone until it uploads to intervals.icu."
             }
         }
         guard var finished = self.run else { return }
         finished.endedAt = endedAt
+        finished.savedToHealth = savedToHealth
         finished.movingSeconds = builderMoving > 0 ? builderMoving : finished.activeSeconds(at: endedAt)
         self.run = finished
         unbind()
@@ -444,6 +460,10 @@ final class RunRecorderModel: ObservableObject {
         }
         checkpoint(force: true)
         phase = .finished
+        if let planned = plannedRun,
+           await onPlannedRunSaved(planned.id, finished.date, Int(finished.movingSeconds.rounded())) {
+            completedWorkoutName = planned.workoutName
+        }
         await uploadPending()
     }
 
@@ -467,6 +487,7 @@ final class RunRecorderModel: ObservableObject {
         note = nil
         latestHeartRate = nil
         plannedRun = nil
+        completedWorkoutName = nil
         planSteps = []
         phase = .idle
     }
@@ -526,6 +547,7 @@ final class RunRecorderModel: ObservableObject {
         run.closePause(at: endedAt)
         run.endedAt = endedAt
         run.movingSeconds = builderMoving > 0 ? builderMoving : run.activeSeconds(at: endedAt)
+        run.savedToHealth = false
         self.run = run
         unbind()
         liveActivity.endAll()
@@ -815,6 +837,8 @@ final class RunRecorderModel: ObservableObject {
         finished.closePause(at: endedAt)
         finished.endedAt = endedAt
         if finished.movingSeconds <= 0 { finished.movingSeconds = finished.activeSeconds(at: endedAt) }
+        // Its Health session didn't survive, so this iPhone holds the only copy.
+        finished.savedToHealth = false
         if finished.points.isEmpty && finished.distanceMeters < 1 {
             try? store.remove(id: finished.id)
         } else {
@@ -839,7 +863,11 @@ final class RunRecorderModel: ObservableObject {
             let summary = try await RunRecordingUploader.uploadPending(store: store, api: api, jwt: jwt)
             if summary.unauthorized { onUnauthorized() }
             if !summary.uploaded.isEmpty { onUploaded() }
-            uploadStatus = summary.failed.isEmpty ? .uploaded : .waiting
+            if !summary.failed.isEmpty {
+                uploadStatus = .waiting
+            } else {
+                uploadStatus = summary.uploaded.isEmpty && !summary.notConnected.isEmpty ? .notConnected : .uploaded
+            }
         } catch {
             uploadStatus = .waiting
         }

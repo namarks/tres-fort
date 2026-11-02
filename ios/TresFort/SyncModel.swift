@@ -5166,6 +5166,47 @@ final class SyncModel: ObservableObject {
         normalizeMountedRunnerAfterLocalCommit(for: todaySession?.date ?? todayString)
     }
 
+    /// A run saved in the run recorder from a planned outdoor run slot is that
+    /// slot's work: one timed set of the run's moving time, as stopping a
+    /// timed set logs it. Inside a started workout the runner moves on as
+    /// usual. A workout that is only that run starts and finishes here, so
+    /// today shows it done (docs/plans/planned-runs P7). Returns false when
+    /// nothing was logged, such as a run from another day or a slot already
+    /// done.
+    @discardableResult
+    func logRecordedRun(slotID: String, date: String, movingSeconds: Int) async -> Bool {
+        guard date == todayString, movingSeconds > 0, !isPartnerWorkout,
+              canInitiateBoundFeatureAction, currentJWT != nil else { return false }
+        var finishesWorkout = false
+        if !running {
+            guard !isFreestyle, !todayIsCompleted, !blocksNewWorkoutStart,
+                  let workout = todayPreviewWorkout,
+                  workout.exercises.count == 1, workout.exercises[0].id == slotID else { return false }
+            startToday()
+            guard running, selectedDay?.id == workout.id else { return false }
+            finishesWorkout = true
+        }
+        guard !isFreestyle, !finished,
+              let ex = exercises.first(where: { $0.id == slotID }),
+              !isRunnerComplete(ex), !isSetEntryBlocked(ex) else { return false }
+        skipped.remove(ex.id)
+        persistRunnerCheckpoint()
+        let seconds = max(1, movingSeconds)
+        guard queueRunnerSet(ex, weight: 0, reps: seconds, durationOverride: seconds) else {
+            persistRunnerCheckpoint()
+            return false
+        }
+        if running, currentExercise != nil {
+            normalizeMountedRunnerAfterLocalCommit(for: todaySession?.date ?? todayString)
+        }
+        if finishesWorkout {
+            // Nothing follows the run, so it needs no rest timer.
+            if restEndDate != nil { skipRest() }
+            await finishWorkout()
+        }
+        return true
+    }
+
     /// Manual "move on" — marks the current exercise skipped for this
     /// session (so it is NOT requeued, #3) and advances to the next
     /// unresolved exercise; ends the workout if none remain.

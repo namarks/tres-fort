@@ -323,3 +323,73 @@ describe('API forwarding', () => {
     expect(unknownAuth.status).toBe(404);
   });
 });
+
+describe('Apple Maps token', () => {
+  const pageHeaders = { cookie: `${SESSION_COOKIE}=${WEB_JWT}`, 'x-tres-fort-web': '1', 'sec-fetch-site': 'same-origin' };
+  const tokenRequest = (headers: Record<string, string>, method = 'GET') =>
+    new Request(`${ORIGIN}/maps/token`, { method, headers });
+
+  it('gives a signed-in page of this site the MapKit JS token once the API accepts its session', async () => {
+    const { env, apiFetch, assetFetch } = makeEnv(() => Response.json({ id: 'user-1' }));
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    const response = await handle(tokenRequest(pageHeaders), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ token: 'mapkit-token' });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const [check] = apiFetch.mock.calls[0]!;
+    expect(new URL(check.url).pathname).toBe('/api/me');
+    expect(check.method).toBe('GET');
+    expect(check.headers.get('authorization')).toBe(`Bearer ${WEB_JWT}`);
+    expect(assetFetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a session the API does not accept, such as a forged or expired cookie', async () => {
+    const forged = fakeJwt({ sub: 'someone', client: 'web', exp: 1 });
+    const { env } = makeEnv(() => Response.json({ error: 'invalid_token' }, { status: 401 }));
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    const response = await handle(tokenRequest({ ...pageHeaders, cookie: `${SESSION_COOKIE}=${forged}` }), env);
+    expect(response.status).toBe(401);
+    expect(cookieValue(response, SESSION_COOKIE)).toBe('');
+    expect(JSON.stringify(await response.json())).not.toContain('mapkit-token');
+    const { env: down } = makeEnv(() => Response.json({ error: 'boom' }, { status: 500 }));
+    down.MAPKIT_TOKEN = 'mapkit-token';
+    const failed = await handle(tokenRequest(pageHeaders), down);
+    expect(failed.status).toBe(502);
+    expect(JSON.stringify(await failed.json())).not.toContain('mapkit-token');
+  });
+
+  it('says maps are not set up when the site has no token', async () => {
+    const { env } = makeEnv();
+    const response = await handle(tokenRequest(pageHeaders), env);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'not_configured' });
+  });
+
+  it('refuses other sites, calls without the page header, and signed-out or app sessions', async () => {
+    const { env, apiFetch } = makeEnv();
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    const crossSite = await handle(tokenRequest({ ...pageHeaders, 'sec-fetch-site': 'cross-site' }), env);
+    expect(crossSite.status).toBe(403);
+    const otherOrigin = await handle(tokenRequest({ ...pageHeaders, origin: 'https://evil.example' }), env);
+    expect(otherOrigin.status).toBe(403);
+    const { 'x-tres-fort-web': _header, ...withoutHeader } = pageHeaders;
+    expect((await handle(tokenRequest(withoutHeader), env)).status).toBe(403);
+    const { cookie: _cookie, ...signedOut } = pageHeaders;
+    expect((await handle(tokenRequest(signedOut), env)).status).toBe(401);
+    const appSession = await handle(tokenRequest({ ...pageHeaders, cookie: `${SESSION_COOKIE}=${APP_JWT}` }), env);
+    expect(appSession.status).toBe(401);
+    expect(cookieValue(appSession, SESSION_COOKIE)).toBe('');
+    for (const response of [crossSite, otherOrigin, appSession]) {
+      expect(JSON.stringify(await response.json())).not.toContain('mapkit-token');
+    }
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('answers nothing else under /maps', async () => {
+    const { env, assetFetch } = makeEnv();
+    env.MAPKIT_TOKEN = 'mapkit-token';
+    expect((await handle(tokenRequest({ ...pageHeaders, origin: ORIGIN }, 'POST'), env)).status).toBe(404);
+    expect((await handle(new Request(`${ORIGIN}/maps/other`, { headers: pageHeaders }), env)).status).toBe(404);
+    expect(assetFetch).not.toHaveBeenCalled();
+  });
+});

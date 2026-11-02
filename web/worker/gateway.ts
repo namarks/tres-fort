@@ -5,7 +5,8 @@
  * lives in an HttpOnly cookie, and `/api/*` is forwarded to the API Worker
  * over a service binding with the bearer added. Nothing here depends on the
  * sign-in provider beyond the two `/auth/apple/*` routes, so another provider
- * later only adds routes.
+ * later only adds routes. `/maps/token` hands a signed-in page the site's
+ * MapKit JS token for the route map.
  */
 
 export interface Fetchable {
@@ -23,6 +24,12 @@ export interface GatewayEnv {
   WEB_ORIGIN: string;
   /** Local development only: enables /auth/dev through the API's dev sign-in. */
   DEV_AUTH_SECRET?: string;
+  /**
+   * The MapKit JS token for Apple Maps under recorded routes, restricted to
+   * this site's domain (`wrangler secret put MAPKIT_TOKEN`). Without it the
+   * page draws a route's shape without a map.
+   */
+  MAPKIT_TOKEN?: string;
 }
 
 export const SESSION_COOKIE = '__Host-tf_session';
@@ -82,6 +89,8 @@ export async function handle(request: Request, env: GatewayEnv): Promise<Respons
   if (path === '/auth/signout' && request.method === 'POST') return signOut(request, env);
   if (path === '/auth/dev' && request.method === 'POST' && env.DEV_AUTH_SECRET) return devSignIn(request, env);
   if (path.startsWith('/auth/')) return json({ error: 'not_found' }, 404);
+  if (path === '/maps/token' && request.method === 'GET') return mapsToken(request, env);
+  if (path.startsWith('/maps/')) return json({ error: 'not_found' }, 404);
   if (path === '/api' || path.startsWith('/api/')) return forwardToApi(request, env, url);
   return env.ASSETS.fetch(request);
 }
@@ -251,6 +260,30 @@ async function forwardToApi(request: Request, env: GatewayEnv, url: URL): Promis
     responseHeaders.append('set-cookie', cookie(SESSION_COOKIE, '', 0, 'Lax'));
   }
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+}
+
+// ---- Maps -------------------------------------------------------------------
+
+/**
+ * The MapKit JS token, for a signed-in page of this site only. Apple accepts
+ * the token only from this domain, so it is not a secret; the checks keep
+ * other sites and signed-out visitors from spending the site's map quota.
+ * The gateway can't verify the session itself, so the API does (`/api/me`).
+ */
+async function mapsToken(request: Request, env: GatewayEnv): Promise<Response> {
+  if (!isSameOrigin(request, env, { requireOrigin: false }) || request.headers.get(WEB_HEADER) !== '1') {
+    return json({ error: 'forbidden' }, 403);
+  }
+  const jwt = readCookie(request, SESSION_COOKIE);
+  if (!jwt) return json({ error: 'signed_out' }, 401);
+  if (!isWebSession(jwt)) return signedOut();
+  const session = await env.API.fetch(new Request(`${API_ORIGIN}/api/me`, {
+    headers: { authorization: `Bearer ${jwt}`, accept: 'application/json' },
+  }));
+  if (session.status === 401) return signedOut();
+  if (!session.ok) return json({ error: 'unavailable' }, 502);
+  if (!env.MAPKIT_TOKEN) return json({ error: 'not_configured' }, 404);
+  return json({ token: env.MAPKIT_TOKEN }, 200);
 }
 
 function signedOut(): Response {

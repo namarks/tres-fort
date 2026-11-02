@@ -1,5 +1,5 @@
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://*.apple-mapkit.com 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.apple-mapkit.com; font-src 'self'; connect-src 'self' blob: https://*.apple-mapkit.com; worker-src blob: https://*.apple-mapkit.com; frame-src https://*.apple-mapkit.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'
   Referrer-Policy: same-origin
   X-Content-Type-Options: nosniff
   Permissions-Policy: camera=(), microphone=(), geolocation=()

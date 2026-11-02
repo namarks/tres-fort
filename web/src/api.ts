@@ -9,6 +9,7 @@ import type {
 } from '../../src/types';
 import type { CatalogExercise } from './editing';
 import type { Comparison, HistoryPage } from './history';
+import type { ActivityRouteResponse } from './routeMap';
 
 /** The plan tree as GET /api/state returns it, with parsed plan meta. */
 export type StatePlan = PlanTree & {
@@ -76,6 +77,27 @@ const getJson = <T>(path: string) => request<T>('GET', path);
 export const fetchMe = () => getJson<Me>('/api/me');
 export const fetchState = () => getJson<StateResponse>('/api/state');
 export const fetchExercises = () => getJson<CatalogExercise[]>('/api/exercises');
+
+/** A run's GPS route, or null when the activity has none. Routes are the member's own. */
+export async function fetchActivityRoute(activityId: string): Promise<ActivityRouteResponse | null> {
+  try {
+    return await getJson<ActivityRouteResponse>(`/api/activities/${encodeURIComponent(activityId)}/route`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** The MapKit JS token for this site, or null when maps aren't set up. */
+export async function fetchMapToken(): Promise<string | null> {
+  try {
+    const { token } = await getJson<{ token?: unknown }>('/maps/token');
+    return typeof token === 'string' && token.length > 0 ? token : null;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
 
 /** Saved plan versions, newest first; `before` pages back through older ones. */
 export const fetchPlanHistory = (before?: number) =>

@@ -16,6 +16,8 @@ import { describeWriteError } from './editing';
 import { WorkoutsPage, type Catalog, type Write } from './WorkoutEditor';
 import { AwayDates, DateActions, RoutineEditor } from './CalendarEditing';
 import { HistoryView } from './HistoryView';
+import { RouteMap } from './RouteMap';
+import { routableActivityIds } from './routeMap';
 import {
   activityLoads,
   calendarInputs,
@@ -273,6 +275,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
   const selectedCell = useMemo(() => cellFor(selected), [cellFor, selected]);
   const workouts = useMemo(() => new Map((plan?.workouts ?? []).map((w) => [w.id, w])), [plan]);
   const loads = useMemo(() => activityLoads(state), [state]);
+  const routable = useMemo(() => routableActivityIds(state), [state]);
 
   return (
     <>
@@ -325,6 +328,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
             trip={tripOn(selected, plan.trips ?? [])}
             miles={miles}
             loads={loads}
+            routable={routable}
             onEditWorkout={onEditWorkout}
             actions={(
               <DateActions date={selected} today={today} cell={selectedCell} workout={workoutFor(selectedCell, workouts)}
@@ -376,10 +380,12 @@ function DayDetail(props: {
   trip: ReturnType<typeof tripOn>;
   miles: boolean;
   loads: Map<string, ShownLoad | null>;
+  /** Completed activities that may have a recorded route. */
+  routable: Set<string>;
   onEditWorkout: (id: string) => void;
   actions: ReactNode;
 }) {
-  const { date, cell, workout, trip, miles, loads, onEditWorkout, actions } = props;
+  const { date, cell, workout, trip, miles, loads, routable, onEditWorkout, actions } = props;
   return (
     <aside className="detail" aria-labelledby="detail-title">
       <h2 id="detail-title">{formatLongDate(date)}</h2>
@@ -423,14 +429,16 @@ function DayDetail(props: {
             {cell.items.map((item) => {
               const load = itemLoad(item, loads);
               const method = load?.method ? LOAD_METHOD_LABELS[load.method] : undefined;
+              const title = item.title ?? ENDURANCE_LABELS[item.kind] ?? 'Activity';
               return (
                 <li key={item.id}>
-                  <div className="slot-name">{item.title ?? ENDURANCE_LABELS[item.kind] ?? 'Activity'}</div>
+                  <div className="slot-name">{title}</div>
                   <div className="muted">
                     {ENDURANCE_LABELS[item.kind] ?? 'Activity'} · {item.completed ? 'Done' : 'Planned'}
                     {item.planned_duration_sec ? ` · ${formatClock(item.planned_duration_sec)}` : ''}
                     {load ? ` · load ${Math.round(load.load)}${method ? ` (${method})` : ''}` : ''}
                   </div>
+                  {item.completed && routable.has(item.id) ? <RouteMap activityId={item.id} label={`Route of ${title}`} /> : null}
                 </li>
               );
             })}

@@ -132,6 +132,12 @@ export function parseStoredRoute(text: string): EncodedRoute | null {
   } catch {
     return null;
   }
+  return asEncodedRoute(value);
+}
+
+/** The value as a route, or null when it isn't a well-formed one (also used
+ * by the web app on the route it is served). */
+export function asEncodedRoute(value: unknown): EncodedRoute | null {
   if (typeof value !== 'object' || value === null) return null;
   const r = value as Record<string, unknown>;
   const n = Array.isArray(r.dt) ? r.dt.length : -1;

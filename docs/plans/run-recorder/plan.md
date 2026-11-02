@@ -174,7 +174,7 @@ coach sees it in the same place as Garmin runs.
     - The recorder says where the run went: "Saved in Tres Fort and sent to
       intervals.icu.", "Saved in Tres Fort with its route." without a
       connection, or that only the intervals.icu copy retries later.
-  - [ ] **(b) Show the route in the app**
+  - [x] **(b) Show the route in the app** (PR #323)
     - A run's card in the day view, and a planned run's record, show its
       route on a map when the run was recorded in the app, either as the
       recording itself or as the intervals.icu copy it was matched to.
@@ -183,9 +183,19 @@ coach sees it in the same place as Garmin runs.
     - The app reads `GET /api/activities/:id/route` only for runs from the
       recorder or intervals.icu, once per route and account in memory; "no
       route" is remembered for ten minutes, and a failed read is retried.
-  - [ ] **(c) Show the route on the web, and delete a recorded run**
-    - The web app shows the same route. Choosing its base map is open: map
-      tiles from a third party learn roughly where the member ran.
+  - [x] **(c) Show the route on the web**
+    - The owner chose Apple Maps on 2026-11-02, as in the app. The web day
+      panel shows a recorded run's route under the run, each segment its
+      own line in the accent color, framed to fit, for the same activities
+      as the app.
+    - The page loads MapKit JS 6 (map and overlay libraries only) when a day
+      with a route is opened, with the site's domain-restricted MapKit JS
+      token from the gateway's `/maps/token` (pages of this site whose
+      session the API accepts; the `MAPKIT_TOKEN` secret of
+      `tres-fort-web`). Without a token
+      it asks Apple for nothing; then, or when MapKit fails to load or
+      refuses the token, it draws the route's shape without a map.
+  - [ ] **(d) Delete a recorded run in the app**
     - The app offers deleting a recorded run. Deleting brings back the
       Apple Health copy it hid, as deleting a .fit import does, so the
       wording has to say so, or deleting should also hide that copy.
@@ -213,9 +223,10 @@ mirrors P1's session.
 (main 2832d0c), which carries auto-pause, the running layout, planned runs
 and planning them in the app.
 
-**Next (@agent):** Show the route on the web and offer deleting a recorded
-run in the app (P5(c)) once P5(b) merges. P5(a) and P5(b) need migration
-0063 applied in production before the Worker is deployed, both with the
+**Next (@agent):** Offer deleting a recorded run in the app (P5(d)).
+P5(a) to P5(c) need migration 0063 applied in production before the API
+Worker is deployed, and P5(c) needs the owner's MapKit JS token as
+`tres-fort-web`'s `MAPKIT_TOKEN` when the web app is deployed, each with the
 owner's go-ahead.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
@@ -274,6 +285,21 @@ the scene delegate is left to P3's force-quit check.
   have a route, reading a route once per account, remembering "no route"
   for ten minutes, retrying a failed read, and the client's request path
   with a 404 read as no route.
+- P5(c): `web/test/routeMap.test.ts` covers decoding the served route into
+  lines (lone points, malformed routes and invalid coordinates draw
+  nothing), which activities can have a route, the shape drawn without a
+  map (fitted inside its margin, not stretched, north up), reading a route
+  and the map token with a 404 read as none, and loading MapKit JS only
+  with a token, with only the map and overlay libraries. `web/test/gateway.test.ts`
+  covers `/maps/token`: the token for a signed-in page of this site once
+  the API accepts its session, 404 without one, and refusals for other
+  sites, a missing page header, signed-out or app sessions, and a session
+  the API refuses. In Chromium against stubbed API answers, a
+  site without a token showed the route's shape and loaded nothing from
+  Apple; a stand-in MapKit received two lines in the theme's accent color;
+  a failed script and a refused token fell back to the shape, the latter
+  destroying the map. MapKit JS itself can't be reached from the build
+  environment, so the real map is first seen on `app.tresfort.app`.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

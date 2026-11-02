@@ -115,7 +115,7 @@ extension RunPlanFormat {
 
     /// "800 meters", "1 mile", "3.11 miles", "5 kilometers".
     static func spokenDistance(_ meters: Double, unit: RunDistanceUnit) -> String {
-        if meters < 1_000 { return "\(Int(meters.rounded())) meters" }
+        if readsInMeters(meters, unit: unit) { return "\(Int(meters.rounded())) meters" }
         let text = distance(meters, unit: unit).replacingOccurrences(of: " " + unit.abbreviation, with: "")
         return text + " " + unit.spokenName + (text == "1" ? "" : "s")
     }

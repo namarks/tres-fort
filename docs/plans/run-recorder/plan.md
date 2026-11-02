@@ -239,6 +239,8 @@ the scene delegate is left to P3's force-quit check.
 - intervals.icu stays the store of record for endurance activities, as
   [MULTISPORT.md §11](../../MULTISPORT.md) requires. Tres Fort uploads files
   and never keeps a second writable cardio store or GPS streams in D1.
+  Since planned-runs P7 the connection is optional: without one, a run
+  Apple Health saved with its route stays there and leaves the upload queue.
 - Heart rate on iPhone comes only from what Health provides during the
   session (a paired watch or supported headphones). Direct Bluetooth chest
   straps and an Apple Watch app are possible later slices, not part of this

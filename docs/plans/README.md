@@ -190,12 +190,13 @@ integration or social breadth.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach or the member plans runs with steps and pace or
   heart rate targets in the Tres Fort plan, and the recorder follows them
-  with spoken on/off-target cues. Completed runs still upload to
-  intervals.icu. P0's step format, migration 0058 and MCP tools, P1's
-  display in the app with a Start run button, P2's step-by-step guidance
-  while recording, P3's spoken step and target cues, P5's in-app step
-  editor and P6's watch-style step layout are in the repository; P4 is the
-  owner's real runs.
+  with spoken on/off-target cues. Completed runs upload to intervals.icu
+  when it is connected. P0's step format, migration 0058 and MCP tools,
+  P1's display in the app with a Start run button, P2's step-by-step
+  guidance while recording, P3's spoken step and target cues, P5's in-app
+  step editor, P6's watch-style step layout and P7's finished run (marked
+  done, a run-aware record, intervals.icu optional) are in the repository;
+  P4 is the owner's real runs.
 - [Real training load for endurance workouts](endurance-training-load/plan.md) —
   **active**; members set FTP, threshold heart rate and threshold pace in the
   app, and one Worker load engine gives every run, ride and swim a labeled

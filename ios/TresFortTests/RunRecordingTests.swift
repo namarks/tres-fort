@@ -208,6 +208,28 @@ final class RunRecordingTests: XCTestCase {
         XCTAssertEqual(try store.all().map(\.id), [second.id, inProgress.id])
     }
 
+    func testUploaderLetsGoOfHealthSavedRunsWithoutAnIntervalsConnection() async throws {
+        let store = try RunRecordingStore(accountID: "user-a", baseURL: base)
+        var inHealth = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_000_000))
+        inHealth.savedToHealth = true
+        var onlyHere = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_100_000))
+        onlyHere.savedToHealth = false
+        let older = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_200_000))
+        for r in [inHealth, onlyHere, older] { try store.save(r) }
+        let api = RecordingUploadStub()
+        let notConnected = APIError.http(409, #"{"error":"intervals_not_connected","message":"Nothing was saved."}"#)
+        for r in [inHealth, onlyHere, older] { api.failures[r.id] = notConnected }
+
+        let summary = try await RunRecordingUploader.uploadPending(store: store, api: api, jwt: "jwt")
+
+        // Only a run Apple Health has leaves; the others are their only copy.
+        XCTAssertEqual(summary, .init(uploaded: [], failed: [onlyHere.id, older.id], unauthorized: false,
+                                      notConnected: [inHealth.id]))
+        XCTAssertEqual(try store.all().map(\.id), [onlyHere.id, older.id])
+        XCTAssertFalse(RunRecordingUploader.isNotConnected(APIError.http(409, #"{"error":"intervals_write_forbidden"}"#)))
+        XCTAssertFalse(RunRecordingUploader.isNotConnected(APIError.http(502, "intervals_not_connected")))
+    }
+
     func testUploaderStopsWhenTheBearerIsRejected() async throws {
         let store = try RunRecordingStore(accountID: "user-a", baseURL: base)
         let first = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_000_000))

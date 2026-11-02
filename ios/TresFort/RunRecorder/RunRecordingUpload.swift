@@ -2,6 +2,8 @@ import Foundation
 
 /// `POST /api/activities/recordings` response for an accepted upload. A 200
 /// (`deduplicated`) means an earlier attempt already reached intervals.icu.
+/// A 409 `intervals_not_connected` means the account has no intervals.icu
+/// connection, so the run stays in Apple Health only.
 struct RecordingUploadResult: Decodable, Equatable {
     let ok: Bool
     let deduplicated: Bool
@@ -50,13 +52,23 @@ extension APIClient: RecordingUploadAPI {
 
 /// Sends every finished run the store holds, oldest first, and removes each
 /// one only after the server acknowledges it. One failure doesn't stop the
-/// others; failed runs stay for the next attempt.
+/// others; failed runs stay for the next attempt. intervals.icu is optional:
+/// when the account has no connection and Apple Health saved the run with
+/// its route, the run leaves the queue instead of retrying forever.
 enum RunRecordingUploader {
     struct Summary: Equatable {
         var uploaded: [UUID] = []
         var failed: [UUID] = []
         /// True when the server rejected the bearer; the caller re-authenticates.
         var unauthorized = false
+        /// Runs not sent because this account has no intervals.icu connection.
+        var notConnected: [UUID] = []
+    }
+
+    /// The Worker's answer when the account has no intervals.icu connection.
+    static func isNotConnected(_ error: Error) -> Bool {
+        guard case let APIError.http(code, body) = error else { return false }
+        return code == 409 && body.contains("\"intervals_not_connected\"")
     }
 
     static func uploadPending(
@@ -74,6 +86,9 @@ enum RunRecordingUploader {
                 summary.failed.append(run.id)
                 summary.unauthorized = true
                 break
+            } catch let error where isNotConnected(error) && run.savedToHealth == true {
+                try store.remove(id: run.id)
+                summary.notConnected.append(run.id)
             } catch {
                 summary.failed.append(run.id)
             }

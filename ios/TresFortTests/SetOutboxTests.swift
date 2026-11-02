@@ -6661,6 +6661,62 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertFalse(model.running)
     }
 
+    func testARecordedRunLogsItsSlotAndFinishesARunOnlyWorkout() async throws {
+        let defaults = defaults()
+        let run = exercise(id: "slot-run", exerciseID: "ex_outdoor_run", timed: true, targetSets: 1)
+        let planned = session(status: "planned", attempt: 0)
+        let setAPI = SetWriteAPIStub()
+        let terminalAPI = SetTerminalAPIStub()
+        setAPI.createHandler = { [self] _, _, _ in session(status: "in_progress", attempt: 0) }
+        setAPI.logHandler = { [self] _, body, _ in .init(set: setLog(body: body), deduped: false) }
+        setAPI.stateHandler = { [self] _ in state(session: planned, sets: [], exercise: run) }
+        terminalAPI.completeHandler = { [self] _, _ in session(status: "completed", attempt: 0) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: planned, sets: [], exercise: run))
+
+        let logged = await model.logRecordedRun(slotID: "slot-run", date: fixedCivilDate, movingSeconds: 1_537)
+
+        XCTAssertTrue(logged)
+        let body = try XCTUnwrap(setAPI.logCalls.first?.body)
+        XCTAssertEqual(body.template_exercise_id, "slot-run")
+        XCTAssertEqual(body.duration_s, 1_537)
+        XCTAssertEqual(body.reps, 1_537)
+        XCTAssertTrue(body.is_timed)
+        XCTAssertEqual(terminalAPI.completeCalls.count, 1)
+        XCTAssertFalse(model.running)
+        XCTAssertNil(model.restEndDate)
+    }
+
+    func testARecordedRunLogsOnlyTodaysOwnRunWorkout() async {
+        let defaults = defaults()
+        let run = exercise(id: "slot-run", exerciseID: "ex_outdoor_run", timed: true, targetSets: 1)
+        let planned = session(status: "planned", attempt: 0)
+        let setAPI = SetWriteAPIStub()
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        // A lift and a run: the run is part of a workout the member starts.
+        model.replaceState(with: state(session: planned, sets: [], exercises: [exercise(), run]))
+
+        let otherDay = await model.logRecordedRun(slotID: "slot-run", date: "2001-01-01", movingSeconds: 600)
+        let notStarted = await model.logRecordedRun(slotID: "slot-run", date: fixedCivilDate, movingSeconds: 600)
+        let noTime = await model.logRecordedRun(slotID: "slot-run", date: fixedCivilDate, movingSeconds: 0)
+
+        XCTAssertFalse(otherDay)
+        XCTAssertFalse(notStarted)
+        XCTAssertFalse(noTime)
+        XCTAssertFalse(model.running)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(setAPI.logCalls.isEmpty)
+    }
+
     func testDiscardRequestedDuringInFlightFinishIsFinalMutation() async {
         let defaults = defaults()
         let ex = exercise()

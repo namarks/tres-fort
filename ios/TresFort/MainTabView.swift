@@ -54,6 +54,10 @@ private final class MainTabModels: ObservableObject {
                 auth.requireReauthentication()
             },
             onUploaded: { [weak auth] in auth?.noteActivityPersisted(for: accountID) },
+            // A saved planned run logs its slot, so today shows it done.
+            onPlannedRunSaved: { [weak sync] slotID, date, movingSeconds in
+                await sync?.logRecordedRun(slotID: slotID, date: date, movingSeconds: movingSeconds) ?? false
+            },
             now: now)
         setConnectivity.onSatisfiedTransition = { [weak sync] in
             Task { await sync?.recoverWorkoutWrites() }

@@ -106,6 +106,9 @@ final class RunRecorderTests: XCTestCase {
     private var unauthorized = 0
     private var locationsMade = 0
     private var uploads = 0
+    /// "slot date seconds" for each saved planned run the plan was told about.
+    private var plannedRunsLogged: [String] = []
+    private var plannedRunAccepted = true
 
     override func setUp() async throws {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("run-recorder-\(UUID())")
@@ -131,6 +134,10 @@ final class RunRecorderTests: XCTestCase {
             jwt: { jwt },
             onUnauthorized: { [unowned self] in self.unauthorized += 1 },
             onUploaded: { [unowned self] in self.uploads += 1 },
+            onPlannedRunSaved: { [unowned self] slot, date, seconds in
+                self.plannedRunsLogged.append("\(slot) \(date) \(seconds)")
+                return self.plannedRunAccepted
+            },
             makeEngine: { [unowned self] in self.engine },
             makeLocation: { [unowned self] in
                 self.locationsMade += 1
@@ -731,6 +738,31 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(try store().all(), [])
     }
 
+    func testWithoutIntervalsARunAppleHealthSavedLeavesTheQueue() async throws {
+        api.error = APIError.http(409, #"{"error":"intervals_not_connected","message":"Nothing was saved."}"#)
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        coverGround()
+        await model.end()
+        XCTAssertEqual(model.uploadStatus, .notConnected)
+        XCTAssertEqual(try store().all(), [])
+        XCTAssertEqual(uploads, 0)
+    }
+
+    func testWithoutIntervalsARunAppleHealthDidNotSaveStaysOnThisIPhone() async throws {
+        api.error = APIError.http(409, #"{"error":"intervals_not_connected","message":"Nothing was saved."}"#)
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        engine.endError = RunWorkoutEngineError.notStarted
+        coverGround()
+        await model.end()
+        XCTAssertEqual(model.uploadStatus, .waiting)
+        let kept = try XCTUnwrap(store().pendingUploads().first)
+        XCTAssertEqual(kept.savedToHealth, false)
+    }
+
     func testWithoutABearerTheRunWaits() async throws {
         let model = makeModel(jwt: nil)
         await model.start()
@@ -909,6 +941,43 @@ final class RunRecorderTests: XCTestCase {
         model.reset()
         XCTAssertTrue(model.planSteps.isEmpty)
         XCTAssertNil(model.plannedRun)
+    }
+
+    func testASavedPlannedRunMarksItsWorkoutDone() async throws {
+        let model = makeModel()
+        model.plannedRun = PlannedRun(id: "slot", workoutName: "Zone 3 Run", plan: nil, durationSeconds: nil)
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        coverGround()
+        engine.finalMetrics = .init(distanceMeters: 640, movingSeconds: 70, heartRate: nil)
+        await model.end()
+
+        let uploaded = try XCTUnwrap(api.uploaded.first)
+        XCTAssertEqual(plannedRunsLogged, ["slot \(uploaded.date) 70"])
+        XCTAssertEqual(model.completedWorkoutName, "Zone 3 Run")
+        XCTAssertEqual(uploaded.savedToHealth, true)
+        model.reset()
+        XCTAssertNil(model.completedWorkoutName)
+    }
+
+    func testAPlainRunOrARefusedPlannedRunMarksNothingDone() async throws {
+        let plain = makeModel()
+        await plain.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        coverGround()
+        await plain.end()
+        XCTAssertEqual(plannedRunsLogged, [])
+        XCTAssertNil(plain.completedWorkoutName)
+
+        plannedRunAccepted = false
+        plain.reset()
+        plain.plannedRun = PlannedRun(id: "slot", workoutName: "Tempo", plan: nil, durationSeconds: nil)
+        await plain.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        coverGround()
+        await plain.end()
+        XCTAssertEqual(plannedRunsLogged.count, 1)
+        XCTAssertNil(plain.completedWorkoutName)
     }
 
     func testARunWithoutStepsKeepsThePlainRecorder() async throws {

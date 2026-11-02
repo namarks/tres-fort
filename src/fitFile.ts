@@ -35,7 +35,7 @@ export interface FitActivity {
   /** Normalized power the device computed, when it wrote one. */
   normalized_power: number | null;
   ascent_m: number | null;
-  /** `t` is seconds from start_utc_ms. */
+  /** `t` is timer seconds from start_utc_ms: paused time is taken out. */
   hr: Sample[];
   power: Sample[];
 }
@@ -46,8 +46,12 @@ const FIT_EPOCH_SEC = 631_065_600;
 const MESG_FILE_ID = 0;
 const MESG_SESSION = 18;
 const MESG_RECORD = 20;
+const MESG_EVENT = 21;
 const MESG_ACTIVITY = 34;
-const WANTED = new Set([MESG_FILE_ID, MESG_SESSION, MESG_RECORD, MESG_ACTIVITY]);
+const WANTED = new Set([MESG_FILE_ID, MESG_SESSION, MESG_RECORD, MESG_EVENT, MESG_ACTIVITY]);
+/** Timer event types that stop the timer (stop, stop_all, stop_disable,
+ * stop_disable_all); 0 starts it. */
+const TIMER_STOPS = new Set([1, 4, 8, 9]);
 const FIELD_TIMESTAMP = 253;
 
 interface FieldDef {
@@ -134,6 +138,7 @@ export function parseFit(bytes: Uint8Array): FitActivity {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const records: Fields[] = [];
   const sessions: Fields[] = [];
+  const events: Fields[] = [];
   let activity: Fields | null = null;
   let fileType: number | null = null;
   let sawHeader = false;
@@ -234,6 +239,7 @@ export function parseFit(bytes: Uint8Array): FitActivity {
         if (def.global === MESG_RECORD) records.push(values);
         else if (def.global === MESG_SESSION) sessions.push(values);
         else if (def.global === MESG_ACTIVITY) activity = values;
+        else if (def.global === MESG_EVENT) events.push(values);
         else if (def.global === MESG_FILE_ID && fileType === null) fileType = values.get(0) ?? null;
       }
       at += def.size;
@@ -266,12 +272,43 @@ export function parseFit(bytes: Uint8Array): FitActivity {
     return v === undefined ? null : v / scale;
   };
 
+  // Timer pauses, from the timer stop and start events. Samples are placed
+  // on the timer's clock: readings inside a pause are dropped and later ones
+  // move back by the paused time, so a pause never counts as training, even
+  // one shorter than the gap the load engine would bridge.
+  const pauses: [number, number][] = [];
+  let pausedAt: number | null = null;
+  const timerEvents = events
+    .filter(e => e.get(0) === 0 && e.get(FIELD_TIMESTAMP) !== undefined)
+    .sort((a, b) => a.get(FIELD_TIMESTAMP)! - b.get(FIELD_TIMESTAMP)!);
+  for (const e of timerEvents) {
+    const ts = e.get(FIELD_TIMESTAMP)!;
+    const type = e.get(1);
+    if (type !== undefined && TIMER_STOPS.has(type)) {
+      if (pausedAt === null) pausedAt = ts;
+    } else if (type === 0 && pausedAt !== null) {
+      if (ts > pausedAt) pauses.push([pausedAt, ts]);
+      pausedAt = null;
+    }
+  }
+  if (pausedAt !== null) pauses.push([pausedAt, Infinity]);
+  const timerTime = (ts: number): number | null => {
+    let paused = 0;
+    for (const [from, to] of pauses) {
+      // The reading at the resume instant takes the stop instant's place.
+      if (ts >= from && ts < to) return null;
+      if (ts >= to) paused += to - from;
+    }
+    return ts - startFit - paused;
+  };
+
   const hr: Sample[] = [];
   const power: Sample[] = [];
   for (const r of records) {
     const ts = r.get(FIELD_TIMESTAMP);
     if (ts === undefined || ts < startFit) continue;
-    const t = ts - startFit;
+    const t = timerTime(ts);
+    if (t === null) continue;
     const bpm = r.get(3);
     if (bpm !== undefined) hr.push({ t, v: bpm });
     const watts = r.get(7);

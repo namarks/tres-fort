@@ -87,6 +87,20 @@ describe('POST /api/activities/fit', () => {
     expect(count?.n).toBe(1);
   });
 
+  it('stores one copy when two devices upload the same workout at once', async () => {
+    const u = await makeUser('fit-race');
+    const [a, b] = await Promise.all([upload(u.jwt, ride()), upload(u.jwt, ride())]);
+    expect([a.status, b.status].sort()).toEqual([200, 201]);
+    const [ja, jb] = [await a.json<any>(), await b.json<any>()];
+    expect(ja.activity.id).toBe(jb.activity.id);
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM external_activities WHERE user_id = ?1 AND source = 'fit'")
+      .bind(u.id).first<{ n: number }>();
+    expect(count?.n).toBe(1);
+    // After deleting it, the workout can be imported again.
+    await SELF.fetch(`${BASE}/api/activities/fit/${ja.activity.external_id}`, { method: 'DELETE', headers: auth(u.jwt) });
+    expect((await upload(u.jwt, ride())).status).toBe(201);
+  });
+
   it('finishes scoring on a retry when the first attempt stopped after storing the row', async () => {
     const u = await makeUser('fit-unfinished');
     await setThreshold(u.jwt, 'ride', 'ftp_w', 250);

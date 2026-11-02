@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FitParseError, fitCrc, fitKind, parseFit } from '../src/fitFile';
+import { heartRateStreamLoad } from '../src/trainingLoad';
 import { activityFit, FitWriter, fitTime } from './fitWriter';
 
 // FIT reader (docs/plans/endurance-training-load P4).
@@ -84,6 +85,31 @@ describe('parseFit', () => {
     w.chain().define(5, 20, [{ num: 253, type: 'uint32' }, { num: 3, type: 'uint8' }]);
     for (let t = 30; t < 60; t++) w.data(5, [start + t, 131]);
     expect(parseFit(w.bytes()).hr).toHaveLength(60);
+  });
+
+  it('takes timer pauses out of the samples, even short ones', () => {
+    // An hour on the wall clock at threshold heart rate, with the timer
+    // stopped for the last five seconds of every minute: 55 minutes count.
+    const start = fitTime('2026-10-25T03:00:00Z');
+    const w = new FitWriter()
+      .define(0, 0, [{ num: 0, type: 'enum' }]).data(0, [4])
+      .define(1, 20, [{ num: 253, type: 'uint32' }, { num: 3, type: 'uint8' }])
+      .define(2, 21, [{ num: 253, type: 'uint32' }, { num: 0, type: 'enum' }, { num: 1, type: 'enum' }])
+      .data(2, [start, 0, 0]);
+    for (let t = 0; t < 3600; t++) {
+      if (t % 60 === 55) w.data(2, [start + t, 0, 4]);
+      if (t % 60 === 0 && t > 0) w.data(2, [start + t, 0, 0]);
+      w.data(1, [start + t, 160]);
+    }
+    w.data(2, [start + 3600, 0, 4]);
+    w.define(3, 18, [{ num: 2, type: 'uint32' }, { num: 5, type: 'enum' }, { num: 8, type: 'uint32' }])
+      .data(3, [start, 1, 3300_000]);
+    const fit = parseFit(w.bytes());
+    // The five readings from each stop to its resume go.
+    expect(fit.hr).toHaveLength(60 * 55);
+    expect(fit.hr.at(-1)?.t).toBe(3299);
+    expect(new Set(fit.hr.map(s => s.t)).size).toBe(fit.hr.length);
+    expect(heartRateStreamLoad(fit.hr, fit.timer_sec, 160)?.load).toBe(92);
   });
 
   it('refuses what it cannot score', () => {

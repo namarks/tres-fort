@@ -9201,7 +9201,7 @@ export async function importFitActivity(
   name: string | null,
 ): Promise<FitImportResult> {
   const id = `fit:activity:${userId}:${clientId}`;
-  const existing = await db
+  const findStored = () => db
     .prepare(
       `SELECT * FROM external_activities
         WHERE user_id = ?1 AND source = 'fit'
@@ -9211,18 +9211,20 @@ export async function importFitActivity(
     )
     .bind(userId, id, fit.kind, fit.start_utc_ms)
     .first<ExternalActivityRow>();
-  if (existing) {
-    // A first attempt can store the row and then fail before reconciling
-    // it; finishing that work here makes a retry converge. Both are
-    // idempotent, so a completed import is left as it is.
+  // A first attempt can store the row and then fail before reconciling it;
+  // finishing that work here makes a retry converge. Both steps are
+  // idempotent, so a completed import is left as it is.
+  const returnStored = async (stored: ExternalActivityRow): Promise<FitImportResult> => {
     await dedupeHealthKitAgainstIntervals(db, userId);
-    await refreshActivityLoads(db, userId, { fromDate: existing.date, toDate: existing.date });
+    await refreshActivityLoads(db, userId, { fromDate: stored.date, toDate: stored.date });
     const current = await db
       .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
-      .bind(existing.id, userId)
+      .bind(stored.id, userId)
       .first<ExternalActivityRow>();
-    return { activity: current ?? existing, deduplicated: true };
-  }
+    return { activity: current ?? stored, deduplicated: true };
+  };
+  const existing = await findStored();
+  if (existing) return returnStored(existing);
 
   const local = fitLocalTime(fit.start_utc_ms, fit.local_offset_sec, await getUserTimezone(db, userId));
   const moving = fit.timer_sec === null ? null : Math.round(fit.timer_sec);
@@ -9230,7 +9232,7 @@ export async function importFitActivity(
   const npW = fit.power.length > 0 ? powerStreamSummary(fit.power, moving) : null;
   const intOrNull = (v: number | null) => (v === null ? null : Math.round(v));
   const ts = now();
-  await db
+  const inserted = await db
     .prepare(
       `INSERT INTO external_activities
          (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
@@ -9240,7 +9242,7 @@ export async function importFitActivity(
           start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec)
        VALUES (?1,?2,'fit',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,NULL,
                ?15,?16,?17,?18,NULL,1,NULL,?19,?20,?21,?22,?23)
-       ON CONFLICT(id) DO NOTHING`,
+       ON CONFLICT DO NOTHING`,
     )
     .bind(
       id, userId, clientId, local.date, local.localMs, fit.kind,
@@ -9251,6 +9253,13 @@ export async function importFitActivity(
       fit.start_utc_ms, local.zone, npW, hr?.rms_bpm ?? null, hr ? Math.round(hr.seconds) : null,
     )
     .run();
+  // Losing a race to the same client id or, through migration 0062's
+  // unique index, to the same workout uploaded under another id.
+  if ((inserted.meta.changes ?? 0) === 0) {
+    const winner = await findStored();
+    if (!winner) throw new Error('fit_activity_insert_failed');
+    return returnStored(winner);
+  }
   await dedupeHealthKitAgainstIntervals(db, userId);
   await refreshActivityLoads(db, userId, { fromDate: local.date, toDate: local.date });
   const row = await db

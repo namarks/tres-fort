@@ -114,8 +114,12 @@ provider connection.
     The file is never stored: the workout lands in `external_activities` with
     `source='fit'`, its heart-rate and power samples reduced to the P3
     summaries and the device's normalized power kept as the source's figure.
-    Its civil date comes from the device's local time, else the member's
-    timezone. The same workout uploaded again returns the stored row.
+    Samples sit on the timer's clock, so timer pauses never count as
+    training (Apple Health pauses get the same treatment in the app). Files
+    whose CRCs fail are refused. Its civil date comes from the device's local
+    time, else the member's timezone. The same workout uploaded again, even
+    concurrently under another id, returns the stored row (migration `0062`'s
+    unique index on member, kind and start instant).
   - Dedup (in `dedupeHealthKitAgainstIntervals`): intervals.icu's copy wins
     over a `.fit` copy, which wins over Apple Health's; a hidden copy comes
     back when its winner goes away, including when the import is deleted.
@@ -145,7 +149,7 @@ provider connection.
 **Now (@owner):** P5 waits on Garmin's Starter API approval, so the next
 agent phase is P6, a labeled effort estimate for workouts with no usable data,
 or P7, starting values from intervals.icu, whichever the owner prefers. P0 to
-P4 are in the repository. Migrations `0059`, `0060` and `0061` and the Worker
+P4 are in the repository. Migrations `0059` to `0062` and the Worker
 need the owner's separate go-ahead to reach production, and the app's
 thresholds screen and file import need that Worker.
 

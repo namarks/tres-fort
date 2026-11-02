@@ -78,10 +78,10 @@ elif [[ -n "$ci_shard" ]]; then
   # limit for full runs is 40 minutes only as headroom for slow runners.
   # Shard 1 runs units and the complement, so new classes stay covered. The
   # partition test checks all selectors against real suites without overlap.
-  full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests)
-  full_third=(TodayNavigationJourneyTests IntervalsConnectionJourneyTests ExerciseDiscoveryJourneyTests)
+  full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests IntervalsConnectionJourneyTests)
+  full_third=(TodayNavigationJourneyTests)
   full_fourth=(MemberActivationJourneyTests PlanlessAccountJourneyTests FreestyleJourneyTests)
-  full_fifth=(UIActionJourneyTests HistoryJourneyTests ExerciseGroupJourneyTests ExerciseInformationJourneyTests)
+  full_fifth=(UIActionJourneyTests HistoryJourneyTests ExerciseGroupJourneyTests ExerciseInformationJourneyTests ExerciseDiscoveryJourneyTests)
   full_sixth=(WorkoutLibraryJourneyTests WeeklyScheduleJourneyTests RunnerStreamlineJourneyTests)
   if [[ "$ci_shard" == 1 ]]; then
     for suite in "${full_second[@]}" "${full_third[@]}" "${full_fourth[@]}" "${full_fifth[@]}" "${full_sixth[@]}"; do

@@ -39,6 +39,9 @@ export interface ThresholdInput {
   metric: ThresholdMetric;
   value: number;
   effective_date: string;
+  /** Where the member says the value came from: typed in, or a suggestion
+   * from their intervals.icu settings they confirmed. */
+  source?: 'member' | 'intervals';
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,7 +55,7 @@ export function isCivilDate(value: unknown): value is string {
 /** Validate an untrusted body; returns the invalid field names, or the input. */
 export function parseThresholdInput(body: Record<string, unknown>): { ok: true; input: ThresholdInput } | { ok: false; fields: string[] } {
   const fields: string[] = [];
-  const { id, sport, metric, value, effective_date } = body;
+  const { id, sport, metric, value, effective_date, source } = body;
   if (typeof id !== 'string' || !UUID.test(id)) fields.push('id');
   const sportOk = typeof sport === 'string' && (THRESHOLD_SPORTS as readonly string[]).includes(sport);
   if (!sportOk) fields.push('sport');
@@ -66,8 +69,9 @@ export function parseThresholdInput(body: Record<string, unknown>): { ok: true; 
     fields.push('value');
   }
   if (!isCivilDate(effective_date)) fields.push('effective_date');
+  if (source !== undefined && source !== 'member' && source !== 'intervals') fields.push('source');
   for (const key of Object.keys(body)) {
-    if (!['id', 'sport', 'metric', 'value', 'effective_date'].includes(key)) fields.push(key);
+    if (!['id', 'sport', 'metric', 'value', 'effective_date', 'source'].includes(key)) fields.push(key);
   }
   if (fields.length) return { ok: false, fields };
   return {
@@ -78,6 +82,7 @@ export function parseThresholdInput(body: Record<string, unknown>): { ok: true; 
       metric: metric as ThresholdMetric,
       value: value as number,
       effective_date: effective_date as string,
+      source: (source as 'member' | 'intervals' | undefined) ?? 'member',
     },
   };
 }
@@ -159,7 +164,8 @@ export async function addAthleteThreshold(db: D1Database, userId: string, input:
     .first<AthleteThreshold & { user_id: string; deleted_at: number | null }>();
   if (!row) return { ok: false, error: 'id_conflict' };
   const same = row.user_id === userId && row.sport === input.sport && row.metric === input.metric
-    && row.value === input.value && row.effective_date === input.effective_date && row.deleted_at === null;
+    && row.value === input.value && row.effective_date === input.effective_date && row.source === source
+    && row.deleted_at === null;
   if (!same) return { ok: false, error: 'id_conflict' };
   const { user_id: _u, deleted_at: _d, ...threshold } = row;
   return { ok: true, threshold, deduplicated: (inserted.meta.changes ?? 0) === 0 };
@@ -178,4 +184,98 @@ export async function deleteAthleteThreshold(db: D1Database, userId: string, id:
     .bind(key, userId)
     .first<{ found: number }>();
   return row ? { ok: true } : { ok: false, error: 'not_found' };
+}
+
+// ---- Suggestions from intervals.icu (P7) --------------------------------
+//
+// Every activity intervals.icu sends carries the sport settings it was scored
+// with: `icu_ftp` (watts), `lthr` (bpm) and `threshold_pace` (metres per
+// second, the unit of the activity's own `pace`; intervals.icu doesn't
+// document it). The newest synced run and ride therefore say what the member's
+// intervals.icu settings are, with no extra request and no extra OAuth scope.
+// They are only suggestions: nothing is saved until the member confirms one.
+
+export interface ThresholdSuggestion {
+  sport: ThresholdSport;
+  metric: ThresholdMetric;
+  value: number;
+  /** The date of the workout the value was read from. */
+  as_of: string;
+}
+
+export interface IntervalsSettingsRow {
+  kind: string;
+  date: string;
+  icu_ftp: unknown;
+  lthr: unknown;
+  threshold_pace: unknown;
+}
+
+/** The sport settings in a stored activity's JSON, as one comparable SQL
+ * value. The activity sync rewrites a row's `raw` when this changes, so a
+ * setting corrected in intervals.icu reaches the suggestions. */
+export function thresholdSettingsSQL(raw: string): string {
+  return `(CASE WHEN json_valid(${raw}) THEN json_array(json_extract(${raw}, '$.icu_ftp'), `
+    + `json_extract(${raw}, '$.lthr'), json_extract(${raw}, '$.threshold_pace')) END)`;
+}
+
+/** A stored threshold value from an intervals.icu field, or null when the
+ * field is missing or outside the accepted range. */
+export function intervalsThresholdValue(metric: ThresholdMetric, raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null;
+  const value = metric === 'threshold_pace_s_per_km' ? Math.round(1000 / raw) : Math.round(raw);
+  const [lo, hi] = THRESHOLD_RANGES[metric];
+  return value >= lo && value <= hi ? value : null;
+}
+
+const FIELD_FOR: Record<ThresholdMetric, keyof IntervalsSettingsRow> = {
+  ftp_w: 'icu_ftp',
+  threshold_hr: 'lthr',
+  threshold_pace_s_per_km: 'threshold_pace',
+};
+
+/**
+ * One suggestion per sport and metric, from the newest activity that carries
+ * it (`rows` newest first). A value is suggested only when it is newer than
+ * everything the member has entered for that metric and differs from the
+ * value in effect on its date, so a value the member set later is never
+ * second-guessed and an accepted suggestion goes away.
+ */
+export function thresholdSuggestions(rows: readonly IntervalsSettingsRow[], thresholds: readonly AthleteThreshold[]): ThresholdSuggestion[] {
+  const out: ThresholdSuggestion[] = [];
+  for (const sport of THRESHOLD_SPORTS) {
+    for (const metric of THRESHOLD_METRICS[sport]) {
+      let found: { value: number; date: string } | null = null;
+      for (const row of rows) {
+        if (row.kind !== sport || !isCivilDate(row.date)) continue;
+        const value = intervalsThresholdValue(metric, row[FIELD_FOR[metric]]);
+        if (value !== null) { found = { value, date: row.date }; break; }
+      }
+      if (!found) continue;
+      const mine = thresholds.filter(t => t.sport === sport && t.metric === metric);
+      if (mine.some(t => t.effective_date > found.date)) continue;
+      if (thresholdOn(thresholds, sport, metric, found.date) === found.value) continue;
+      out.push({ sport, metric, value: found.value, as_of: found.date });
+    }
+  }
+  return out;
+}
+
+/** Suggestions from the member's synced intervals.icu runs and rides. */
+export async function getThresholdSuggestions(db: D1Database, userId: string): Promise<ThresholdSuggestion[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT kind, date,
+              json_extract(raw, '$.icu_ftp') AS icu_ftp,
+              json_extract(raw, '$.lthr') AS lthr,
+              json_extract(raw, '$.threshold_pace') AS threshold_pace
+         FROM external_activities
+        WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
+          AND kind IN ('ride', 'run') AND raw IS NOT NULL AND json_valid(raw)
+        ORDER BY date DESC, start_date_local_ms DESC, id DESC
+        LIMIT 200`,
+    )
+    .bind(userId)
+    .all<IntervalsSettingsRow>();
+  return thresholdSuggestions(results, await listAthleteThresholds(db, userId));
 }

@@ -222,17 +222,44 @@ struct AthleteThresholdInput: Equatable {
     let metric: ThresholdMetric
     let value: Double
     let effective_date: String
+    /// "intervals" for a confirmed suggestion; nil means typed in by the member.
+    var source: String? = nil
 
     /// The same value from the same date, whatever its id.
     func isRetry(of other: AthleteThresholdInput) -> Bool {
         sport == other.sport && metric == other.metric && value == other.value
-            && effective_date == other.effective_date
+            && effective_date == other.effective_date && source == other.source
     }
 
     /// Exactly the fields POST /api/me/thresholds accepts; it rejects others.
     var body: [String: Any] {
-        ["id": id, "sport": sport.rawValue, "metric": metric.rawValue,
-         "value": value, "effective_date": effective_date]
+        var body: [String: Any] = ["id": id, "sport": sport.rawValue, "metric": metric.rawValue,
+                                   "value": value, "effective_date": effective_date]
+        if let source { body["source"] = source }
+        return body
+    }
+}
+
+/// A value from the member's intervals.icu sport settings that differs from
+/// theirs (docs/plans/endurance-training-load P7). Nothing is saved until the
+/// member taps Use.
+struct ThresholdSuggestion: Decodable, Identifiable, Equatable {
+    let sport: String
+    let metric: String
+    let value: Double
+    /// YYYY-MM-DD: the date of the intervals.icu workout it was read from.
+    let as_of: String
+
+    var id: String { "\(sport).\(metric)" }
+    var thresholdSport: ThresholdSport? { ThresholdSport(rawValue: sport) }
+    var thresholdMetric: ThresholdMetric? { ThresholdMetric(rawValue: metric) }
+
+    /// The POST body that saves it, from its workout's date, marked as from
+    /// intervals.icu.
+    func input(id: String = UUID().uuidString.lowercased()) -> AthleteThresholdInput? {
+        guard let sport = thresholdSport, let metric = thresholdMetric, metric.range.contains(value) else { return nil }
+        return AthleteThresholdInput(id: id, sport: sport, metric: metric, value: value,
+                                     effective_date: as_of, source: "intervals")
     }
 }
 
@@ -240,6 +267,7 @@ extension APIClient {
     struct AthleteThresholdsResponse: Decodable { let thresholds: [AthleteThreshold] }
     struct AthleteThresholdResult: Decodable { let threshold: AthleteThreshold }
     struct AthleteThresholdDeleted: Decodable { let ok: Bool }
+    struct ThresholdSuggestionsResponse: Decodable { let suggestions: [ThresholdSuggestion] }
 
     /// GET /api/me/thresholds — the member's live thresholds.
     func athleteThresholds(jwt: String) async throws -> [AthleteThreshold] {
@@ -252,6 +280,12 @@ extension APIClient {
     func addAthleteThreshold(_ input: AthleteThresholdInput, jwt: String) async throws -> AthleteThreshold {
         let response: AthleteThresholdResult = try await post("api/me/thresholds", body: input.body, jwt: jwt)
         return response.threshold
+    }
+
+    /// GET /api/me/thresholds/suggestions — values from intervals.icu.
+    func thresholdSuggestions(jwt: String) async throws -> [ThresholdSuggestion] {
+        let response: ThresholdSuggestionsResponse = try await get("api/me/thresholds/suggestions", jwt: jwt)
+        return response.suggestions
     }
 
     /// DELETE /api/me/thresholds/:id — soft delete; repeating it succeeds.
@@ -267,12 +301,14 @@ final class AthleteThresholdsModel: ObservableObject {
     enum Phase: Equatable { case loading, ready, failed }
 
     @Published private(set) var thresholds: [AthleteThreshold] = []
+    @Published private(set) var suggestions: [ThresholdSuggestion] = []
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var isSaving = false
     @Published var errorMessage: String?
 
     private let jwt: () -> String?
     private let loader: (String) async throws -> [AthleteThreshold]
+    private let suggester: (String) async throws -> [ThresholdSuggestion]
     private let adder: (AthleteThresholdInput, String) async throws -> AthleteThreshold
     private let remover: (String, String) async throws -> Void
     private let onChanged: () -> Void
@@ -285,12 +321,14 @@ final class AthleteThresholdsModel: ObservableObject {
 
     init(jwt: @escaping () -> String?,
          loader: ((String) async throws -> [AthleteThreshold])? = nil,
+         suggester: @escaping (String) async throws -> [ThresholdSuggestion] = { _ in [] },
          adder: ((AthleteThresholdInput, String) async throws -> AthleteThreshold)? = nil,
          remover: ((String, String) async throws -> Void)? = nil,
          onChanged: @escaping () -> Void = {},
          onUnauthorized: @escaping (String) -> Void = { _ in }) {
         let api = APIClient()
         self.jwt = jwt
+        self.suggester = suggester
         if let loader {
             self.loader = loader
         } else {
@@ -313,11 +351,13 @@ final class AthleteThresholdsModel: ObservableObject {
     /// Scoped to the signed-in account that opened the screen.
     convenience init(auth: AuthModel) {
         let accountID = auth.userID
+        let api = APIClient()
         self.init(
             jwt: { [weak auth] in
                 guard let auth, auth.userID == accountID else { return nil }
                 return auth.featureJWT
             },
+            suggester: { token in try await api.thresholdSuggestions(jwt: token) },
             onChanged: { [weak auth] in auth?.noteAccountStatePersisted(for: accountID) },
             onUnauthorized: { [weak auth] refused in
                 // Only the bearer that was refused may end the session; a
@@ -336,6 +376,40 @@ final class AthleteThresholdsModel: ObservableObject {
         } catch {
             handle(error, token: token)
             if thresholds.isEmpty { phase = .failed }
+            return
+        }
+        await loadSuggestions(token: token)
+    }
+
+    /// Suggestions are extra: when they can't be loaded, the screen works
+    /// without them and keeps any it already shows.
+    private func loadSuggestions(token: String) async {
+        if let fresh = try? await suggester(token) { suggestions = fresh }
+    }
+
+    /// Saves a suggestion from its workout's date, marked as from intervals.icu.
+    /// Returns true when it was saved.
+    @discardableResult
+    func accept(_ suggestion: ThresholdSuggestion) async -> Bool {
+        guard !isSaving, let fresh = suggestion.input(), let token = jwt() else { return false }
+        let input = unconfirmed.map { $0.isRetry(of: fresh) ? $0 : fresh } ?? fresh
+        isSaving = true
+        defer { isSaving = false }
+        errorMessage = nil
+        do {
+            let saved = try await adder(input, token)
+            unconfirmed = nil
+            thresholds.removeAll { $0.id == saved.id }
+            thresholds.append(saved)
+            suggestions.removeAll { $0.id == suggestion.id }
+            onChanged()
+            await loadSuggestions(token: token)
+            return true
+        } catch {
+            unconfirmed = Self.isRejection(error) ? nil : input
+            handle(error, token: token, prefix: Self.isRejection(error)
+                   ? "Nothing was saved" : "It may not have been saved")
+            return false
         }
     }
 
@@ -352,6 +426,7 @@ final class AthleteThresholdsModel: ObservableObject {
             unconfirmed = nil
             thresholds.removeAll { $0.id == saved.id }
             thresholds.append(saved)
+            suggestions.removeAll { $0.sport == saved.sport && $0.metric == saved.metric }
             if let old = draft.replacing {
                 do {
                     try await remover(old.id, token)

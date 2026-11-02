@@ -49,6 +49,15 @@ struct AthleteThresholdsView: View {
                         Label(sport.title, systemImage: sport.glyph)
                     }
                 }
+                if !model.suggestions.isEmpty {
+                    Section {
+                        ForEach(model.suggestions) { suggestion in suggestionRow(suggestion) }
+                    } header: {
+                        Text("From intervals.icu")
+                    } footer: {
+                        Text("Your intervals.icu settings on your latest workout there. Tap Use to save a value from that date; nothing changes until you do.")
+                    }
+                }
                 if !model.thresholds.isEmpty {
                     Section {
                         ForEach(history) { row in historyRow(row) }
@@ -147,7 +156,7 @@ struct AthleteThresholdsView: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(metric.title).foregroundStyle(Theme.text)
-                    Text("From \(Self.day(row.effective_date))\(row.source == "coach" ? " · set by your coach" : "")")
+                    Text("From \(Self.day(row.effective_date))\(Self.sourceNote(row.source))")
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
                 Spacer()
@@ -163,6 +172,37 @@ struct AthleteThresholdsView: View {
             Button("Remove", role: .destructive) { confirmingRemove = row }
         }
         .accessibilityIdentifier("thresholds.history.\(row.id)")
+    }
+
+    static func sourceNote(_ source: String) -> String {
+        switch source {
+        case "coach": return " · set by your coach"
+        case "intervals": return " · from intervals.icu"
+        default: return ""
+        }
+    }
+
+    @ViewBuilder
+    private func suggestionRow(_ suggestion: ThresholdSuggestion) -> some View {
+        if let sport = suggestion.thresholdSport, let metric = suggestion.thresholdMetric {
+            HStack(spacing: 12) {
+                Image(systemName: sport.glyph).foregroundStyle(Theme.muted).frame(width: 24)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(metric.title).foregroundStyle(Theme.text)
+                    Text("\(sport.title) · \(ThresholdFormat.value(suggestion.value, metric: metric, unit: unit)) on \(Self.day(suggestion.as_of))")
+                        .font(.caption).foregroundStyle(Theme.muted).monospacedDigit()
+                }
+                Spacer()
+                Button("Use") { Task { await model.accept(suggestion) } }
+                    .buttonStyle(.bordered)
+                    .tint(Theme.accent)
+                    .disabled(model.isSaving)
+                    .accessibilityLabel("Use \(ThresholdFormat.value(suggestion.value, metric: metric, unit: unit)) for \(sport.title) \(metric.title)")
+                    .accessibilityIdentifier("thresholds.suggestion.\(suggestion.id)")
+            }
+            .frame(minHeight: 44)
+        }
     }
 
     private static let dayFormat: DateFormatter = {

@@ -1,6 +1,6 @@
 # Planned runs with pace and heart rate targets
 
-Slug: planned-runs · Status: active · Updated: 2026-10-31 · Theme: connected-training
+Slug: planned-runs · Status: active · Updated: 2026-11-02 · Theme: connected-training
 
 ## Goal
 
@@ -141,6 +141,24 @@ intervals.icu, which stays the store of completed runs.
   - Adding "Outdoor Run" from the exercise list says to tap it afterwards to
     plan steps.
 
+- [x] **P6 — Steps laid out like a running watch**
+  - The owner asked on 2026-11-02, after opening the first planned run,
+    for steps laid out the way Garmin and other apps show a structured
+    workout. Before this, steps read as plain lines such as "805 m
+    warm-up" and "3 mi".
+  - Wherever a planned run's steps show (workout details and preview,
+    Today, the recorder's start screen), the total comes first ("TOTAL
+    3.5 mi", or "26 min + 3.2 km"). Each step is then a row with a colored
+    bar and its type (Warm up, Run, Recover, Cool down), its distance or
+    time, and its target ("Heart rate 145–158 bpm", "Pace 8:03–8:51 /mi" or
+    "No target"). A repeat is an outlined "REPEAT 4×" block holding its
+    steps.
+  - In miles, a distance under a kilometer that is within a meter of a
+    tenth or a quarter mile reads in miles ("0.5 mi", spoken "0.5
+    miles"). Track distances such as 400 m and 800 m still read in meters.
+    One-line summaries (the week strip and the step banner) keep their
+    format.
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
@@ -185,6 +203,9 @@ migration, since P5 saves through the existing slot route.
   fresh, and the spoken step wording in miles and kilometers.
   `RunRecorderTests` covers a planned run speaking its first and next
   steps, one heart rate cue, and the end of the plan.
+- P6: `RunPlanTests` covers the total with repeats counted, the step type,
+  amount and target titles, the repeat title, and short distances in miles
+  versus track distances in meters, written and spoken.
 - P5: `RunPlanEditingTests` covers saving steps in the plan's format and
   reading them back, the draft's add, move, edit and remove operations,
   repeat defaults, the server's limits and each step problem, and pace and

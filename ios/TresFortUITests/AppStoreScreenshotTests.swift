@@ -20,8 +20,8 @@ final class AppStoreScreenshotTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                                "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.navigationBars["Today"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Today"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
         if UIDevice.current.userInterfaceIdiom == .phone {
             XCTAssertTrue(app.tabBars.buttons["Today"].exists)
@@ -53,7 +53,7 @@ final class AppStoreScreenshotTests: XCTestCase {
     }
 
     private func tap(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen))
         for _ in 0..<5 where !element.isHittable { app.swipeUp() }
         XCTAssertTrue(element.isHittable)
         element.tap()
@@ -67,24 +67,24 @@ final class AppStoreScreenshotTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         let recovery = app.buttons["today.partner"]
-        XCTAssertTrue(recovery.waitForExistence(timeout: 10))
+        XCTAssertTrue(recovery.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(recovery.label, "Partner workout setup")
         let start = app.buttons["today.startWorkout"]
-        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertTrue(start.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(start.isEnabled, "A saved ready lane reserves ordinary Today until closed")
         recovery.tap()
         let cancel = app.buttons["Cancel empty start"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.waitForExistence(timeout: UITestWait.screen))
         cancel.tap()
         let released = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND enabled == true"), object: start)
-        XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: UITestWait.screen), .completed)
         let rowGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: recovery)
-        XCTAssertEqual(XCTWaiter.wait(for: [rowGone], timeout: 5), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [rowGone], timeout: UITestWait.screen), .completed,
                        "A closed lane leaves no partner row on Today")
         // The public candidate includes manual partner training from the menu.
         app.buttons["today.moreWaysToTrain"].tap()
-        XCTAssertTrue(app.buttons["today.trainTogether"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["today.trainTogether"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testCaptureManualStationOnIPad() throws {
@@ -92,7 +92,7 @@ final class AppStoreScreenshotTests: XCTestCase {
         #if APP_STORE_BUILD
         let app = launch()
         tap(app.buttons["today.station"], in: app)
-        XCTAssertTrue(app.staticTexts["station.manualSetup"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["station.manualSetup"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["station.done"].isHittable)
         XCTAssertFalse(app.buttons["station.enableCamera"].exists)
         XCTAssertFalse(app.buttons["station.recordTest"].exists)
@@ -106,12 +106,12 @@ final class AppStoreScreenshotTests: XCTestCase {
         let app = launch()
         capture("01-today")
         tap(app.buttons["today.chooseWorkout"], in: app)
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["Strength A"].exists)
         capture("03-workouts")
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
         tap(app.buttons["today.calendar"], in: app)
-        XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: UITestWait.screen))
         capture("04-history")
     }
 
@@ -119,7 +119,7 @@ final class AppStoreScreenshotTests: XCTestCase {
         let app = launch()
         tap(app.buttons["today.startWorkout"], in: app)
         let log = app.buttons["LOG SET 1"]
-        XCTAssertTrue(log.waitForExistence(timeout: 5))
+        XCTAssertTrue(log.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(log.isHittable, "Logging must be available without scrolling")
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         XCTAssertTrue(app.frame.contains(log.frame))
@@ -127,7 +127,7 @@ final class AppStoreScreenshotTests: XCTestCase {
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
         // Finishing early lands on the same finish screen as the last set.
-        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["FINISH"].isHittable)
         XCTAssertFalse(app.textViews["feedback.note"].exists)
         capture("05-finish-summary")
@@ -135,12 +135,12 @@ final class AppStoreScreenshotTests: XCTestCase {
         // The feedback Form's note editor is lazy and appears only after
         // scrolling the foreground Form, not the finish screen beneath it.
         let toolbar = app.navigationBars["Feedback"]
-        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
+        XCTAssertTrue(toolbar.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.collectionViews.count, 1)
         let form = app.collectionViews.firstMatch
         UITestScrolling.reveal(app.textViews["feedback.note"], in: app,
                                maxAttempts: 6, surface: form)
-        XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: UITestWait.screen))
         tap(app.textViews["feedback.note"], in: app)
         app.textViews["feedback.note"].typeText("Steady reps today. Keep this weight next time.")
         if app.buttons["Done"].isHittable { app.buttons["Done"].tap() }
@@ -150,7 +150,7 @@ final class AppStoreScreenshotTests: XCTestCase {
         // the privacy note before capturing, without scrolling the screen
         // underneath the sheet or the note's TextEditor.
         let privacy = app.staticTexts["Optional. Saved feedback is shared with your coach and kept out of group feeds."]
-        XCTAssertTrue(privacy.waitForExistence(timeout: 5))
+        XCTAssertTrue(privacy.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(form.exists)
         for _ in 0..<4 {
             let top = max(form.frame.minY, toolbar.frame.maxY) + 12

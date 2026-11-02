@@ -193,24 +193,26 @@ integration or social breadth.
   with spoken on/off-target cues. Completed runs still upload to
   intervals.icu. P0's step format, migration 0058 and MCP tools, P1's
   display in the app with a Start run button, P2's step-by-step guidance
-  while recording, P3's spoken step and target cues and P5's in-app step
-  editor are in the repository; P4 is the owner's real runs.
+  while recording, P3's spoken step and target cues, P5's in-app step
+  editor and P6's watch-style step layout are in the repository; P4 is the
+  owner's real runs.
 - [Real training load for endurance workouts](endurance-training-load/plan.md) —
   **active**; members set FTP, threshold heart rate and threshold pace in the
   app, and one Worker load engine gives every run, ride and swim a labeled
   power, heart-rate or pace load from Apple Health, the recorder, `.fit`
   uploads and later Garmin, keeping intervals.icu's figure when it has one.
   P0's thresholds store and engine, P1's loads on imported workouts, P2's
-  thresholds screen and load display and P3's Apple Health heart-rate and
-  power streams are in the repository; P4 adds `.fit` file import.
+  thresholds screen and load display, P3's Apple Health heart-rate and
+  power streams, P4's `.fit` file import and P7's suggestions from
+  intervals.icu are in the repository; P6 is next and P5 waits on Garmin.
 
 ### Platform (`platform`)
 
-- [Positioning and open source](positioning-and-open-source/plan.md) —
-  **active**; lead every surface with "Everything you train. One plan." and
-  AI as optional, then publish a cleaned open-source snapshot. Repository and
-  website copy are live (PR #296); the App Store listing waits for the version
-  after 1.0, and going public needs the owner's written yes.
+- [Positioning](positioning-and-open-source/plan.md) — **active**; lead every
+  surface with "Everything you train. One plan." and AI as optional.
+  Repository and website copy are live (PR #296); in-app copy is next and the
+  App Store listing waits for the version after 1.0. Open-sourcing was
+  deferred by the owner on 2026-11-02.
 - [Plan on the web](web-app/plan.md) — **planned**; sign in at
   `app.tresfort.app` with the same Apple account to plan training and analyze
   trends with a big screen and a mouse: calendar, workouts, planned runs,

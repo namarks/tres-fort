@@ -1,16 +1,15 @@
-# Positioning and open source
+# Positioning (open source deferred)
 
-Slug: positioning-and-open-source · Status: active · Updated: 2026-11-01 · Theme: platform
+Slug: positioning-and-open-source · Status: active · Updated: 2026-11-02 · Theme: platform
 
 ## Goal
 
 Present Très Fort as one plan for everything a member trains (lifting, runs,
-rides, swims and other activities) with AI as an optional add-on, and publish
-the code as an open-source project people can contribute to. The owner chose the
-positioning on 2026-11-01: "Everything you train. One plan." Done means the
-repository, website, in-app copy and App Store listing all lead with that, and a
-cleaned public repository exists with a license, contributor guide and
-self-hosting notes, published only after the owner's written approval.
+rides, swims and other activities) with AI as an optional add-on. The owner
+chose the positioning on 2026-11-01: "Everything you train. One plan." Done
+means the repository, website, in-app copy and App Store listing all lead with
+that. Open-sourcing was assessed in the same thread and deferred by the owner
+on 2026-11-02 (see Notes).
 
 ## Phases
 
@@ -33,40 +32,21 @@ self-hosting notes, published only after the owner's written approval.
     for the first App Store version that ships the run recorder. Version 1.0
     (build 55) keeps its current listing, because it has no run recorder and is
     already in review.
-- [ ] **P3 — Open-source decisions**
-  - The owner picks the license (recommended: Apache-2.0 with the name and icon
-    kept as trademarks), a fresh public repository or flipping this one
-    (recommended: fresh, from a cleaned snapshot), and how far self-hosting is
-    supported.
-- [ ] **P4 — Public snapshot preparation**
-  - Remove family details and personal provider identifiers from docs; move the
-    Apple team ID, bundle IDs, Cloudflare IDs and Worker URL into per-deployer
-    settings; add LICENSE, NOTICE, CONTRIBUTING, SECURITY, a code of conduct,
-    issue and PR templates and SELF-HOSTING; run a dedicated secret scanner over
-    the snapshot; CI passes on a private copy.
-- [ ] **P5 — Publish**
-  - Create the public repository, push the snapshot, enable branch protection
-    and first-time-contributor approval for Actions, and re-point the owner's
-    Mac, CI checks and project at it.
 
 ## Execution frontier
 
 - P1
-- P3
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P2 | gated_by | external:owner-app-store-next-version | The listing changes with the first App Store version after 1.0 that includes the run recorder; 1.0 is in review and must not be pulled. |
-| P3 | gated_by | external:owner-open-source-decisions | License, repository and self-hosting choices are the owner's. |
-| P5 | gated_by | external:owner-public-repo-approval | Publishing code cannot be undone once cloned; it needs the owner's written yes. |
 
 ## Next step
 
-**Now (@owner):** Choose the P3 options (license, fresh repository or flip,
-self-hosting level); whether the project should earn money affects the license
-choice. P1 in-app copy can proceed in parallel.
+**Now (@agent):** P1 in-app copy, so onboarding and Profile → Coach treat AI
+as an add-on.
 
 ## Notes / open questions
 
@@ -74,8 +54,13 @@ choice. P1 in-app copy can proceed in parallel.
   account) is app work outside this plan: typed-in runs, rides and swims
   currently require intervals.icu, and duplicate merging when both sources are
   connected needs checking with real data.
-- A pattern scan of all branches on 2026-11-01 found no committed credentials.
-  Personal details were found in docs/MULTISPORT.md, docs/dad-quickstart.md,
-  docs/MULTISPORT-M0-spike.md and the mirrored TestFlight feedback issues.
-- Keep the Très Fort name as a trademark question for the owner; it is not
-  required to open-source.
+- Open source, deferred: on 2026-11-02 the owner decided to keep Très Fort
+  closed source for now; the repository stays private. The assessment stands
+  if this is revisited as its own plan: no committed credentials were found by
+  a pattern scan of all branches on 2026-11-01; personal details sit in
+  docs/MULTISPORT.md, docs/dad-quickstart.md, docs/MULTISPORT-M0-spike.md and
+  the mirrored TestFlight feedback issues; publish a cleaned snapshot as a new
+  repository rather than flipping this one; and because the owner wants to earn
+  from the app, AGPL-3.0 with a contributor license agreement (or FSL) fits
+  better than Apache-2.0. Repository visibility changes only with the owner's
+  written approval.

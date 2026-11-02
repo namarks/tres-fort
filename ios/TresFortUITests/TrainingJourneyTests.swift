@@ -16,7 +16,7 @@ final class TrainingJourneyTests: XCTestCase {
         // weight override would mask unit changes made through the UI.
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -31,21 +31,21 @@ final class TrainingJourneyTests: XCTestCase {
         let app = launch("sign-in")
         // Fixture mode substitutes only the provider button: exercise sign-in
         // intent without launching AuthenticationServices or sending credentials.
-        XCTAssertTrue(app.buttons["Sign in with Apple"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Sign in with Apple"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["Create a workout"].exists)
         XCTAssertFalse(app.buttons["Reviewer sign-in"].exists)
         XCTAssertFalse(app.secureTextFields["review.password"].exists)
         screenshot("fresh-sign-in")
         app.buttons["Sign in with Apple"].tap()
-        XCTAssertTrue(app.staticTexts["Sign-in requested (synthetic)"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sign-in requested (synthetic)"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testVerifiedEmptyPlanCanCreateRoutineAndFirstWorkout() {
         let app = launch("empty")
-        XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: UITestWait.screen))
         screenshot("verified-empty-plan")
         app.buttons["Create a workout"].tap()
-        XCTAssertTrue(app.navigationBars["Add exercises"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Add exercises"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.textFields["createWorkout.name"].exists)
         let selection = app.buttons["exercisePicker.exercise.synthetic-exercise"]
         reveal(selection, in: app)
@@ -54,28 +54,28 @@ final class TrainingJourneyTests: XCTestCase {
         // sending a tap to that control, and fail at this boundary if the
         // single exercise tap was not accepted.
         expectation(for: NSPredicate(format: "selected == true"), evaluatedWith: selection)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         let review = app.buttons["createWorkout.review"]
         expectation(for: NSPredicate(format: "enabled == true AND label == %@", "Review workout (1)"),
                     evaluatedWith: review)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         review.tap()
-        XCTAssertTrue(app.navigationBars["Review workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Review workout"].waitForExistence(timeout: UITestWait.screen))
         let name = app.textFields["createWorkout.name"]
-        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Workout A")
+        XCTAssertTrue(name.waitForExistence(timeout: UITestWait.screen)); name.tap(); name.typeText("Workout A")
         reveal(app.buttons["createWorkout.create"], in: app)
         app.buttons["createWorkout.create"].tap()
-        XCTAssertTrue(app.navigationBars["Edit Workout A"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Edit Workout A"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["Create workout"].exists)
         screenshot("created-first-workout")
     }
 
     func testOrdinarySetLogsAndCompletesThroughAcknowledgement() {
         let app = launch("ordinary")
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
         screenshot("ordinary-workout")
         app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["rest.done"].exists)
         // Finishing stays explicit, and its pinned action is a full-size
         // target that needs no scrolling.
@@ -86,7 +86,7 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
         screenshot("logged-ready-to-finish")
         finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: UITestWait.screen))
         screenshot("acknowledged-completion")
     }
 
@@ -95,14 +95,14 @@ final class TrainingJourneyTests: XCTestCase {
         for (fixture, name) in [("unilateral-row", "Renegade Row"),
                                 ("unilateral-press", "Single-Arm Dumbbell Shoulder Press")] {
             let app = launch(fixture)
-            XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
             XCTAssertEqual(app.buttons["runner.reps"].value as? String, "10")
             XCTAssertTrue(app.buttons["runner.reps"].label.contains("per side"))
             XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "3×10 per side")).firstMatch.exists)
             let edit = app.buttons["Edit next set for " + name]
             reveal(edit, in: app); edit.tap()
             let reps = app.textFields["Reps"]
-            XCTAssertTrue(reps.waitForExistence(timeout: 5))
+            XCTAssertTrue(reps.waitForExistence(timeout: UITestWait.screen))
             XCTAssertTrue(reps.label.contains("Reps per side"))
             XCTAssertEqual(reps.value as? String, "10")
             app.buttons["Save"].tap()
@@ -113,7 +113,7 @@ final class TrainingJourneyTests: XCTestCase {
             app.buttons["LOG SET 1"].tap()
             // This fixture prescribes zero rest, so advance directly to the
             // next physical set without inventing a timer to dismiss.
-            XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: UITestWait.screen))
             XCTAssertFalse(app.buttons["rest.done"].exists)
             XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
                            "sets:1;reps:10;total:20")
@@ -121,7 +121,7 @@ final class TrainingJourneyTests: XCTestCase {
             app.buttons["runner.outline"].tap()
             let correct = app.buttons["Edit set 1 of " + name]
             reveal(correct, in: app); correct.tap()
-            XCTAssertTrue(reps.waitForExistence(timeout: 5))
+            XCTAssertTrue(reps.waitForExistence(timeout: UITestWait.screen))
             XCTAssertTrue(reps.label.contains("Reps per side"))
             XCTAssertEqual(reps.value as? String, "10")
             app.buttons["Cancel"].tap()
@@ -137,12 +137,12 @@ final class TrainingJourneyTests: XCTestCase {
         let swap = app.buttons["runner.swap-exercise"]
         reveal(swap, in: app)
         swap.tap()
-        XCTAssertTrue(app.navigationBars["Swap exercise"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Swap exercise"].waitForExistence(timeout: UITestWait.screen))
         screenshot("workout-swap-picker")
         app.buttons.containing(.staticText, identifier: "Dumbbell Goblet Squat").firstMatch.tap()
         app.buttons["runner.confirm-swap"].tap()
         app.buttons["runner.outline.done"].tap()
-        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["LOG SET 2"].exists)
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, "5")
         XCTAssertEqual(app.buttons["runner.weight"].value as? String, "0")
@@ -151,16 +151,16 @@ final class TrainingJourneyTests: XCTestCase {
         app.buttons["LOG SET 2"].tap()
         let evidence = NSPredicate(format: "value == %@", "original:1;replacement:1;plan:1")
         expectation(for: evidence, evaluatedWith: app.staticTexts["fixture.scenario"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
     }
 
     func testBodyweightAndTimedRunnerFixtures() {
         let bodyweight = launch("bodyweight")
-        XCTAssertTrue(bodyweight.buttons["LOG SET 1"].waitForExistence(timeout: 10))
+        XCTAssertTrue(bodyweight.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
         screenshot("bodyweight-workout")
         bodyweight.terminate()
         let timed = launch("timed")
-        XCTAssertTrue(timed.staticTexts["PLANK"].waitForExistence(timeout: 10))
+        XCTAssertTrue(timed.staticTexts["PLANK"].waitForExistence(timeout: UITestWait.screen))
         screenshot("timed-workout")
     }
 
@@ -170,13 +170,13 @@ final class TrainingJourneyTests: XCTestCase {
         reveal(start, in: app)
         start.tap()
         let remaining = app.staticTexts["runner.timer.remaining"]
-        XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+        XCTAssertTrue(remaining.waitForExistence(timeout: UITestWait.screen))
         let initial = Int(remaining.label.dropLast())!
 
         for name in ["Stationary Bike", "Push-Up", "Goblet Squat"] {
             reveal(app.buttons["runner.outline"], in: app)
             app.buttons["runner.outline"].tap()
-            XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: UITestWait.screen))
             let exercise = app.buttons[name]
             reveal(exercise, in: app)
             XCTAssertFalse(exercise.isEnabled, "Browsing cannot replace the executing timed slot")
@@ -185,7 +185,7 @@ final class TrainingJourneyTests: XCTestCase {
             XCTAssertFalse(app.buttons["LOG SET 1"].exists)
             screenshot("timer-outline-\(name)")
             app.buttons["Return to timer"].tap()
-            XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+            XCTAssertTrue(remaining.waitForExistence(timeout: UITestWait.screen))
             XCTAssertLessThan(Int(remaining.label.dropLast())!, initial)
             XCTAssertFalse(start.exists)
         }
@@ -196,7 +196,7 @@ final class TrainingJourneyTests: XCTestCase {
         if restDone.waitForExistence(timeout: 3) { restDone.tap() }
         XCTAssertFalse(remaining.exists)
         // Only the bike was logged; the following exercise still has set 1.
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
         let evidence = app.staticTexts["fixture.scenario"].value as? String ?? ""
         XCTAssertTrue(evidence.hasPrefix("bike:1;other:0;seconds:"))
         XCTAssertTrue(evidence.hasSuffix(";warmup:1"))
@@ -209,14 +209,14 @@ final class TrainingJourneyTests: XCTestCase {
         start.tap()
         reveal(app.buttons["runner.outline"], in: app)
         app.buttons["runner.outline"].tap()
-        XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["runner.preview.timer"].exists)
         let closed = NSPredicate(format: "exists == false")
         expectation(for: closed, evaluatedWith: app.navigationBars["Workout outline"])
         waitForExpectations(timeout: 25)
         let restDone = app.buttons["rest.done"]
         if restDone.waitForExistence(timeout: 3) { restDone.tap() }
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["STOP & LOG"].exists)
         XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
                        "bike:1;other:0;seconds:15;warmup:1")
@@ -225,7 +225,7 @@ final class TrainingJourneyTests: XCTestCase {
 
     func testPendingSetRemainsVisibleUntilAcknowledged() {
         let app = launch("pending")
-        XCTAssertTrue(app.staticTexts["Set queued on this device"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Set queued on this device"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["Sets queued on this device"].exists)
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
         screenshot("pending-write")
@@ -277,7 +277,7 @@ final class TrainingJourneyTests: XCTestCase {
         let enter = app.buttons["Enter Très Fort"]
         reveal(enter, in: app)
         enter.tap()
-        XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testWeightEntryAndKeyboardCanSaveExactLoad() {
@@ -287,7 +287,7 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("journey-load-controls")
         weight.tap()
         let entry = app.textFields["weight.entry"]
-        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        XCTAssertTrue(entry.waitForExistence(timeout: UITestWait.screen))
         entry.doubleTap()
         entry.typeText("47.5")
         XCTAssertEqual(entry.value as? String, "47.5")
@@ -352,7 +352,7 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["45 × 5"].exists)
         XCTAssertTrue(app.staticTexts["Edit rejected (HTTP 422)."].exists)
         reload.tap()
-        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(edit.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(edit.isEnabled)
     }
 
@@ -363,7 +363,7 @@ final class TrainingJourneyTests: XCTestCase {
             : fixture == "load-failure" ? app.buttons["Try again"]
             : fixture == "ordinary" ? app.buttons["LOG SET 1"]
             : app.staticTexts["Ready to finish"]
-        XCTAssertTrue(ready.waitForExistence(timeout: 10))
+        XCTAssertTrue(ready.waitForExistence(timeout: UITestWait.screen))
         // iOS 26.2's contrast heuristic flags even opaque #F4F4F5 over this
         // dark gradient. Palette policy tests and measured screenshot evidence
         // cover contrast; these runtime audits enforce targets/text semantics.

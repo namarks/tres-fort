@@ -21,6 +21,11 @@ final class AthleteThresholdsTests: XCTestCase {
         XCTAssertEqual(response.thresholds.first?.value, 250)
         XCTAssertEqual(response.thresholds.first?.thresholdMetric, .ftp)
         XCTAssertEqual(response.thresholds.first?.thresholdSport, .ride)
+
+        let suggestions = try JSONDecoder().decode(APIClient.ThresholdSuggestionsResponse.self, from: Data(
+            #"{"suggestions":[{"sport":"ride","metric":"ftp_w","value":251,"as_of":"2026-10-20"}]}"#.utf8))
+        XCTAssertEqual(suggestions.suggestions.first?.thresholdMetric, .ftp)
+        XCTAssertEqual(suggestions.suggestions.first?.id, "ride.ftp_w")
     }
 
     func testValueInEffectMatchesTheWorker() {
@@ -80,6 +85,12 @@ final class AthleteThresholdsTests: XCTestCase {
         draft.text = "160"
         let input = try XCTUnwrap(draft.input(id: "id-1", unit: .miles))
         XCTAssertEqual(Set(input.body.keys), ["id", "sport", "metric", "value", "effective_date"])
+        // A typed value sends no source; a suggestion sends "intervals".
+        let suggested = try XCTUnwrap(ThresholdSuggestion(sport: "run", metric: "threshold_pace_s_per_km",
+                                                          value: 270, as_of: "2026-10-25").input(id: "id-2"))
+        XCTAssertEqual(Set(suggested.body.keys), ["id", "sport", "metric", "value", "effective_date", "source"])
+        XCTAssertEqual(suggested.effective_date, "2026-10-25")
+        XCTAssertNil(ThresholdSuggestion(sport: "ride", metric: "ftp_w", value: 5000, as_of: "2026-10-25").input())
         XCTAssertEqual(input.body["metric"] as? String, "threshold_hr")
         XCTAssertEqual(input.body["value"] as? Double, 160)
         XCTAssertEqual(input.body["effective_date"] as? String, "2026-10-15")
@@ -236,6 +247,73 @@ final class AthleteThresholdsModelTests: XCTestCase {
         let model = AthleteThresholdsModel(jwt: { nil }, loader: { _ in XCTFail("no request"); return [] })
         await model.load()
         XCTAssertEqual(model.phase, .failed)
+    }
+
+    private let ftpSuggestion = ThresholdSuggestion(sport: "ride", metric: "ftp_w", value: 251, as_of: "2026-10-20")
+
+    func testUsingASuggestionSavesItFromItsDateAsIntervals() async {
+        var posted: [AthleteThresholdInput] = []
+        var changes = 0
+        var offered = [ftpSuggestion]
+        let model = AthleteThresholdsModel(
+            jwt: { "jwt" },
+            loader: { _ in [] },
+            suggester: { _ in offered },
+            adder: { input, _ in
+                posted.append(input)
+                offered = []
+                return AthleteThreshold(id: input.id, sport: input.sport.rawValue, metric: input.metric.rawValue,
+                                        value: input.value, effective_date: input.effective_date,
+                                        source: input.source ?? "member", created_at: 2)
+            },
+            remover: { _, _ in },
+            onChanged: { changes += 1 })
+        await model.load()
+        XCTAssertEqual(model.suggestions, [ftpSuggestion])
+
+        let ok = await model.accept(ftpSuggestion)
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(posted.first?.value, 251)
+        XCTAssertEqual(posted.first?.effective_date, "2026-10-20")
+        XCTAssertEqual(posted.first?.body["source"] as? String, "intervals")
+        XCTAssertEqual(model.thresholds.map(\.source), ["intervals"])
+        XCTAssertTrue(model.suggestions.isEmpty)
+        XCTAssertEqual(changes, 1)
+    }
+
+    func testSuggestionsThatFailToLoadLeaveTheScreenWorking() async {
+        let model = AthleteThresholdsModel(
+            jwt: { "jwt" },
+            loader: { _ in [storedFTP] },
+            suggester: { _ in throw APIError.http(404, "") },
+            adder: { input, _ in savedRow(input) },
+            remover: { _, _ in })
+        await model.load()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertTrue(model.suggestions.isEmpty)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testAnUnconfirmedSuggestionRetryReusesItsID() async {
+        var ids: [String] = []
+        var failNext = true
+        let model = AthleteThresholdsModel(
+            jwt: { "jwt" },
+            loader: { _ in [] },
+            suggester: { _ in [] },
+            adder: { input, _ in
+                ids.append(input.id)
+                if failNext { failNext = false; throw URLError(.networkConnectionLost) }
+                return savedRow(input)
+            },
+            remover: { _, _ in })
+        let first = await model.accept(ftpSuggestion)
+        XCTAssertFalse(first)
+        let second = await model.accept(ftpSuggestion)
+        XCTAssertTrue(second)
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(ids[0], ids[1])
     }
 }
 

@@ -1,5 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
-import { fetchMe, fetchState, signOut, SignedOutError, type Me, type StateResponse } from './api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  fetchExercises,
+  fetchMe,
+  fetchState,
+  isVersionConflict,
+  ApiError,
+  planWrites,
+  signOut,
+  SignedOutError,
+  type Me,
+  type Reviewed,
+  type StateResponse,
+} from './api';
+import { describeWriteError } from './editing';
+import { WorkoutsPage, type Catalog, type Write } from './WorkoutEditor';
 import {
   activityLoads,
   calendarInputs,
@@ -56,11 +70,35 @@ export function App() {
     return () => { live = false; };
   }, []);
 
+  // After a write, the page shows the plan as the API now has it.
+  const reload = useCallback(async () => {
+    const state = await fetchState();
+    setLoad((current) => current.kind === 'ready' ? { ...current, state } : current);
+  }, []);
+
   if (load.kind === 'loading') return <main className="centered" aria-busy="true"><p className="muted">Loading your plan…</p></main>;
   if (load.kind === 'signed_out') return <SignIn />;
   if (load.kind === 'error') return <main className="centered"><p role="alert">{load.message}</p></main>;
-  return <Planner me={load.me} state={load.state} onSignedOut={() => setLoad({ kind: 'signed_out' })} />;
+  return <Planner me={load.me} state={load.state} reload={reload} onSignedOut={() => setLoad({ kind: 'signed_out' })} />;
 }
+
+type View = { kind: 'calendar' } | { kind: 'workouts'; workoutId: string | null };
+
+/** `#workouts` and `#workouts/<id>` open the workout editor; anything else the calendar. */
+function viewFromHash(hash: string): View {
+  const match = /^#workouts(?:\/(.+))?$/.exec(hash);
+  if (!match) return { kind: 'calendar' };
+  return { kind: 'workouts', workoutId: match[1] ? decodeURIComponent(match[1]) : null };
+}
+
+function hashFor(view: View): string {
+  if (view.kind === 'calendar') return '#calendar';
+  return view.workoutId ? `#workouts/${encodeURIComponent(view.workoutId)}` : '#workouts';
+}
+
+type Notice = { kind: 'conflict' | 'error'; text: string };
+
+const CONFLICT_TEXT = 'Your plan changed in the app or with your coach since this page loaded, so it has been reloaded. Check it, then make your change again.';
 
 function SignIn() {
   const problem = new URLSearchParams(window.location.search).get('signin');
@@ -89,7 +127,113 @@ function AppleLogo() {
   );
 }
 
-function Planner({ me, state, onSignedOut }: { me: Me; state: StateResponse; onSignedOut: () => void }) {
+function Planner({ me, state, reload, onSignedOut }: {
+  me: Me;
+  state: StateResponse;
+  reload: () => Promise<void>;
+  onSignedOut: () => void;
+}) {
+  const [view, setView] = useState<View>(() => viewFromHash(window.location.hash));
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+
+  useEffect(() => {
+    const onHash = () => setView(viewFromHash(window.location.hash));
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  // The exercise list is only needed for editing, so it loads with that view.
+  useEffect(() => {
+    if (view.kind !== 'workouts' || catalog) return;
+    setCatalog({ kind: 'loading' });
+    fetchExercises()
+      .then((exercises) => setCatalog({ kind: 'ready', exercises }))
+      .catch((error: unknown) => {
+        if (error instanceof SignedOutError) onSignedOut();
+        else setCatalog({ kind: 'error' });
+      });
+  }, [view.kind, catalog, onSignedOut]);
+
+  function go(next: View) {
+    window.location.hash = hashFor(next);
+    setView(next);
+  }
+
+  const write: Write = async (action) => {
+    const plan = state.plan;
+    setBusy(true);
+    setNotice(null);
+    try {
+      let at: Reviewed;
+      if (plan) {
+        at = { planId: plan.id, version: plan.version };
+      } else {
+        // A new account has no plan yet; its first workout starts one.
+        const started = await planWrites.startPlan();
+        at = { planId: started.plan.id, version: started.plan.version };
+      }
+      await action(at);
+    } catch (error) {
+      if (error instanceof SignedOutError) {
+        onSignedOut();
+      } else if (isVersionConflict(error)) {
+        setNotice({ kind: 'conflict', text: CONFLICT_TEXT });
+        await reload().catch(() => undefined);
+      } else {
+        setNotice({ kind: 'error', text: error instanceof ApiError ? describeWriteError(error.body) : 'That change didn’t save. Check your connection and try again.' });
+      }
+      setBusy(false);
+      return false;
+    }
+    try {
+      await reload();
+    } catch {
+      setNotice({ kind: 'error', text: 'Saved, but the plan couldn’t be refreshed. Reload the page to see it.' });
+    }
+    setBusy(false);
+    return true;
+  };
+
+  return (
+    <div className="shell">
+      <header className="topbar">
+        <div className="brand"><img src="/assets/app-icon.png" alt="" width={32} height={32} /><span className="wordmark">Très Fort</span></div>
+        <nav className="views" aria-label="Views">
+          <a href="#calendar" aria-current={view.kind === 'calendar' ? 'page' : undefined}>Calendar</a>
+          <a href="#workouts" aria-current={view.kind === 'workouts' ? 'page' : undefined}>Workouts</a>
+        </nav>
+        <div className="account">
+          <span className="muted">{me.display_name ?? me.email ?? 'Signed in'}</span>
+          <button type="button" className="ghost" onClick={async () => { await signOut(); onSignedOut(); }}>Sign out</button>
+        </div>
+      </header>
+      {notice && (
+        <div className={`notice ${notice.kind}`} role="alert">
+          <p>{notice.text}</p>
+          <button type="button" className="ghost small" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+      {view.kind === 'workouts' ? (
+        <WorkoutsPage
+          workouts={state.plan?.workouts ?? []}
+          version={state.plan?.version ?? 0}
+          selectedId={view.workoutId}
+          onSelect={(workoutId) => go({ kind: 'workouts', workoutId })}
+          write={write}
+          busy={busy}
+          catalog={catalog ?? { kind: 'loading' }}
+          miles={prefersMiles()}
+        />
+      ) : (
+        <CalendarView state={state} onEditWorkout={(workoutId) => go({ kind: 'workouts', workoutId })} />
+      )}
+    </div>
+  );
+}
+
+function CalendarView({ state, onEditWorkout }: { state: StateResponse; onEditWorkout: (id: string | null) => void }) {
   const today = useMemo(() => localToday(), []);
   const [month, setMonth] = useState(monthOf(today));
   const [selected, setSelected] = useState(today);
@@ -108,25 +252,13 @@ function Planner({ me, state, onSignedOut }: { me: Me; state: StateResponse; onS
   const workouts = useMemo(() => new Map((plan?.workouts ?? []).map((w) => [w.id, w])), [plan]);
   const loads = useMemo(() => activityLoads(state), [state]);
 
-  async function handleSignOut() {
-    await signOut();
-    onSignedOut();
-  }
-
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand"><img src="/assets/app-icon.png" alt="" width={32} height={32} /><span className="wordmark">Très Fort</span></div>
-        <div className="account">
-          <span className="muted">{me.display_name ?? me.email ?? 'Signed in'}</span>
-          <button type="button" className="ghost" onClick={handleSignOut}>Sign out</button>
-        </div>
-      </header>
-
+    <>
       {!plan ? (
         <main className="centered">
           <h1>No plan yet</h1>
-          <p className="muted">Open the iPhone app to pick a starter workout. Planning on the web is coming next.</p>
+          <p className="muted">Build your first workout here, or pick a starter workout in the iPhone app.</p>
+          <button type="button" onClick={() => onEditWorkout(null)}>Build a workout</button>
         </main>
       ) : (
         <main className="planner">
@@ -170,10 +302,11 @@ function Planner({ me, state, onSignedOut }: { me: Me; state: StateResponse; onS
             trip={tripOn(selected, plan.trips ?? [])}
             miles={miles}
             loads={loads}
+            onEditWorkout={onEditWorkout}
           />
         </main>
       )}
-    </div>
+    </>
   );
 }
 
@@ -236,8 +369,9 @@ function DayDetail(props: {
   trip: ReturnType<typeof tripOn>;
   miles: boolean;
   loads: Map<string, ShownLoad | null>;
+  onEditWorkout: (id: string) => void;
 }) {
-  const { date, cell, workout, trip, miles, loads } = props;
+  const { date, cell, workout, trip, miles, loads, onEditWorkout } = props;
   return (
     <aside className="detail" aria-labelledby="detail-title">
       <h2 id="detail-title">{formatLongDate(date)}</h2>
@@ -251,7 +385,10 @@ function DayDetail(props: {
       )}
       {workout && cell?.status !== 'rest' && cell?.status !== 'unavailable' && (
         <section>
-          <h3>{workout.name}</h3>
+          <div className="section-head">
+            <h3>{workout.name}</h3>
+            <button type="button" className="ghost small" onClick={() => onEditWorkout(workout.id)}>Edit workout</button>
+          </div>
           {workout.notes ? <p className="muted">{workout.notes}</p> : null}
           <ol className="slots">
             {slotBlocks(workout).map((block) => block.group ? (
@@ -292,7 +429,7 @@ function DayDetail(props: {
         </section>
       ) : null}
       {!workout && !cell?.items.length && !trip ? <p className="muted">A rest day.</p> : null}
-      <p className="fine">Editing on the web is coming next. For now, change your plan in the iPhone app.</p>
+      <p className="fine">Changing the weekly routine and single dates on the web is coming next. For now, do that in the iPhone app.</p>
     </aside>
   );
 }

@@ -54,7 +54,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
             let frame = app.frame
             return orientation.isLandscape ? frame.width > frame.height : frame.height > frame.width
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 5), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: UITestWait.screen), .completed,
                        "The foreground app must finish the requested rotation", file: file, line: line)
     }
 
@@ -70,7 +70,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
     private func expectLabel(_ label: String, on value: XCUIElement,
                              file: StaticString = #filePath, line: UInt = #line) {
         let expected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: value)
-        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 5), .completed, file: file, line: line)
+        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: UITestWait.screen), .completed, file: file, line: line)
     }
 
     private func assertVisible(_ value: XCUIElement, in app: XCUIApplication,
@@ -101,7 +101,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
             XCTAssertEqual(log.label, "LOG SET \(set)")
             log.tap()
             let endRest = app.buttons["rest.done"]
-            XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+            XCTAssertTrue(endRest.waitForExistence(timeout: UITestWait.screen))
             expectLabel("REST", on: phase)
             assertVisible(element("ipadWorkout.countdown", in: app), in: app)
             assertVisible(endRest, in: app)
@@ -123,7 +123,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
 
         app.buttons["runner.outline"].tap()
         let completedSquat = app.buttons["Barbell Squat"]
-        XCTAssertTrue(completedSquat.waitForExistence(timeout: 5)); completedSquat.tap()
+        XCTAssertTrue(completedSquat.waitForExistence(timeout: UITestWait.screen)); completedSquat.tap()
         expectLabel("EXERCISE COMPLETE", on: phase)
         XCTAssertFalse(element("ipadWorkout.target", in: app).exists)
         XCTAssertFalse(element("ipadWorkout.next", in: app).exists)
@@ -137,7 +137,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
             orient(orientation, in: app)
             app.buttons["runner.logSet"].tap()
             let endRest = app.buttons["rest.done"]
-            XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+            XCTAssertTrue(endRest.waitForExistence(timeout: UITestWait.screen))
             let log = app.buttons["runner.logSet"]
             XCTAssertFalse(log.isEnabled)
             let logFrame = log.frame
@@ -178,18 +178,18 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
 
         app.buttons["runner.outline"].tap()
         let row = app.buttons["Dumbbell Row"]
-        XCTAssertTrue(row.waitForExistence(timeout: 5)); row.tap()
+        XCTAssertTrue(row.waitForExistence(timeout: UITestWait.screen)); row.tap()
         XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "DUMBBELL ROW")
         app.buttons["runner.outline"].tap()
         let squat = app.buttons["Barbell Squat"]
-        XCTAssertTrue(squat.waitForExistence(timeout: 5))
+        XCTAssertTrue(squat.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(squat.staticTexts["Skipped"].exists)
         squat.tap()
         expectLabel("140 lb × 6 reps · RPE 8.5", on: element("ipadWorkout.target", in: app))
         XCTAssertEqual(app.buttons["runner.logSet"].label, "LOG SET 1")
 
         app.buttons["runner.logSet"].tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         expectLabel("Last set · 140 × 6 · lb · RPE 8.5", on: app.staticTexts["rest.lastValues"])
         capture("ipad-display-rest-rpe")
         app.buttons["rest.done"].tap()
@@ -221,7 +221,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         let log = app.buttons["runner.logSet"]
         reveal(log, in: app); log.tap()
         let endRest = app.buttons["rest.done"]
-        XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+        XCTAssertTrue(endRest.waitForExistence(timeout: UITestWait.screen))
         reveal(endRest, in: app)
         capture("ipad-display-accessibility-portrait-rest")
         orient(.landscapeLeft, in: app)
@@ -257,7 +257,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
 
     func testLinkedDisplayClearsStaleInstructionsWhenTheProjectionIsWithdrawn() {
         let app = launch(linked: "disconnected")
-        XCTAssertTrue(element("ipadWorkout.connection", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(element("ipadWorkout.connection", in: app).waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(element("ipadWorkout.target", in: app).exists)
         XCTAssertFalse(app.staticTexts["runner.exerciseTitle"].exists)
         XCTAssertFalse(element("ipadWorkout.countdown", in: app).exists)
@@ -288,7 +288,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertEqual(log.label, "LOG SET 1")
         log.tap()
         let endRest = app.buttons["rest.done"]
-        XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+        XCTAssertTrue(endRest.waitForExistence(timeout: UITestWait.screen))
         expectLabel("REST", on: phase)
         XCTAssertEqual(app.staticTexts["ipadWorkout.position"].label, "SET 2 OF 3")
         XCTAssertFalse(log.isEnabled, "End rest before logging the next set")
@@ -319,19 +319,19 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertEqual(start.label, "START SET 1")
         start.tap()
         let stop = app.buttons["runner.stopTimedSet"]
-        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        XCTAssertTrue(stop.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(facePull.isEnabled, "A running hold stays until it is stopped")
         stop.tap()
-        XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+        XCTAssertTrue(endRest.waitForExistence(timeout: UITestWait.screen))
         expectLabel("REST", on: phase)
 
         let toggle = app.buttons["ipadWorkout.outlineToggle"]
         XCTAssertEqual(toggle.label, "Hide outline")
         toggle.tap()
-        XCTAssertTrue(element("ipadWorkout.next", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(element("ipadWorkout.next", in: app).waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(outline.exists)
         toggle.tap()
-        XCTAssertTrue(outline.waitForExistence(timeout: 5))
+        XCTAssertTrue(outline.waitForExistence(timeout: UITestWait.screen))
 
         orient(.portrait, in: app)
         assertVisible(element("ipadWorkout.clock", in: app), in: app)
@@ -356,7 +356,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
     }
 
     private func replace(_ field: XCUIElement, with text: String) {
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.waitForExistence(timeout: UITestWait.screen))
         let old = field.value as? String ?? ""
         field.tap()
         field.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))

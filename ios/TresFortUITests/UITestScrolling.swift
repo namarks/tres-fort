@@ -13,7 +13,7 @@ enum UITestScrolling {
         if let surface {
             XCTAssertTrue(surface.exists, file: file, line: line)
         } else {
-            XCTAssertTrue(element.waitForExistence(timeout: 5), file: file, line: line)
+            XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen), file: file, line: line)
         }
         for _ in 0..<maxAttempts {
             let targetExists = element.exists

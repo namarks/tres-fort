@@ -68,6 +68,16 @@ struct ProfileView: View {
                         }
                     }
                     .accessibilityIdentifier("profile.thresholds")
+                    NavigationLink {
+                        FitImportView(auth: auth)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Import workout files")
+                            Text("Add rides and runs from .fit files, with their training load.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("profile.fitImport")
                 }
                 }
                 if auth.isReviewAccount {

@@ -125,7 +125,8 @@ design and dictates how you mutate things:
   retain their existing inputs without requiring an expected version;
   bounded retries re-read and validate fresh state before applying only
   supplied fields. These give the iOS app direct, non-Claude
-  write access to a day's exercises (audited as `actor='ios'`), reusing the
+  write access to a day's exercises (audited as `actor='ios'`, or `'web'` for
+  a web sign-in, whose app JWT carries `client: 'web'`), reusing the
   same `db.ts` functions MCP's `update_exercise` / `delete_exercise` call.
   `template_exercises.is_warmup` (migration `0026`) marks a slot a
   prescribed warm-up, excluded from working-set rollups; `cardio` is a
@@ -294,6 +295,11 @@ chat start) and a **prompt** (`coach_brief`).
   `load_method` (migration `0060`), refreshed by `refreshActivityLoads`.
   Apple Health pushes may carry heart-rate and power `streams`; the Worker
   stores only their threshold-independent summaries (migration `0061`).
+  `POST /api/activities/fit` imports a `.fit` file (`src/fitFile.ts`) as a
+  `source='fit'` activity scored the same way; dedup keeps intervals.icu over
+  `.fit` over Apple Health. `GET /api/me/thresholds/suggestions` offers the
+  thresholds intervals.icu scored the member's latest synced workouts with;
+  only the member's tap saves one (`source='intervals'`).
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude

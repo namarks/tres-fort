@@ -35,12 +35,35 @@ const API_ORIGIN = 'https://api.tres-fort.internal';
 /** Header the page sends on every API call; a cross-site form cannot set it. */
 export const WEB_HEADER = 'x-tres-fort-web';
 
-/** The web is read-only until the plan-editing phase. */
-const FORWARDED_METHODS = new Set(['GET', 'HEAD']);
+/** Reads pass for any API path except the blocked ones below. */
+const READ_METHODS = new Set(['GET', 'HEAD']);
 /** API paths the web has no use for and should never reach. */
 const BLOCKED_API_PATHS = new Set(['/api/me/station-link-key']);
 /** Request headers passed through to the API; everything else is dropped. */
 const FORWARDED_HEADERS = ['accept', 'content-type', 'if-none-match'];
+/** Plan edits are small JSON documents. */
+const MAX_WRITE_BYTES = 64 * 1024;
+
+const SEGMENT = '[^/]+';
+/**
+ * The writes the web may make, one per screen action. Everything else (sets,
+ * sessions, account, groups, connections) is refused here, so a bug or an
+ * injected script on the page cannot reach it through the session.
+ */
+const WRITE_ROUTES: { method: string; path: RegExp }[] = [
+  { method: 'PUT', path: /^\/api\/plan\/active$/ },
+  { method: 'POST', path: /^\/api\/workouts$/ },
+  { method: 'PATCH', path: new RegExp(`^/api/workouts/${SEGMENT}$`) },
+  { method: 'DELETE', path: new RegExp(`^/api/workouts/${SEGMENT}$`) },
+  { method: 'POST', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises$`) },
+  { method: 'PATCH', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}$`) },
+  { method: 'DELETE', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}$`) },
+  { method: 'POST', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}/swap$`) },
+];
+
+export function isAllowedWrite(method: string, path: string): boolean {
+  return WRITE_ROUTES.some((route) => route.method === method && route.path.test(path));
+}
 
 export async function handle(request: Request, env: GatewayEnv): Promise<Response> {
   const url = new URL(request.url);
@@ -145,7 +168,7 @@ async function devSignIn(request: Request, env: GatewayEnv): Promise<Response> {
   const apiResponse = await env.API.fetch(new Request(`${API_ORIGIN}/auth/dev`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ secret: env.DEV_AUTH_SECRET }),
+    body: JSON.stringify({ secret: env.DEV_AUTH_SECRET, client: 'web' }),
   }));
   const body = (await apiResponse.json().catch(() => null)) as { jwt?: unknown } | null;
   if (!apiResponse.ok || !body || typeof body.jwt !== 'string') return json({ error: 'dev_signin_failed' }, 502);
@@ -173,16 +196,29 @@ function redirectHome(problem: string | null, cookies: string[]): Response {
 
 async function forwardToApi(request: Request, env: GatewayEnv, url: URL): Promise<Response> {
   if (BLOCKED_API_PATHS.has(url.pathname)) return json({ error: 'not_found' }, 404);
-  if (!FORWARDED_METHODS.has(request.method)) return json({ error: 'read_only' }, 405);
+  const isRead = READ_METHODS.has(request.method);
+  if (!isRead && !isAllowedWrite(request.method, url.pathname)) return json({ error: 'not_allowed' }, 405);
   // Same-origin GET fetches carry no Origin header, so reads rely on the
   // custom header (a cross-site page cannot send it without a CORS preflight,
   // which this gateway never answers) plus Sec-Fetch-Site when the browser
-  // sends it. Writes, when they arrive, must also carry a matching Origin.
-  if (!isSameOrigin(request, env, { requireOrigin: false }) || request.headers.get(WEB_HEADER) !== '1') {
+  // sends it. Writes must also carry a matching Origin.
+  if (!isSameOrigin(request, env, { requireOrigin: !isRead }) || request.headers.get(WEB_HEADER) !== '1') {
     return json({ error: 'forbidden' }, 403);
   }
   const jwt = readCookie(request, SESSION_COOKIE);
   if (!jwt) return json({ error: 'signed_out' }, 401);
+  // A session from before web sign-ins were marked would have its edits
+  // recorded as the iPhone app's. Sign in again once instead.
+  if (!isWebSession(jwt)) return signedOut();
+
+  let body: ArrayBuffer | undefined;
+  if (!isRead && request.method !== 'DELETE') {
+    if (!(request.headers.get('content-type') ?? '').startsWith('application/json')) {
+      return json({ error: 'unsupported_media_type' }, 415);
+    }
+    body = await request.arrayBuffer();
+    if (body.byteLength > MAX_WRITE_BYTES) return json({ error: 'too_large' }, 413);
+  }
 
   const headers = new Headers();
   for (const name of FORWARDED_HEADERS) {
@@ -197,6 +233,7 @@ async function forwardToApi(request: Request, env: GatewayEnv, url: URL): Promis
     method: request.method,
     headers,
     redirect: 'manual',
+    ...(body === undefined ? {} : { body }),
   }));
   const responseHeaders = new Headers(upstream.headers);
   responseHeaders.delete('set-cookie');
@@ -206,6 +243,32 @@ async function forwardToApi(request: Request, env: GatewayEnv, url: URL): Promis
     responseHeaders.append('set-cookie', cookie(SESSION_COOKIE, '', 0, 'Lax'));
   }
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+}
+
+function signedOut(): Response {
+  return new Response(JSON.stringify({ error: 'signed_out' }), {
+    status: 401,
+    headers: {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'set-cookie': cookie(SESSION_COOKIE, '', 0, 'Lax'),
+    },
+  });
+}
+
+/**
+ * Whether the stored app JWT was issued to a web sign-in. The gateway only
+ * reads the claim; the API still verifies the signature on every call.
+ */
+export function isWebSession(jwt: string): boolean {
+  const payload = jwt.split('.')[1];
+  if (!payload) return false;
+  try {
+    const text = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return (JSON.parse(text) as { client?: unknown }).client === 'web';
+  } catch {
+    return false;
+  }
 }
 
 // ---- helpers ----------------------------------------------------------------

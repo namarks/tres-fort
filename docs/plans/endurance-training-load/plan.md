@@ -1,6 +1,6 @@
 # Real training load for endurance workouts
 
-Slug: endurance-training-load · Status: active · Updated: 2026-11-01 · Theme: connected-training
+Slug: endurance-training-load · Status: active · Updated: 2026-11-02 · Theme: connected-training
 
 ## Goal
 
@@ -103,20 +103,56 @@ provider connection.
     selector order), `test/activity_load.test.ts` (scoring, rescoring,
     omitted and empty streams, validation) and
     `HealthWorkoutStreamsTests.swift`.
-- [ ] **P4 — `.fit` file import**
-  - Upload a `.fit` file (Zwift, any bike computer or watch); the Worker
-    parses power, heart rate and speed, computes load, and deduplicates
-    against the same workout from other sources.
+- [x] **P4 — `.fit` file import**
+  - Profile → Import workout files picks one or more `.fit` files (Zwift, a
+    bike computer or a watch) and uploads each to `POST /api/activities/fit`
+    (multipart: client UUID `id`, `file`, optional `name`), then says what
+    happened to each file. `DELETE /api/activities/fit/:id` removes one.
+  - `src/fitFile.ts` reads file_id, session, activity and record messages
+    (both byte orders, developer fields, compressed timestamps, chained
+    files) and refuses non-FIT, damaged, non-activity and multisport files.
+    The file is never stored: the workout lands in `external_activities` with
+    `source='fit'`, its heart-rate and power samples reduced to the P3
+    summaries and the device's normalized power kept as the source's figure.
+    Samples sit on the timer's clock, so timer pauses never count as
+    training (Apple Health pauses get the same treatment in the app). Files
+    whose CRCs fail are refused. Its civil date comes from the device's local
+    time, else the member's timezone. The same workout uploaded again, even
+    concurrently under another id, returns the stored row (migration `0062`'s
+    unique index on member, kind and start instant).
+  - Dedup (in `dedupeHealthKitAgainstIntervals`): intervals.icu's copy wins
+    over a `.fit` copy, which wins over Apple Health's; a hidden copy comes
+    back when its winner goes away, including when the import is deleted.
+    Imported workouts appear in the group feed like intervals.icu ones.
+  - Covered by `test/fit_file.test.ts`, `test/fit_import.test.ts` (with a
+    test FIT writer in `test/fitWriter.ts`) and `FitImportTests.swift`.
 - [ ] **P5 — Garmin activity files**
   - With Garmin's Starter API approval, receive activity files directly and
     run them through the same engine.
 - [ ] **P6 — Effort fallback**
   - A one-tap "How hard was it?" (1 to 10) on imported workouts with no usable
     data gives a session-RPE load, labeled as an estimate.
-- [ ] **P7 — Starting values from intervals.icu**
-  - When intervals.icu is connected, offer its sport settings (FTP, threshold
-    heart rate, threshold pace) as suggestions on the thresholds screen; the
-    member confirms each one, and the saved row records `source='intervals'`.
+- [x] **P7 — Starting values from intervals.icu**
+  - Every activity intervals.icu sends carries the sport settings it was
+    scored with (`icu_ftp` in watts, `lthr` in bpm, `threshold_pace` in metres
+    per second), and the synced row keeps that JSON. intervals.icu does not
+    document `threshold_pace`'s unit; metres per second matches its activity
+    `pace`, which equals distance over moving time on the owner's synced
+    rows. On 2026-11-02 those rows carried FTP and threshold heart rate but no
+    threshold pace, so a member without one set in intervals.icu gets no pace
+    suggestion. `GET
+    /api/me/thresholds/suggestions` reads the newest synced run and ride for
+    each metric, so it needs no extra request and no new OAuth scope.
+  - A value is suggested only when it is newer than every value the member
+    entered for that metric and differs from the one in effect on its date.
+    A value the member set later is never second-guessed, and a used
+    suggestion goes away.
+  - Training thresholds shows them under "From intervals.icu" with a Use
+    button. Use saves the value from that workout's date through `POST
+    /api/me/thresholds` with `source='intervals'`; nothing is saved without
+    the tap. History rows say "from intervals.icu".
+  - Covered by `test/athlete_thresholds.test.ts` and
+    `AthleteThresholdsTests.swift`.
 
 ## Dependencies
 
@@ -127,11 +163,12 @@ provider connection.
 
 ## Next step
 
-**Now (@agent):** P4, `.fit` file import, so Zwift rides and other bike
-computer or watch files get power load without intervals.icu. P0 to P3 are in
-the repository. Migrations `0059`, `0060` and `0061` and the Worker need the
-owner's separate go-ahead to reach production, and the app's thresholds
-screen needs that Worker before it can load.
+**Now (@agent):** P6, a labeled effort estimate for workouts with no usable data, is
+the remaining agent phase; P5 waits on Garmin's Starter API approval. P0 to P4
+and P7 are in the repository. Migrations `0059` to `0062` are in production:
+`0061` and `0062` were applied on 2026-11-02 with the Worker from main
+`cf2f3fa` (version `1e8a4319`). P7's suggestions need a later Worker deploy
+and app build, each with the owner's separate go-ahead.
 
 ## Notes / open questions
 

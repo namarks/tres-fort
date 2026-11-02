@@ -8,7 +8,7 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
     }
 
     private func tap(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 10), element.description)
+        XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen), element.description)
         for _ in 0..<10 {
             if element.isHittable { element.tap(); return }
             app.swipeUp()
@@ -51,15 +51,15 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
     private func assertImportedActivity(_ app: XCUIApplication) {
         tap(app.tabBars.buttons["Today"], in: app)
         tap(app.buttons["today.calendar"], in: app)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Morning ride")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Morning ride")).firstMatch.waitForExistence(timeout: UITestWait.screen))
     }
 
     func testConnectImmediatelyRefreshesCalendar() {
         let app = launch("intervals-connect")
         connect(app)
-        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: UITestWait.screen))
         assertImportedActivity(app)
-        XCTAssertTrue(app.staticTexts["Garmin Edge 840"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Garmin Edge 840"].waitForExistence(timeout: UITestWait.screen))
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Imported activity with Garmin attribution"
         attachment.lifetime = .keepAlways
@@ -71,12 +71,12 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
     func testLogARunWithDistanceAndTimeFromToday() {
         let app = launch("intervals-connect")
         connect(app)
-        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: UITestWait.screen))
 
         tap(app.tabBars.buttons["Today"], in: app)
         tap(app.buttons["today.moreWaysToTrain"], in: app)
         tap(app.buttons["today.logActivity"], in: app)
-        XCTAssertTrue(app.navigationBars["Log activity"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Log activity"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["activity.type"], in: app)
         tap(app.buttons["Run"], in: app)
 
@@ -87,20 +87,20 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         tap(distance, in: app)
         distance.typeText("3.1")
         let pace = app.staticTexts["activity.pace"]
-        XCTAssertTrue(pace.waitForExistence(timeout: 5))
+        XCTAssertTrue(pace.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(pace.label, "8:04 /mi")
 
         tap(app.buttons["activity.save"], in: app)
         let sheet = app.navigationBars["Log activity"]
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
-        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: UITestWait.screen), .completed)
 
         tap(app.tabBars.buttons["Progress"], in: app)
         let endurance = app.buttons["progress.endurance"]
-        XCTAssertTrue(endurance.waitForExistence(timeout: 10))
+        XCTAssertTrue(endurance.waitForExistence(timeout: UITestWait.screen))
         // The card reads as one button, so its run row is part of its label.
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "3.1 mi"))
-            .firstMatch.waitForExistence(timeout: 10))
+            .firstMatch.waitForExistence(timeout: UITestWait.screen))
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Endurance on Progress after logging a run"
         attachment.lifetime = .keepAlways
@@ -111,10 +111,10 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         let app = launch("intervals-retry")
         connect(app)
         let retry = app.buttons["intervals.retry"]
-        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(retry.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(retry.label, "Retry sync")
         tap(retry, in: app)
-        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: UITestWait.screen))
         assertImportedActivity(app)
     }
 
@@ -122,12 +122,12 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         let app = launch("intervals-reauth")
         XCTAssertEqual(app.staticTexts["intervals.status"].label, "Reconnect needed")
         connect(app)
-        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["intervals.disconnect"], in: app)
         let disconnected = app.staticTexts["intervals.status"]
-        XCTAssertTrue(disconnected.waitForExistence(timeout: 10))
+        XCTAssertTrue(disconnected.waitForExistence(timeout: UITestWait.screen))
         let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Not connected"), object: disconnected)
-        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: UITestWait.screen), .completed)
         assertImportedActivity(app)
     }
 }

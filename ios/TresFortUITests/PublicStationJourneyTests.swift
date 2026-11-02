@@ -59,7 +59,7 @@ final class PublicStationJourneyTests: XCTestCase {
 
     func testManualPartnerPanelShowsSeparateLoadsAndClosesWithoutPhoneWrites() {
         let app = launch(partner: "active")
-        XCTAssertTrue(app.staticTexts["partner.stationStep"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["partner.stationStep"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["Jordan"].exists)
         XCTAssertTrue(app.staticTexts["Casey"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "20 kg")).firstMatch.exists)
@@ -71,14 +71,14 @@ final class PublicStationJourneyTests: XCTestCase {
     func testLargestTextSharedRestAdvancesThroughManualControl() {
         let app = launch(largeText: true, partner: "rest")
         XCUIDevice.shared.orientation = .portrait
-        XCTAssertTrue(app.staticTexts["partner.stationRest"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["partner.stationRest"].waitForExistence(timeout: UITestWait.screen))
         let previous = app.staticTexts["partner.stationStep"].label
         let skip = app.buttons["Skip rest"]
         UITestScrolling.reveal(skip, in: app, maxAttempts: 12)
         skip.tap()
         let advanced = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", previous),
                                                  object: app.staticTexts["partner.stationStep"])
-        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: UITestWait.screen), .completed)
         XCTAssertFalse(app.staticTexts["partner.stationRest"].exists)
         assertNoMovementCamera(in: app)
         XCTAssertTrue(app.buttons["station.done"].isHittable)

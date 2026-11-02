@@ -1,5 +1,6 @@
 // Internal provider reconciliation. Public callers use the db.ts facade.
 import { deviceNameSQL, withActivityAttribution } from '../dataAttribution';
+import { thresholdSettingsSQL } from './athleteThresholds';
 
 import { addDays } from '../calendarProjection';
 import { diagnosticErrorType } from '../errors';
@@ -1466,7 +1467,8 @@ export function createIntervalsSyncService({
                  external_activities.intensity IS NOT excluded.intensity OR
                  external_activities.calories IS NOT excluded.calories OR
                  external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
-                 ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')}
+                 ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')} OR
+                 ${thresholdSettingsSQL('external_activities.raw')} IS NOT ${thresholdSettingsSQL('excluded.raw')}
                THEN excluded.raw ELSE external_activities.raw END,
                synced_at=CASE
                  WHEN excluded.synced_at > external_activities.synced_at THEN excluded.synced_at
@@ -1496,7 +1498,8 @@ export function createIntervalsSyncService({
                  external_activities.intensity IS NOT excluded.intensity OR
                  external_activities.calories IS NOT excluded.calories OR
                  external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
-                 ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')}
+                 ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')} OR
+                 ${thresholdSettingsSQL('external_activities.raw')} IS NOT ${thresholdSettingsSQL('excluded.raw')}
                )`,
           )
           .bind(

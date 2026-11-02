@@ -1823,7 +1823,7 @@ private struct RunnerSetAction: View {
 // MARK: - Rest overlay (full screen)
 
 private struct RestOverlay: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ReduceMotion private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     /// Collapse the overlay to in-flow controls (timer keeps running). The

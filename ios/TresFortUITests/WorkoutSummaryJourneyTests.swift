@@ -11,7 +11,7 @@ final class WorkoutSummaryJourneyTests: XCTestCase {
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["workoutSummary.duration"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["workoutSummary.duration"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -30,7 +30,7 @@ final class WorkoutSummaryJourneyTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Goblet Squat · 45 lb · 12 reps"].exists)
         capture("completed-workout-summary")
         app.buttons["workoutSummary.records"].tap()
-        XCTAssertTrue(app.staticTexts["Previous: 10 reps"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Previous: 10 reps"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["workoutSummary.records"].tap()
         let targets = app.buttons["workoutSummary.targets"]
         for _ in 0..<8 where !targets.isHittable { app.swipeUp() }
@@ -38,14 +38,14 @@ final class WorkoutSummaryJourneyTests: XCTestCase {
         XCTAssertEqual(app.staticTexts.matching(identifier: "Plank").count, 1)
         capture("completed-workout-details")
         targets.tap()
-        XCTAssertTrue(app.staticTexts["1 sets not logged"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["1 sets not logged"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testSummaryStacksAtAccessibilityTextSize() throws {
         let app = try launch(largeText: true)
         let duration = app.staticTexts["workoutSummary.duration"]
         let volume = app.staticTexts["workoutSummary.volume"]
-        XCTAssertTrue(volume.waitForExistence(timeout: 5))
+        XCTAssertTrue(volume.waitForExistence(timeout: UITestWait.screen))
         XCTAssertGreaterThan(volume.frame.minY, duration.frame.maxY)
         XCTAssertEqual(volume.frame.minX, duration.frame.minX, accuracy: 2)
         capture("completed-workout-large-text")

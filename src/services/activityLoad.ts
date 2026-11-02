@@ -64,8 +64,8 @@ const thresholdFingerprintSql = (userParam: string) =>
 
 /**
  * Recompute effective load for one member's live activities, optionally only
- * within [fromDate, toDate]. HealthKit rows hidden as duplicates of an
- * intervals.icu activity are kept current too, because dedup restores them
+ * within [fromDate, toDate]. Apple Health and .fit rows hidden as duplicates
+ * of another source's activity are kept current too, because dedup restores them
  * when that activity goes away, possibly outside any later refresh window;
  * their synced_at stays put, and the restore advances it.
  * Writes only rows whose result changed. Each write
@@ -95,7 +95,7 @@ export async function refreshActivityLoads(
                   effective_load, effective_intensity, load_method
              FROM external_activities
             WHERE user_id = ?1
-              AND (deleted_at IS NULL OR (source = 'healthkit' AND duplicate_of IS NOT NULL))
+              AND (deleted_at IS NULL OR (source IN ('healthkit', 'fit') AND duplicate_of IS NOT NULL))
               AND date >= ?2 AND date <= ?3`,
         )
         .bind(userId, window.fromDate ?? '0000-01-01', window.toDate ?? '9999-12-31')

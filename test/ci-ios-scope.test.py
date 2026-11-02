@@ -57,12 +57,14 @@ class IOSScopeTests(unittest.TestCase):
 
     def test_smoke_is_one_iphone_job_and_full_adds_every_device_job(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
-        matrix = re.search(r"shard: \$\{\{ fromJSON\(needs\.plans\.outputs\.ios-suite == 'full'"
+        matrix = re.search(r"matrix: \$\{\{ fromJSON\(needs\.plans\.outputs\.ios-suite == 'full'"
                            r" && '([^']+)' \|\| '([^']+)'\) \}\}", workflow)
         self.assertIsNotNone(matrix)
         full, smoke = (json.loads(group) for group in matrix.groups())
-        self.assertEqual(smoke, [1])
-        self.assertEqual(full, [1, 2, 3, 4, 5, 6, 'station', 'app-store-iphone', 'app-store-ipad'])
+        # The suite rides in the matrix so each check is named for its shard.
+        self.assertEqual(smoke, {'suite': ['smoke'], 'shard': [1]})
+        self.assertEqual(full, {'suite': ['full'], 'shard': [
+            1, 2, 3, 4, 5, 6, 'station', 'app-store-iphone', 'app-store-ipad']})
         self.assertNotIn('include:', workflow)
         self.assertRegex(workflow, r"schedule:\n(?:\s+#[^\n]*\n)*\s+- cron: '\S+ \S+ \* \* \*'")
 
@@ -86,8 +88,9 @@ class IOSScopeTests(unittest.TestCase):
         steps = dict(re.findall(r'      - name: ([^\n]+)\n(.*?)(?=\n      - |\n  [a-z]|\Z)',
                                 workflow, re.S))
         job_name = re.search(r'  ios-tests:\n(?:    #[^\n]*\n)*    name: ([^\n]+)', workflow).group(1)
-        # A skipped job shows its raw name, so it must not depend on the matrix.
-        self.assertNotIn('matrix', job_name)
+        # GitHub appends matrix values (suite, shard) only to a literal name;
+        # an expression here makes every shard's check look the same.
+        self.assertEqual(job_name, 'iOS')
         lists = device_lists()
         for family, device in [('iPhone', 'iPhone-17-Pro'), ('iPad', 'iPad-Pro-13-inch-M4-8GB')]:
             step = steps[f'{family} App Store build and tests']

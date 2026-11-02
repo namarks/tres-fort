@@ -112,44 +112,65 @@ struct WorkoutsView: View {
         }
     }
 
+    // Split into small pieces so the type checker handles each chain quickly.
     private var libraryContent: some View {
-            Group {
-                if sync.plan == nil && !sync.canCreateRoutine {
-                    PlanLoadRecoveryView(sync: sync)
-                } else if isTabRoot {
-                    planHome
-                } else {
-                    routineList
-                }
+        libraryDestinations(libraryDialogs(libraryBase))
+            .sheet(item: $assignmentTarget) { workout in
+                WorkoutDateSheet(sync: sync, workout: workout)
             }
-            .onChange(of: availableTags) { _, tags in
-                if !tags.contains(selectedTag) { selectedTag = "" }
+            .sheet(isPresented: $showWeeklySchedule) { WeeklyScheduleView(sync: sync) }
+            .sheet(isPresented: $showHistory) {
+                PlanHistoryView(sync: sync, onCorrect: { showHistory = false })
             }
-            .background(Theme.background)
-            .navigationTitle(isTabRoot ? "Plan" : date == nil ? "Workouts" : "Choose a workout")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if !isTabRoot {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
-                    }
-                }
-                if isTabRoot {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { showHistory = true } label: {
-                            Image(systemName: "clock.arrow.circlepath")
-                        }
-                        .disabled(sync.isRoutineMutationInFlight)
-                        .accessibilityLabel("Plan changes")
-                        .accessibilityIdentifier("plan.changes")
-                    }
-                }
-                if (!isTabRoot || planSide == .workouts) && canReorder && visibleWorkouts.count > 1 {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        EditButton().disabled(sync.isRoutineMutationInFlight)
-                    }
-                }
+            .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
+                await sync.refreshRecentPlanChanges()
             }
+    }
+
+    private var libraryBase: some View {
+        Group {
+            if sync.plan == nil && !sync.canCreateRoutine {
+                PlanLoadRecoveryView(sync: sync)
+            } else if isTabRoot {
+                planHome
+            } else {
+                routineList
+            }
+        }
+        .onChange(of: availableTags) { _, tags in
+            if !tags.contains(selectedTag) { selectedTag = "" }
+        }
+        .background(Theme.background)
+        .navigationTitle(isTabRoot ? "Plan" : date == nil ? "Workouts" : "Choose a workout")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { libraryToolbar }
+    }
+
+    @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
+        if !isTabRoot {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
+            }
+        }
+        if isTabRoot {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showHistory = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .disabled(sync.isRoutineMutationInFlight)
+                .accessibilityLabel("Plan changes")
+                .accessibilityIdentifier("plan.changes")
+            }
+        }
+        if (!isTabRoot || planSide == .workouts) && canReorder && visibleWorkouts.count > 1 {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton().disabled(sync.isRoutineMutationInFlight)
+            }
+        }
+    }
+
+    private func libraryDialogs(_ content: some View) -> some View {
+        content
             .sheet(isPresented: $addingDay) {
                 CreateWorkoutView(sync: sync, onStart: onStart.map { start in
                     { id in
@@ -200,6 +221,10 @@ struct WorkoutsView: View {
             } message: {
                 Text("Completed workouts and logged sets stay in your history. Weekly and planned date assignments become rest. You can restore this workout later.")
             }
+    }
+
+    private func libraryDestinations(_ content: some View) -> some View {
+        content
             .navigationDestination(item: $detailTarget) { target in
                 WorkoutDetailsView(sync: sync, workoutID: target.id, date: date,
                                    onStart: onStart.map { start in
@@ -221,16 +246,6 @@ struct WorkoutsView: View {
             }
             .navigationDestination(isPresented: $showAwayDates) { AwayDatesView(sync: sync) }
             .navigationDestination(isPresented: $showArchivedWorkouts) { ArchivedWorkoutsView(sync: sync) }
-            .sheet(item: $assignmentTarget) { workout in
-                WorkoutDateSheet(sync: sync, workout: workout)
-            }
-            .sheet(isPresented: $showWeeklySchedule) { WeeklyScheduleView(sync: sync) }
-            .sheet(isPresented: $showHistory) {
-                PlanHistoryView(sync: sync, onCorrect: { showHistory = false })
-            }
-            .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
-                await sync.refreshRecentPlanChanges()
-            }
     }
 
     /// The tab opens on a plan with nothing in it: one clear first step.

@@ -19,7 +19,7 @@ final class ProgressJourneyTests: XCTestCase {
 
     private func tap(_ element: XCUIElement, in app: XCUIApplication) {
         for _ in 0..<10 where !element.exists || !element.isHittable { app.swipeUp() }
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(element.isHittable)
         if element.elementType == .switch {
             element.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
@@ -36,14 +36,14 @@ final class ProgressJourneyTests: XCTestCase {
     func testProgressTabLeadsWithConsistencyThenStrengthAndOptionalHealthWeight() {
         let app = launch()
         let consistency = app.buttons["progress.consistency"]
-        XCTAssertTrue(consistency.waitForExistence(timeout: 10))
+        XCTAssertTrue(consistency.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["progress.strength"].exists)
         XCTAssertLessThan(consistency.frame.minY, app.buttons["progress.strength"].frame.minY,
                           "Consistency is the first thing Progress shows")
         XCTAssertTrue(consistency.label.contains("week streak"))
         capture("Progress overview — synthetic training", app: app)
         consistency.tap()
-        XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.descendants(matching: .any)["consistency.heatmap"].firstMatch.exists)
         app.buttons["26 weeks"].tap()
         capture("Consistency — synthetic completed workouts", app: app)
@@ -53,30 +53,30 @@ final class ProgressJourneyTests: XCTestCase {
         XCTAssertTrue(thisWeek.exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app.buttons["progress.strength"], in: app)
-        XCTAssertTrue(app.navigationBars["Strength"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Strength"].waitForExistence(timeout: UITestWait.screen))
         let exercise = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history.exercise.'")).firstMatch
-        XCTAssertTrue(exercise.waitForExistence(timeout: 5))
+        XCTAssertTrue(exercise.waitForExistence(timeout: UITestWait.screen))
         exercise.tap()
-        XCTAssertTrue(app.otherElements["history.progress.chart"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["history.progress.chart"].waitForExistence(timeout: UITestWait.screen))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app.buttons["progress.weightSettings"], in: app)
-        XCTAssertTrue(app.navigationBars["Apple Health"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Apple Health"].waitForExistence(timeout: UITestWait.screen))
         tap(app.switches["health.readWeight"], in: app)
-        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Done"].tap()
         tap(app.buttons["progress.weight"], in: app)
-        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["Connect weight"].exists)
         capture("Weight in Progress — synthetic measurements", app: app)
         app.buttons["weight.settings"].tap()
         tap(app.switches["health.readWeight"], in: app)
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.otherElements["weight.chart"].exists)
         app.tabBars.buttons["Today"].tap()
         tap(app.buttons["today.calendar"], in: app)
-        XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["calendar.exerciseProgress"].exists)
         XCTAssertFalse(app.buttons["history.weight"].exists)
     }
@@ -86,15 +86,15 @@ final class ProgressJourneyTests: XCTestCase {
         tap(app.buttons["progress.weightSettings"], in: app)
         let sharing = app.switches["health.workoutSharing"]
         for _ in 0..<10 where !sharing.exists || !sharing.isHittable { app.swipeUp() }
-        XCTAssertTrue(sharing.waitForExistence(timeout: 5))
+        XCTAssertTrue(sharing.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(sharing.value as? String, "1")
         tap(sharing, in: app)
-        XCTAssertTrue(app.staticTexts["health.sharingOff"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["health.sharingOff"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Done"].tap()
         tap(app.buttons["progress.weightSettings"], in: app)
         let off = app.staticTexts["health.sharingOff"]
         for _ in 0..<10 where !off.exists || !off.isHittable { app.swipeUp() }
-        XCTAssertTrue(off.waitForExistence(timeout: 5), "Reopening must confirm the server saved the opt-out")
+        XCTAssertTrue(off.waitForExistence(timeout: UITestWait.screen), "Reopening must confirm the server saved the opt-out")
         XCTAssertFalse(app.switches["health.workoutSharing"].exists)
     }
 
@@ -103,18 +103,18 @@ final class ProgressJourneyTests: XCTestCase {
         tap(app.buttons["progress.weightSettings"], in: app)
         let retry = app.buttons["health.retrySharing"]
         for _ in 0..<10 where !retry.exists || !retry.isHittable { app.swipeUp() }
-        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertTrue(retry.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["health.sharingOff"].exists)
         XCTAssertFalse(app.switches["health.workoutSharing"].exists)
         tap(retry, in: app)
-        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertTrue(retry.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["health.sharingOff"].exists)
         XCTAssertFalse(app.switches["health.workoutSharing"].exists)
     }
 
     func testEmptyProgressExplainsHowTrainingStartsWithoutRequiringWeight() {
         let app = launch(empty: true)
-        XCTAssertTrue(app.staticTexts["Your first working set starts your progress."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Your first working set starts your progress."].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["progress.consistency"], in: app)
         XCTAssertEqual(app.staticTexts["consistency.total"].label, "0 completed workouts")
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -125,16 +125,16 @@ final class ProgressJourneyTests: XCTestCase {
 
     func testProgressAndHealthSettingsRemainReachableAtAccessibilityTextSize() {
         let app = launch(largeText: true)
-        XCTAssertTrue(app.buttons["progress.strength"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["progress.strength"].waitForExistence(timeout: UITestWait.screen))
         capture("Progress overview — accessibility text", app: app)
         tap(app.buttons["progress.consistency"], in: app)
-        XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: UITestWait.screen))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app.buttons["progress.weightSettings"], in: app)
         tap(app.switches["health.readWeight"], in: app)
         app.buttons["Done"].tap()
         tap(app.buttons["progress.weight"], in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["weight.latest"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["weight.latest"].firstMatch.waitForExistence(timeout: UITestWait.screen))
         capture("Progress weight — accessibility text", app: app)
     }
 }

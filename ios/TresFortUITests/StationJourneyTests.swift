@@ -22,7 +22,7 @@ final class StationJourneyTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                                "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.buttons["today.station"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["today.station"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -59,7 +59,7 @@ final class StationJourneyTests: XCTestCase {
         let status = app.staticTexts["station.cameraStatus"]
         let unavailable = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "A front camera is not available on this device."), object: status)
-        XCTAssertEqual(XCTWaiter.wait(for: [unavailable], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [unavailable], timeout: UITestWait.screen), .completed)
         XCTAssertTrue(app.buttons["station.enableCamera"].isEnabled)
         XCTAssertFalse(app.buttons["station.trial"].isEnabled)
         XCTAssertEqual(app.staticTexts["station.repCount"].label, "MediaPipe: 0 reps")
@@ -130,7 +130,7 @@ final class StationJourneyTests: XCTestCase {
         XCTAssertEqual(app.staticTexts["station.movement"].label, "WALL SIT")
         app.buttons["station.catalog"].tap()
         let unknown = app.buttons["station.catalog.a-squat"]
-        XCTAssertTrue(unknown.waitForExistence(timeout: 5))
+        XCTAssertTrue(unknown.waitForExistence(timeout: UITestWait.screen))
         unknown.tap()
         XCTAssertEqual(app.staticTexts["station.catalogStatus"].label, "Manual tracking")
         XCTAssertFalse(app.buttons["station.enableCamera"].exists)

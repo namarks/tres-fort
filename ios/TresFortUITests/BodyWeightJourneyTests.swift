@@ -17,13 +17,13 @@ final class BodyWeightJourneyTests: XCTestCase {
     }
 
     private func enableWeightWithFailure(_ app: XCUIApplication, stayInSettings: Bool = false) {
-        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["weight.manageAccess"].tap()
         let toggle = app.switches["health.readWeight"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(toggle.waitForExistence(timeout: UITestWait.screen))
         toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         let settings = app.collectionViews.containing(.switch, identifier: "health.readWeight").firstMatch
-        XCTAssertTrue(settings.staticTexts["weight.error.title"].waitForExistence(timeout: 5))
+        XCTAssertTrue(settings.staticTexts["weight.error.title"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(toggle.value as? String, "1", "The error must preserve the weight opt-in")
         if !stayInSettings { app.buttons["Done"].tap() }
     }
@@ -36,10 +36,10 @@ final class BodyWeightJourneyTests: XCTestCase {
     }
 
     private func enableWeight(_ app: XCUIApplication) {
-        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["weight.manageAccess"].tap()
         app.switches["health.readWeight"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Done"].tap()
     }
 
@@ -50,7 +50,7 @@ final class BodyWeightJourneyTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         enableWeight(app)
-        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: UITestWait.screen))
         let latest = app.descendants(matching: .any)["weight.latest"].firstMatch
         XCTAssertEqual(latest.value as? String, "176.4 lb")
         app.buttons["kg"].tap()
@@ -62,12 +62,12 @@ final class BodyWeightJourneyTests: XCTestCase {
         add(screenshot)
         app.swipeUp()
         app.buttons["weight.connectOrRefresh"].tap()
-        XCTAssertTrue(app.staticTexts["weight.empty"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["weight.empty"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.otherElements["weight.chart"].exists)
         app.buttons["weight.settings"].tap()
         app.switches["health.readWeight"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["weight.empty"].exists)
     }
 
@@ -78,7 +78,7 @@ final class BodyWeightJourneyTests: XCTestCase {
         app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1"
         app.launch()
         enableWeight(app)
-        XCTAssertTrue(app.staticTexts["weight.empty"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["weight.empty"].waitForExistence(timeout: UITestWait.screen))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Weight empty state — accessibility text"
         screenshot.lifetime = .keepAlways
@@ -88,7 +88,7 @@ final class BodyWeightJourneyTests: XCTestCase {
     func testWeightReadFailureReconnectsDirectlyWithoutTogglingAccess() {
         let app = launchFailure("reconnect")
         enableWeightWithFailure(app)
-        XCTAssertTrue(app.staticTexts["weight.error.title"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["weight.error.title"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.staticTexts["weight.error.title"].label, "Couldn’t read weight")
         XCTAssertFalse(app.staticTexts["weight.error.message"].label.localizedCaseInsensitiveContains("unlock"))
         XCTAssertFalse(app.buttons["weight.connectOrRefresh"].exists, "A failed read should offer recovery instead of repeating the same query")
@@ -100,7 +100,7 @@ final class BodyWeightJourneyTests: XCTestCase {
 
         reconnect.tap()
 
-        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["weight.error.title"].exists)
         XCTAssertFalse(reconnect.exists)
         capture("Weight recovery — synthetic measurements restored", app: app)
@@ -119,17 +119,17 @@ final class BodyWeightJourneyTests: XCTestCase {
 
         reconnect.tap()
 
-        XCTAssertTrue(settings.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: 5))
+        XCTAssertTrue(settings.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.switches["health.readWeight"].value as? String, "1")
         XCTAssertFalse(settings.staticTexts["weight.error.title"].exists)
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testLockedWeightReadExplainsUnlockAndRetriesInPlace() {
         let app = launchFailure("locked")
         enableWeightWithFailure(app)
-        XCTAssertTrue(app.staticTexts["weight.error.message"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["weight.error.message"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["weight.error.message"].label.localizedCaseInsensitiveContains("unlock"))
         let retry = app.buttons["weight.recover"]
         XCTAssertEqual(retry.label, "Try again")
@@ -138,14 +138,14 @@ final class BodyWeightJourneyTests: XCTestCase {
 
         retry.tap()
 
-        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["weight.error.title"].exists)
     }
 
     func testReconnectRemainsReachableAtAccessibilityTextSize() {
         let app = launchFailure("reconnect", largeText: true)
         enableWeightWithFailure(app)
-        XCTAssertTrue(app.staticTexts["weight.error.title"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["weight.error.title"].waitForExistence(timeout: UITestWait.screen))
         let reconnect = app.buttons["weight.recover"]
         for _ in 0..<4 where !reconnect.isHittable { app.swipeUp() }
         XCTAssertTrue(reconnect.isHittable)
@@ -154,14 +154,14 @@ final class BodyWeightJourneyTests: XCTestCase {
 
         reconnect.tap()
 
-        XCTAssertTrue(app.descendants(matching: .any)["weight.latest"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["weight.latest"].firstMatch.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["weight.error.title"].exists)
     }
 
     func testRestrictedHealthExplainsRestrictionWithoutOfferingIneffectiveReconnect() {
         let app = launchFailure("restricted")
         enableWeightWithFailure(app)
-        XCTAssertTrue(app.staticTexts["weight.error.title"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["weight.error.title"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["weight.recover"].exists)
         XCTAssertFalse(app.buttons["weight.connectOrRefresh"].exists)
         XCTAssertFalse(app.staticTexts["weight.error.message"].label.localizedCaseInsensitiveContains("unlock"))

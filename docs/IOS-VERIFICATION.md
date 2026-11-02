@@ -131,6 +131,18 @@ Delete retained local evidence when it is no longer needed. An uncatchable kill
 or host crash can leave the named `TresFort verification` simulator and
 `tres-fort-ios.*` scratch directory; remove only those belonging to that run.
 
+## Flaky tests
+
+`ios:verify` runs each failed test once more in place
+(`-retry-tests-on-failure -test-iterations 2`). A real regression fails both
+times and fails the job as before. A test that passes only on its second run
+passes the job, but the log lists it under "Passed only when run again", and on
+GitHub it appears as a "Flaky iOS test" warning on the run and in the job
+summary. Fix a listed test rather than accepting it: the usual causes are a
+wait shorter than `UITestWait.screen` (15 seconds), a tap before the control
+can be tapped (use `tapWhenReady` or `tap(until:)` from `UITestTapping.swift`),
+or a step that drives another app such as Settings.
+
 ## Synthetic UI fixtures
 
 The Debug simulator build accepts `TRESFORT_UI_FIXTURE` through its launch
@@ -138,7 +150,10 @@ environment. Available cases are `sign-in`, `empty`, `load-failure`, `ordinary`,
 `bodyweight`, `timed`, `pending`, `correction-failure`, `ready-to-finish`, and
 `onboarding`. Add `TRESFORT_UI_LARGE_TEXT=1` for the largest accessibility text
 size; otherwise fixture launches inherit the simulator system setting (normally
-`.large`). The synthetic banner stays at its
+`.large`). Add `TRESFORT_UI_REDUCE_MOTION=1` to turn on Reduce Motion for that
+launch: views read `@ReduceMotion`, which combines the system setting with this
+override. UI tests never toggle settings in Apple's Settings app, whose layout
+and speed vary between iOS releases and loaded CI simulators. The synthetic banner stays at its
 ordinary size so it does not take space from the product under test. This
 root-view override alone does not prove presented-sheet scaling; use the
 optional system setting for a specific investigation when needed.

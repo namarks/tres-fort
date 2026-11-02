@@ -15,7 +15,7 @@ final class GroupSafetyJourneyTests: XCTestCase {
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "group-safety"
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
     private func tap(_ element: XCUIElement, app: XCUIApplication) {
@@ -33,7 +33,7 @@ final class GroupSafetyJourneyTests: XCTestCase {
         tap(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Evening walk")).firstMatch, app: app)
         tap(app.buttons["Group safety options"], app: app)
         tap(app.buttons["Report"], app: app)
-        XCTAssertTrue(app.buttons["Draft report email"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Draft report email"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["Copy report reference"], app: app)
         XCTAssertTrue(app.staticTexts["Reference copied. Include it in your email to support."].exists)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
@@ -51,7 +51,7 @@ final class GroupSafetyJourneyTests: XCTestCase {
         tap(app.buttons["Group safety"], app: app)
         tap(app.buttons["Unblock"], app: app)
         tap(app.sheets.buttons["Unblock"], app: app)
-        XCTAssertTrue(app.staticTexts["No blocked members"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["No blocked members"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testOperatorCanEnterReportMemberIDAndRestrictSharing() {
@@ -63,6 +63,6 @@ final class GroupSafetyJourneyTests: XCTestCase {
         field.typeText("c3223561-0e27-4727-b369-681078533ca6")
         tap(app.buttons["Restrict sharing"], app: app)
         tap(app.sheets.buttons["Restrict sharing"], app: app)
-        XCTAssertTrue(app.staticTexts["Group sharing restricted."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Group sharing restricted."].waitForExistence(timeout: UITestWait.screen))
     }
 }

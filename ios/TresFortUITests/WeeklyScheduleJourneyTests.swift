@@ -22,7 +22,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         if let failure { app.launchEnvironment["TRESFORT_UI_SCHEDULE_FAILURE"] = failure }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -30,7 +30,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
     private func openCalendar(in app: XCUIApplication) {
         app.tabBars.buttons["Today"].tap()
         let calendar = app.buttons["today.calendar"]
-        XCTAssertTrue(calendar.waitForExistence(timeout: 5))
+        XCTAssertTrue(calendar.waitForExistence(timeout: UITestWait.screen))
         for _ in 0..<6 where !calendar.isHittable { app.swipeUp() }
         calendar.tap()
     }
@@ -38,22 +38,22 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
     private func openSchedule(in app: XCUIApplication) {
         openCalendar(in: app)
         let schedule = app.buttons["calendar.weeklySchedule"]
-        XCTAssertTrue(schedule.waitForExistence(timeout: 5))
+        XCTAssertTrue(schedule.waitForExistence(timeout: UITestWait.screen))
         schedule.tap()
-        XCTAssertTrue(app.buttons["weeklySchedule.mon"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["weeklySchedule.mon"].waitForExistence(timeout: UITestWait.screen))
     }
 
     private func choose(_ workout: String, on weekday: String, in app: XCUIApplication) {
         app.buttons["weeklySchedule.\(weekday)"].tap()
         let option = app.buttons[workout]
-        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        XCTAssertTrue(option.waitForExistence(timeout: UITestWait.screen))
         option.tap()
     }
 
     private func assertChoice(_ workout: String, on weekday: String, in app: XCUIApplication,
                               file: StaticString = #filePath, line: UInt = #line) {
         let picker = app.buttons["weeklySchedule.\(weekday)"]
-        XCTAssertTrue(picker.waitForExistence(timeout: 5), file: file, line: line)
+        XCTAssertTrue(picker.waitForExistence(timeout: UITestWait.screen), file: file, line: line)
         XCTAssertTrue(picker.label.contains(workout) || (picker.value as? String)?.contains(workout) == true,
                       "Expected \(workout), got label=\(picker.label), value=\(String(describing: picker.value))",
                       file: file, line: line)
@@ -62,7 +62,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
     private func assertClosed(in app: XCUIApplication) {
         expectation(for: NSPredicate(format: "exists == false"),
                     evaluatedWith: app.navigationBars["Weekly schedule"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
     }
 
     func testSaveClosesAfterPersistenceAndReopeningShowsNewSchedule() {
@@ -87,7 +87,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         assertChoice("Strength B", on: "mon", in: app)
         app.buttons["weeklySchedule.cancel"].tap()
         let confirmation = app.alerts["Discard schedule changes?"]
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.waitForExistence(timeout: UITestWait.screen))
         confirmation.buttons["Keep editing"].tap()
         assertChoice("Strength B", on: "mon", in: app)
         XCTAssertTrue(app.buttons["weeklySchedule.save"].isEnabled)
@@ -115,7 +115,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         openSchedule(in: app)
         choose("Strength B", on: "mon", in: app)
         app.buttons["weeklySchedule.save"].tap()
-        XCTAssertTrue(app.staticTexts["weeklySchedule.error"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["weeklySchedule.error"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.navigationBars["Weekly schedule"].exists)
         assertChoice("Strength B", on: "mon", in: app)
         assertChoice("Strength A", on: "tue", in: app)
@@ -132,7 +132,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
     func testWorkoutStartStaysVisibleWhilePreviewScrolls() {
         let app = launch(fixture: "app-store")
         let details = app.buttons["today.viewWorkout"]
-        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        XCTAssertTrue(details.waitForExistence(timeout: UITestWait.screen))
         details.tap()
         assertPinnedAction("workoutDetails.start", in: app)
     }
@@ -142,11 +142,11 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         openCalendar(in: app)
         app.buttons["calendar.date.2026-09-09"].tap()
         let actions = app.buttons["calendar.dateActions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(actions.waitForExistence(timeout: UITestWait.screen))
         actions.tap()
         app.buttons["calendar.chooseWorkout"].tap()
         let workout = app.buttons["workoutPicker.workout.synthetic-day"]
-        XCTAssertTrue(workout.waitForExistence(timeout: 5))
+        XCTAssertTrue(workout.waitForExistence(timeout: UITestWait.screen))
         workout.tap()
         app.buttons["workoutPicker.preview"].tap()
         assertPinnedAction("workoutPicker.schedule", in: app)
@@ -154,7 +154,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
 
     private func assertPinnedAction(_ identifier: String, in app: XCUIApplication) {
         let action = app.buttons[identifier]
-        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        XCTAssertTrue(action.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(action.isHittable, "The primary action must be visible without scrolling")
         let originalY = action.frame.minY
         app.scrollViews.firstMatch.swipeUp()

@@ -211,11 +211,39 @@ if [[ -n "$content_size" ]]; then
   xcrun simctl ui "$simulator" content_size "$content_size" >"$recording_root/ui-settings.log" 2>&1
   xcrun simctl ui "$simulator" content_size >>"$recording_root/ui-settings.log" 2>&1
 fi
+# Tests that failed and then passed when Xcode ran them again: "Class method".
+retried_tests() {
+  sed -nE "s/^Test Case '-\[([^]]+)\]' (passed|failed) .*/\2 \1/p" "$1" |
+    awk '{ test = $2 " " $3; seen[test] = seen[test] " " $1 }
+         END { for (test in seen) if (seen[test] ~ /failed/ && seen[test] ~ /passed/) print test }' | sort
+}
+# Name each test that passed only on its retry, in the log and (on GitHub) as a
+# warning on the run, so a flaky test gets fixed instead of quietly re-run.
+report_retried_tests() {
+  local retried
+  retried="$(retried_tests "$1")"
+  [[ -n "$retried" ]] || return 0
+  echo 'Passed only when run again (flaky; fix these):'
+  while IFS= read -r test; do
+    echo "  $test"
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      echo "::warning title=Flaky iOS test::$test failed, then passed when run again"
+    fi
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      echo "- Flaky iOS test (passed when run again): \`$test\`" >>"$GITHUB_STEP_SUMMARY" || true
+    fi
+  done <<<"$retried"
+}
 # Disable test cloning so every simulator this command creates has one owner.
+# A failed test runs once more in place: a real regression fails both times,
+# while a test that passes only on its retry is reported as flaky above. This
+# replaces re-running a whole 30-minute job by hand for one slow simulator.
 echo "Running $ui_suite tests (shard ${ci_shard:-all})..."
 if ! xcodebuild test-without-building "${build_args[@]}" \
+    -retry-tests-on-failure -test-iterations 2 \
     -resultBundlePath "$recording_root/Tests.xcresult" \
     ${test_args[@]+"${test_args[@]}"} >"$recording_root/xcodebuild.log" 2>&1; then
+  report_retried_tests "$recording_root/xcodebuild.log" >&2
   awk '/error:|Test Case .*failed|Test Suite .*failed/{print}' "$recording_root/xcodebuild.log" >&2
   # Each failed test's own activity steps and errors (its last 80), so a
   # failure that is not the shard's last test still shows what it waited
@@ -230,3 +258,4 @@ if ! xcodebuild test-without-building "${build_args[@]}" \
   exit 1
 fi
 awk '/Executed [0-9]+ tests|\*\* TEST/{print}' "$recording_root/xcodebuild.log"
+report_retried_tests "$recording_root/xcodebuild.log"

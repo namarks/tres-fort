@@ -23,13 +23,13 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         app.launch()
         if fixture == "app-store" || fixture == "groups" {
             let start = app.buttons["today.startWorkout"]
-            XCTAssertTrue(start.waitForExistence(timeout: 10))
+            XCTAssertTrue(start.waitForExistence(timeout: UITestWait.screen))
             guard startWorkout else { return app }
             reveal(start, in: app)
             XCTAssertTrue(start.isEnabled)
             start.tap()
         }
-        XCTAssertTrue(app.staticTexts["runner.exerciseTitle"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["runner.exerciseTitle"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -59,13 +59,13 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(start.isEnabled)
         start.tap()
         let title = app.staticTexts["runner.exerciseTitle"]
-        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        XCTAssertTrue(title.waitForExistence(timeout: UITestWait.screen))
         let demo = app.buttons["Exercise information for Barbell Squat"]
         XCTAssertTrue(demo.exists)
         XCTAssertGreaterThanOrEqual(demo.frame.minY, title.frame.maxY)
         capture("runner-accessibility-title-and-demo")
         reveal(demo, in: app); demo.tap()
-        XCTAssertTrue(app.staticTexts["MUSCLES"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["MUSCLES"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testCompactRestKeepsEndEditAndLoggingReachableAtAccessibilitySize() {
@@ -77,10 +77,10 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let edit = app.buttons["rest.editLastSet"]
         reveal(edit, in: app); edit.tap()
         let correction = app.navigationBars["Correct set"]
-        XCTAssertTrue(correction.waitForExistence(timeout: 5))
+        XCTAssertTrue(correction.waitForExistence(timeout: UITestWait.screen))
         app.buttons["Cancel"].tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: correction)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         // All primary actions share the scrolling surface at accessibility
         // sizes; the footer must never consume the entire input viewport.
         for _ in 0..<8 where !endRest.isHittable { app.scrollViews.firstMatch.swipeDown() }
@@ -88,7 +88,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         reveal(app.buttons["LOG SET 2"], in: app)
         capture("compact-rest-accessibility-size")
         app.buttons["LOG SET 2"].tap()
-        XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testLoadRepsAndLoggingStayInPlaceWhenRestStarts() {
@@ -107,7 +107,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         reps.tap()
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, "6")
         log.tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["rest.editLastSet"].isHittable)
         XCTAssertTrue(reps.isHittable)
         XCTAssertEqual(weight.frame.minY, beforeWeight.minY, accuracy: 1)
@@ -128,18 +128,18 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(menu.isHittable)
         menu.tap()
         let plates = app.buttons["runner.menu.plates"]
-        XCTAssertTrue(plates.waitForExistence(timeout: 5)); plates.tap()
+        XCTAssertTrue(plates.waitForExistence(timeout: UITestWait.screen)); plates.tap()
         let loading = app.navigationBars["Barbell loading"]
-        XCTAssertTrue(loading.waitForExistence(timeout: 5))
+        XCTAssertTrue(loading.waitForExistence(timeout: UITestWait.screen))
         capture("runner-exercise-menu-plates")
         loading.buttons["Done"].tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: loading)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         menu.tap()
         let skip = app.buttons["runner.menu.skip"]
-        XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
+        XCTAssertTrue(skip.waitForExistence(timeout: UITestWait.screen)); skip.tap()
         expectation(for: NSPredicate(format: "label != %@", "BARBELL SQUAT"), evaluatedWith: title)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         XCTAssertTrue(app.buttons["LOG SET 1"].isHittable)
     }
 
@@ -147,7 +147,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let app = launch()
         for index in 1...3 {
             app.buttons["LOG SET \(index)"].tap()
-            XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
             app.buttons["rest.done"].tap()
         }
         let edit = app.buttons["rest.editLastSet"]
@@ -158,7 +158,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertEqual(app.buttons["runner.weight"].value as? String, "40")
         edit.tap()
         let reps = app.textFields["Reps"]
-        XCTAssertTrue(reps.waitForExistence(timeout: 5))
+        XCTAssertTrue(reps.waitForExistence(timeout: UITestWait.screen))
         let old = reps.value as? String ?? ""
         reps.tap()
         reps.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
@@ -169,7 +169,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let corrected = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "135 × 6 · lb"),
             object: app.staticTexts["rest.lastValues"])
-        XCTAssertEqual(XCTWaiter.wait(for: [corrected], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [corrected], timeout: UITestWait.screen), .completed)
         XCTAssertEqual(edit.label, "Edit last set of Barbell Squat")
         XCTAssertEqual(app.buttons["runner.weight"].value as? String, "40")
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, "10")
@@ -181,27 +181,27 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         app.buttons["Increase reps by 1"].tap()
         app.buttons["Increase weight in lb by 5"].tap()
         app.buttons["runner.outline"].tap()
-        XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: UITestWait.screen))
         let row = app.buttons["Dumbbell Row"]
         reveal(row, in: app); row.tap()
         expectation(for: NSPredicate(format: "exists == false"),
                     evaluatedWith: app.navigationBars["Workout outline"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         expectation(for: NSPredicate(format: "label == %@", "DUMBBELL ROW"),
                     evaluatedWith: app.staticTexts["runner.exerciseTitle"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "DUMBBELL ROW")
         app.buttons["runner.outline"].tap()
         let squat = app.buttons["Barbell Squat"]
-        XCTAssertTrue(squat.waitForExistence(timeout: 5))
+        XCTAssertTrue(squat.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(squat.staticTexts["Skipped"].exists)
         squat.tap()
         expectation(for: NSPredicate(format: "exists == false"),
                     evaluatedWith: app.navigationBars["Workout outline"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         expectation(for: NSPredicate(format: "label == %@", "BARBELL SQUAT"),
                     evaluatedWith: app.staticTexts["runner.exerciseTitle"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         XCTAssertEqual(app.buttons["runner.weight"].value as? String, "140")
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, "6")
         XCTAssertTrue(app.buttons["LOG SET 1"].exists)
@@ -210,17 +210,17 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
     func testMinimizeAndResumeRetainsDraftAndRest() {
         let app = launch()
         app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Increase reps by 1"].tap()
         app.buttons["runner.minimize"].tap()
-        XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.tabBars.firstMatch.isHittable)
         app.tabBars.buttons["Progress"].tap()
         let resume = app.buttons["workout.resume"]
-        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        XCTAssertTrue(resume.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(resume.isHittable)
         resume.tap()
-        XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, "6")
         XCTAssertTrue(app.buttons["rest.done"].isHittable)
         XCTAssertTrue(app.buttons["rest.editLastSet"].isHittable)
@@ -231,12 +231,12 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let app = launch("timed-navigation")
         app.buttons["START SET 1"].tap()
         let remaining = app.staticTexts["runner.timer.remaining"]
-        XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+        XCTAssertTrue(remaining.waitForExistence(timeout: UITestWait.screen))
         let initial = Int(remaining.label.dropLast())!
         app.buttons["runner.minimize"].tap()
-        XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["runner.resume"].tap()
-        XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+        XCTAssertTrue(remaining.waitForExistence(timeout: UITestWait.screen))
         XCTAssertLessThan(Int(remaining.label.dropLast())!, initial)
         XCTAssertTrue(app.buttons["STOP & LOG"].exists)
         XCTAssertFalse(app.buttons["START SET 1"].exists)
@@ -259,15 +259,15 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let app = launch(groupContract: encoded, tickingClock: true)
         app.buttons["START SET 1"].tap()
         app.buttons["runner.minimize"].tap()
-        XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: UITestWait.screen))
         app.tabBars.buttons["Progress"].tap()
         let resume = app.buttons["workout.resume"]
-        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        XCTAssertTrue(resume.waitForExistence(timeout: UITestWait.screen))
         expectation(for: NSPredicate(format: "label CONTAINS %@", "Review workout"), evaluatedWith: resume)
         waitForExpectations(timeout: 25)
         XCTAssertTrue(resume.isHittable)
         resume.tap()
-        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["Ready to finish"].exists)
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
     }
@@ -282,7 +282,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let weight = app.buttons["runner.weight"]
         XCTAssertTrue(weight.isHittable); weight.tap()
         let entry = app.textFields["weight.entry"]
-        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        XCTAssertTrue(entry.waitForExistence(timeout: UITestWait.screen))
         entry.doubleTap()
         entry.typeText("-10")
         XCTAssertEqual(entry.value as? String, "-10")
@@ -323,13 +323,13 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let app = launch()
         app.buttons["LOG SET 1"].tap()
         let expand = app.buttons["Expand rest timer"]
-        XCTAssertTrue(expand.waitForExistence(timeout: 5)); expand.tap()
-        XCTAssertTrue(app.staticTexts["rest.status"].waitForExistence(timeout: 5))
+        XCTAssertTrue(expand.waitForExistence(timeout: UITestWait.screen)); expand.tap()
+        XCTAssertTrue(app.staticTexts["rest.status"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["LOG SET 2"].isHittable)
         let minimize = app.buttons["rest.minimize"]
         minimize.tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: minimize)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         let end = app.buttons["rest.done"]
         XCTAssertTrue(end.isHittable)
         let endFrame = end.frame
@@ -344,14 +344,14 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
     func testOneSavedSetUsesSingularCompletionSummary() {
         let app = launch()
         app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["rest.done"].tap()
         app.buttons["today.workoutActions"].tap()
         app.buttons["Finish workout"].tap()
         let finish = app.buttons["FINISH"]
-        XCTAssertTrue(finish.waitForExistence(timeout: 5)); finish.tap()
+        XCTAssertTrue(finish.waitForExistence(timeout: UITestWait.screen)); finish.tap()
         let summary = app.staticTexts["today.completedSummary"]
-        XCTAssertTrue(summary.waitForExistence(timeout: 10))
+        XCTAssertTrue(summary.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(summary.label, "1 working set · 1 exercise")
     }
 }

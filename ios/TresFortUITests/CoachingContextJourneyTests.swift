@@ -12,7 +12,7 @@ final class CoachingContextJourneyTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Profile"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Profile"].tap()
         app.buttons["profile.trainingOverview"].tap()
-        XCTAssertTrue(app.navigationBars["Training overview"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Training overview"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["coaching.session.recent"].tap()
         let hold = app.staticTexts["Plank: 45s · bodyweight"]
         for _ in 0..<4 where !hold.isHittable { app.swipeUp() }
@@ -33,7 +33,7 @@ final class CoachingContextJourneyTests: XCTestCase {
         let plan = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         plan.name = "coaching-authored-context"; plan.lifetime = .keepAlways; add(plan)
         app.navigationBars["Training overview"].buttons["Done"].tap()
-        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.navigationBars["Training overview"].exists)
     }
 }

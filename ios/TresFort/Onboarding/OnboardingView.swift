@@ -13,7 +13,7 @@ import SwiftUI
 /// onboarding finishes, MainTabView spins up the real, retained instances and
 /// pulls fresh server state — so nothing this view loads needs to survive.
 struct OnboardingView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ReduceMotion private var reduceMotion
     @ObservedObject var auth: AuthModel
     @StateObject private var groupModel: GroupModel
 
@@ -424,7 +424,7 @@ private struct OnboardingSkipButton: View {
 }
 
 private struct ProgressDots: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ReduceMotion private var reduceMotion
     let total: Int
     let index: Int
 

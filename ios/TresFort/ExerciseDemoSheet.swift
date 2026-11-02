@@ -28,7 +28,7 @@ struct ExerciseDemoSheet: View {
     var timed: Bool? = nil
     var cues: String? = nil
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ReduceMotion private var reduceMotion
     @StateObject private var loader = DemoImageLoader()
     @State private var showSecondFrame = false
     @State private var isPaused = false

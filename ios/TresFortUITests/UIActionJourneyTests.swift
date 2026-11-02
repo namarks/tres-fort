@@ -14,7 +14,7 @@ final class UIActionJourneyTests: XCTestCase {
     }
 
     private func tap(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 10))
+        XCTAssertTrue(element.waitForExistence(timeout: UITestWait.screen))
         for _ in 0..<6 where !element.isHittable { app.swipeUp() }
         XCTAssertTrue(element.isHittable)
         element.tap()
@@ -28,22 +28,22 @@ final class UIActionJourneyTests: XCTestCase {
     func testProfileKeepsAccountActionsInAccountAndNameRowIsTappable() {
         let app = launch()
         tap(app.tabBars.buttons["Profile"], in: app)
-        XCTAssertTrue(app.buttons["profile.account"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["profile.account"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["Download account data"].exists)
         XCTAssertFalse(app.buttons["Delete account"].exists)
         capture("profile")
         let name = app.buttons["profile.editName"]
         XCTAssertGreaterThanOrEqual(name.frame.height, 44)
         name.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.navigationBars["Edit Name"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit Name"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["Cancel"], in: app)
         tap(app.buttons["profile.account"], in: app)
-        XCTAssertTrue(app.navigationBars["Account"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Account"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["Download account data"].exists)
         capture("account")
         tap(app.buttons["Delete account"], in: app)
         let confirmation = app.alerts["Permanently delete your account?"]
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.waitForExistence(timeout: UITestWait.screen))
         confirmation.buttons["Cancel"].tap()
         XCTAssertTrue(app.navigationBars["Account"].exists)
     }
@@ -52,7 +52,7 @@ final class UIActionJourneyTests: XCTestCase {
         let app = launch()
         tap(app.buttons["today.startWorkout"], in: app)
         let log = app.buttons["LOG SET 1"]
-        XCTAssertTrue(log.waitForExistence(timeout: 5))
+        XCTAssertTrue(log.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(log.isHittable)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         XCTAssertFalse(app.buttons["today.discardWorkout"].exists)
@@ -63,19 +63,19 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertTrue(log.isHittable)
         XCTAssertTrue(app.buttons["runner.reps"].exists)
         log.tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
         XCTAssertEqual(app.buttons["LOG SET 2"].frame.minY, y, accuracy: 2)
         app.buttons["rest.done"].tap()
         let next = app.buttons["LOG SET 2"]
-        XCTAssertTrue(next.waitForExistence(timeout: 10))
+        XCTAssertTrue(next.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(next.isEnabled)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         XCTAssertTrue(app.frame.contains(next.frame))
         next.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["rest.done"].tap()
-        XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: UITestWait.screen),
                       "A physical tap after rest must log exactly one more set")
     }
 
@@ -84,7 +84,7 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["today.viewWorkout"], in: app)
         tap(app.buttons["workoutDetails.edit"], in: app)
         let squat = app.buttons["editor.slot.a-squat"]
-        XCTAssertTrue(squat.waitForExistence(timeout: 5))
+        XCTAssertTrue(squat.waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["editor.doneReordering"].exists)
         XCTAssertTrue(squat.isEnabled)
         capture("editor")
@@ -103,22 +103,22 @@ final class UIActionJourneyTests: XCTestCase {
         dragStart.press(forDuration: 1, thenDragTo: dragEnd,
                         withVelocity: .slow, thenHoldForDuration: 0.5)
         expectation(for: NSPredicate { _, _ in squat.frame.minY > row.frame.minY }, evaluatedWith: squat)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
         tap(app.buttons["editor.doneReordering"], in: app)
         XCTAssertGreaterThan(squat.frame.minY, row.frame.minY)
         squat.swipeLeft()
         tap(app.buttons["Remove"], in: app)
         let alert = app.alerts["Remove Barbell Squat?"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.waitForExistence(timeout: UITestWait.screen))
         capture("remove-exercise")
         alert.buttons["Cancel"].tap()
         XCTAssertTrue(squat.exists)
         tap(app.buttons["Options for Barbell Squat"], in: app)
         tap(app.buttons["Remove exercise"], in: app)
-        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.waitForExistence(timeout: UITestWait.screen))
         alert.buttons["Remove exercise"].tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: squat)
-        waitForExpectations(timeout: 10)
+        waitForExpectations(timeout: UITestWait.screen)
         XCTAssertTrue(app.buttons["editor.slot.a-row"].exists)
     }
 
@@ -128,29 +128,29 @@ final class UIActionJourneyTests: XCTestCase {
         tap(edit, in: app)
         tap(app.buttons["Delete set 1 of Barbell Squat"], in: app)
         let alert = app.alerts["Delete set 1 of Barbell Squat?"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.waitForExistence(timeout: UITestWait.screen))
         capture("delete-set")
         alert.buttons["Cancel"].tap()
         XCTAssertEqual(app.textFields["Reps"].value as? String, "5")
         tap(app.buttons["Delete set 1 of Barbell Squat"], in: app)
         alert.buttons["Delete set"].tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: edit)
-        waitForExpectations(timeout: 10)
+        waitForExpectations(timeout: UITestWait.screen)
         XCTAssertEqual(app.staticTexts["summary.value.Sets saved"].label, "0")
         XCTAssertFalse(app.buttons["FINISH"].exists, "An unresolved set must not leave a no-op Finish action")
         tap(app.buttons["finished.reviewExercises"], in: app)
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testCompletedExerciseShowsCompletionInsteadOfANoOpLogAction() {
         let app = launch("ready-to-finish")
         tap(app.buttons["Return to exercises"], in: app)
-        XCTAssertTrue(app.staticTexts["runner.exerciseComplete"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["runner.exerciseComplete"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["LOG SET 2"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
         tap(app.buttons["FINISH"], in: app)
-        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testFinishCanReturnToWorkoutOrExplicitlyFinishWithoutFeedback() {
@@ -159,7 +159,7 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
         // Finishing early lands on the same finish screen as the last set.
-        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["FINISH"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["Skip"].exists)
         XCTAssertTrue(app.staticTexts["feedback.earlyFinishNote"].exists)
         XCTAssertTrue(app.buttons["feedback.open"].exists)
@@ -167,12 +167,12 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["FINISH"].isHittable)
         capture("finish")
         tap(app.buttons["Keep working"], in: app)
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
         tap(app.buttons["FINISH"], in: app)
-        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testSaveFeedbackAndFinishKeepsApprovedNote() {
@@ -187,7 +187,7 @@ final class UIActionJourneyTests: XCTestCase {
         if app.buttons["Done"].isHittable { app.buttons["Done"].tap() }
         tap(app.buttons["Save feedback"], in: app)
         tap(app.buttons["FINISH"], in: app)
-        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["today.viewCompletedWorkout"], in: app)
         XCTAssertEqual(app.staticTexts["feedback.saved-note"].label, "Finished early today.")
     }

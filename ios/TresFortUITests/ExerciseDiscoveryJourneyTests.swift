@@ -73,12 +73,12 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
 
     private func search(_ query: String, in app: XCUIApplication) {
         let field = app.textFields["exercisePicker.search"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText(query + "\n")
+        XCTAssertTrue(field.waitForExistence(timeout: UITestWait.screen)); field.tap(); field.typeText(query + "\n")
     }
 
     private func inspect(_ name: String, in app: XCUIApplication) {
         tap(app.buttons["Exercise information for " + name], in: app)
-        XCTAssertTrue(app.segmentedControls["exerciseInfo.tabs"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls["exerciseInfo.tabs"].waitForExistence(timeout: UITestWait.screen))
         app.segmentedControls["exerciseInfo.tabs"].buttons["History"].tap()
         app.buttons["exerciseInfo.done"].tap()
     }
@@ -94,7 +94,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         tap(app.buttons["Current exercise options"], in: app)
         tap(app.buttons["runner.swap-exercise"], in: app)
         let replacement = app.buttons["exercisePicker.exercise.synthetic-replacement"]
-        XCTAssertTrue(replacement.waitForExistence(timeout: 5))
+        XCTAssertTrue(replacement.waitForExistence(timeout: UITestWait.screen))
         XCTAssertLessThan(replacement.frame.minY, app.buttons["exercisePicker.exercise.synthetic-upper"].frame.minY)
         XCTAssertFalse(app.buttons["exercisePicker.exercise.synthetic-exercise"].exists)
         XCTAssertFalse(app.buttons["exercisePicker.exercise.synthetic-hold"].exists)
@@ -113,7 +113,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         capture("swap-alias-selection")
         app.buttons["Cancel"].tap()
         app.buttons["runner.outline.done"].tap()
-        XCTAssertTrue(app.staticTexts["BARBELL SQUAT"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["BARBELL SQUAT"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons["LOG SET 2"].exists)
         XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String, "original:1;replacement:0;plan:1")
     }
@@ -144,11 +144,11 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         capture("swap-filtered-confirmation")
         app.buttons["runner.confirm-swap"].tap()
         app.buttons["runner.outline.done"].tap()
-        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["LOG SET 2"].tap()
         expectation(for: NSPredicate(format: "value == %@", "original:1;replacement:1;plan:1"),
                     evaluatedWith: app.staticTexts["fixture.scenario"])
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: UITestWait.screen)
     }
 
     func testCreationReviewReturnPreservesAliasFilterAndSelection() {
@@ -158,7 +158,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         search("bp", in: app)
         tap(app.buttons["exercisePicker.exercise.synthetic-upper"], in: app)
         app.buttons["createWorkout.review"].tap()
-        XCTAssertTrue(app.textFields["createWorkout.name"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["createWorkout.name"].waitForExistence(timeout: UITestWait.screen))
         app.navigationBars.buttons["BackButton"].tap()
         XCTAssertEqual(app.textFields["exercisePicker.search"].value as? String, "bp")
         XCTAssertTrue(app.buttons["Upper body"].isSelected)
@@ -179,7 +179,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
             search("bp", in: app)
             inspect("Bench Press", in: app)
             tap(app.staticTexts["Bench Press"], in: app)
-            XCTAssertTrue(app.navigationBars["Bench Press"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.navigationBars["Bench Press"].waitForExistence(timeout: UITestWait.screen))
             XCTAssertEqual(app.staticTexts["exercisePicker.savedWorkout"].label, "Saved workout · Gym")
             app.navigationBars["Bench Press"].buttons["BackButton"].tap()
             XCTAssertEqual(app.textFields["exercisePicker.search"].value as? String, "bp")

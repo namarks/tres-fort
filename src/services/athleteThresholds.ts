@@ -211,6 +211,14 @@ export interface IntervalsSettingsRow {
   threshold_pace: unknown;
 }
 
+/** The sport settings in a stored activity's JSON, as one comparable SQL
+ * value. The activity sync rewrites a row's `raw` when this changes, so a
+ * setting corrected in intervals.icu reaches the suggestions. */
+export function thresholdSettingsSQL(raw: string): string {
+  return `(CASE WHEN json_valid(${raw}) THEN json_array(json_extract(${raw}, '$.icu_ftp'), `
+    + `json_extract(${raw}, '$.lthr'), json_extract(${raw}, '$.threshold_pace')) END)`;
+}
+
 /** A stored threshold value from an intervals.icu field, or null when the
  * field is missing or outside the accepted range. */
 export function intervalsThresholdValue(metric: ThresholdMetric, raw: unknown): number | null {

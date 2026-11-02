@@ -285,7 +285,8 @@ struct RunRecorderView: View {
         switch model.uploadStatus {
         case .idle: ""
         case .uploading: "Sending the route to intervals.icu…"
-        case .uploaded: "Saved to Apple Health and intervals.icu."
+        case .uploaded:
+            model.run?.savedToHealth == false ? "Sent to intervals.icu." : "Saved to Apple Health and intervals.icu."
         case .waiting: "Saved on this iPhone. It uploads to intervals.icu when it can, so check your intervals.icu connection in Profile if it doesn’t appear."
         case .notConnected: "Saved to Apple Health with its route. intervals.icu isn’t connected, so nothing else was sent."
         }

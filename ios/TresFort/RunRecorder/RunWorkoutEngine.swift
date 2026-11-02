@@ -10,6 +10,15 @@ struct RunWorkoutMetrics: Equatable {
     var heartRate: RecordedRun.HeartRateSample?
 }
 
+/// What ending a run left in Apple Health.
+struct RunWorkoutEnd: Equatable {
+    var metrics: RunWorkoutMetrics
+    /// True only when Health saved the workout with everything sent to it:
+    /// the route and any strap readings. When false, the copy on this iPhone
+    /// is still needed.
+    var savedAll: Bool
+}
+
 enum RunWorkoutRecovery: Equatable {
     case running
     case paused
@@ -31,8 +40,8 @@ protocol RunWorkoutEngine: AnyObject {
     /// A reading from the member's Bluetooth strap, saved with the workout.
     func addHeartRate(_ sample: RecordedRun.HeartRateSample)
     /// Ends the session and saves the workout and its route to Health.
-    /// Returns the builder's final totals.
-    func end(at date: Date) async throws -> RunWorkoutMetrics
+    /// Returns the builder's final totals and whether Health kept it all.
+    func end(at date: Date) async throws -> RunWorkoutEnd
     func discard()
     /// Reattaches a session that survived the app being stopped, refilling the
     /// route from the checkpoint. Nil when no session is running.
@@ -68,6 +77,12 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
     private var ending = false
     /// Strap readings not yet added to the builder.
     private var heartRates: [HKQuantitySample] = []
+    /// Whether this session sent Health route points or strap readings, and
+    /// whether Health refused any readings. Ending reports a save as complete
+    /// only when Health kept what was sent.
+    private var sentRoute = false
+    private var sentHeartRate = false
+    private var heartRateRefused = false
 
     /// Strap readings go to the builder in batches.
     private static let heartRateBatch = 10
@@ -107,18 +122,23 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
 
     func addRoute(_ locations: [CLLocation]) {
         guard let routeBuilder, !locations.isEmpty else { return }
+        sentRoute = true
         routeBuilder.insertRouteData(locations) { _, _ in }
     }
 
     func addHeartRate(_ sample: RecordedRun.HeartRateSample) {
         guard builder != nil else { return }
+        sentHeartRate = true
         let bpm = HKUnit.count().unitDivided(by: .minute())
         heartRates.append(HKQuantitySample(
             type: HKQuantityType(.heartRate),
             quantity: HKQuantity(unit: bpm, doubleValue: sample.beatsPerMinute),
             start: sample.timestamp, end: sample.timestamp))
         if heartRates.count >= Self.heartRateBatch {
-            builder?.add(takeHeartRates()) { _, _ in }
+            builder?.add(takeHeartRates()) { [weak self] success, _ in
+                guard !success else { return }
+                Task { @MainActor in self?.heartRateRefused = true }
+            }
         }
     }
 
@@ -129,7 +149,7 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         return heartRates
     }
 
-    func end(at date: Date) async throws -> RunWorkoutMetrics {
+    func end(at date: Date) async throws -> RunWorkoutEnd {
         guard let session, let builder else { throw RunWorkoutEngineError.notStarted }
         ending = true
         if session.state != .stopped && session.state != .ended {
@@ -146,18 +166,31 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         }
         if !heartRates.isEmpty {
             let samples = takeHeartRates()
-            await withCheckedContinuation { continuation in
-                builder.add(samples) { _, _ in continuation.resume() }
+            let added: Bool = await withCheckedContinuation { continuation in
+                builder.add(samples) { success, _ in continuation.resume(returning: success) }
             }
+            if !added { heartRateRefused = true }
         }
         do {
             try await builder.endCollection(at: date)
             let totals = Self.metrics(from: builder)
             let workout = try await builder.finishWorkout()
-            if let workout, let routeBuilder {
-                _ = try? await routeBuilder.finishRoute(with: workout, metadata: nil)
+            // The route is saved separately, and a failure there leaves the
+            // workout in Health without it.
+            var routeSaved = !sentRoute
+            if let workout, let routeBuilder, sentRoute {
+                do {
+                    _ = try await routeBuilder.finishRoute(with: workout, metadata: nil)
+                    routeSaved = true
+                } catch {}
+            } else {
+                routeBuilder?.discard()
             }
-            return totals
+            // Without permission to save heart rate, Health drops the
+            // strap's readings and keeps the workout.
+            let heartRateSaved = !sentHeartRate || (!heartRateRefused
+                && store.authorizationStatus(for: HKQuantityType(.heartRate)) == .sharingAuthorized)
+            return RunWorkoutEnd(metrics: totals, savedAll: workout != nil && routeSaved && heartRateSaved)
         } catch {
             builder.discardWorkout()
             routeBuilder?.discard()
@@ -195,10 +228,16 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         self.session = session
         self.builder = builder
         ending = false
+        sentRoute = false
+        sentHeartRate = false
+        heartRateRefused = false
     }
 
     private func clear() {
         heartRates = []
+        sentRoute = false
+        sentHeartRate = false
+        heartRateRefused = false
         session = nil
         builder = nil
         routeBuilder = nil

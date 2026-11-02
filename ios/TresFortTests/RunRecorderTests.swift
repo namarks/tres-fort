@@ -12,6 +12,8 @@ private final class FakeRunEngine: RunWorkoutEngine {
     private(set) var heartRates: [RecordedRun.HeartRateSample] = []
     var finalMetrics = RunWorkoutMetrics(distanceMeters: 0, movingSeconds: 0, heartRate: nil)
     var endError: Error?
+    /// False when Health saved the workout but not all of it, such as the route.
+    var savedAll = true
     var recovery: RunWorkoutRecovery?
     /// Holds `recover` until `releaseRecovery()`, like a slow Health query.
     var holdRecovery = false
@@ -28,10 +30,10 @@ private final class FakeRunEngine: RunWorkoutEngine {
     func resume() { calls.append("resume") }
     func addRoute(_ locations: [CLLocation]) { route += locations }
     func addHeartRate(_ sample: RecordedRun.HeartRateSample) { heartRates.append(sample) }
-    func end(at date: Date) async throws -> RunWorkoutMetrics {
+    func end(at date: Date) async throws -> RunWorkoutEnd {
         calls.append("end")
         if let endError { throw endError }
-        return finalMetrics
+        return RunWorkoutEnd(metrics: finalMetrics, savedAll: savedAll)
     }
     func discard() { calls.append("discard") }
     func recover(route: [CLLocation]) async -> RunWorkoutRecovery? {
@@ -763,6 +765,21 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(kept.savedToHealth, false)
     }
 
+    func testWithoutIntervalsARunWhoseRouteHealthDroppedStaysOnThisIPhone() async throws {
+        api.error = APIError.http(409, #"{"error":"intervals_not_connected","message":"Nothing was saved."}"#)
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        engine.savedAll = false
+        coverGround()
+        await model.end()
+        XCTAssertEqual(model.uploadStatus, .waiting)
+        XCTAssertEqual(model.note, "Apple Health didn’t keep the whole run. It stays on this iPhone until it uploads to intervals.icu.")
+        let kept = try XCTUnwrap(store().pendingUploads().first)
+        XCTAssertEqual(kept.savedToHealth, false)
+        XCTAssertEqual(kept.points.count, 2, "The route this iPhone holds is the only copy")
+    }
+
     func testWithoutABearerTheRunWaits() async throws {
         let model = makeModel(jwt: nil)
         await model.start()
@@ -947,6 +964,7 @@ final class RunRecorderTests: XCTestCase {
         let model = makeModel()
         model.plannedRun = PlannedRun(id: "slot", workoutName: "Zone 3 Run", plan: nil, durationSeconds: nil)
         await model.start()
+        XCTAssertEqual(model.run?.plannedSlotID, "slot", "The checkpoint keeps the slot")
         location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
         coverGround()
         engine.finalMetrics = .init(distanceMeters: 640, movingSeconds: 70, heartRate: nil)
@@ -958,6 +976,27 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertEqual(uploaded.savedToHealth, true)
         model.reset()
         XCTAssertNil(model.completedWorkoutName)
+    }
+
+    func testARecoveredPlannedRunStillMarksItsWorkoutDone() async throws {
+        var checkpoint = RecordedRun(startedAt: clock, name: "Zone 3 Run")
+        checkpoint.plannedSlotID = "slot"
+        checkpoint.points = [point(0, seconds: 1, from: clock), point(1, seconds: 11, from: clock)]
+        try store().save(checkpoint)
+        engine.recovery = .running
+        clock = clock.addingTimeInterval(30)
+
+        // The app was stopped, so nothing in memory says which slot this was.
+        let model = makeModel()
+        let recording = await model.recover()
+        XCTAssertTrue(recording)
+        XCTAssertNil(model.plannedRun)
+        coverGround()
+        engine.finalMetrics = .init(distanceMeters: 640, movingSeconds: 120, heartRate: nil)
+        await model.end()
+
+        XCTAssertEqual(plannedRunsLogged, ["slot \(checkpoint.date) 120"])
+        XCTAssertEqual(model.completedWorkoutName, "Zone 3 Run")
     }
 
     func testAPlainRunOrARefusedPlannedRunMarksNothingDone() async throws {

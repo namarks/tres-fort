@@ -64,25 +64,24 @@ struct WorkoutsView: View {
     @ObservedObject var sync: SyncModel
     var onStart: ((String) -> Void)? = nil
     var date: String? = nil
-    /// The Plan tab: no Done, and the calendar sits at the top.
+    /// The Plan tab: no Done, and the weekly schedule leads the screen.
     var isTabRoot = false
     /// Shows the workout on Today after the calendar starts one.
     var onShowWorkout: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
-    @State private var showArchived = false
+    @State private var showArchivedWorkouts = false
     @State private var selectedTag = ""
     @State private var taggingDay: Workout?
     @State private var archivingDay: Workout?
     private var availableTags: [String] {
-        Array(Set((sync.plan?.workouts ?? []).flatMap(\.workoutTags))).sorted()
+        Array(Set((sync.plan?.availableWorkouts ?? []).flatMap(\.workoutTags))).sorted()
     }
     private var visibleWorkouts: [Workout] {
-        let days = showArchived && date == nil ? (sync.plan?.workouts.filter(\.isArchived) ?? [])
-            : WorkoutLibraryPolicy.choices(plan: sync.plan, date: date ?? sync.todayString)
+        let days = WorkoutLibraryPolicy.choices(plan: sync.plan, date: date ?? sync.todayString)
         return selectedTag.isEmpty ? days : days.filter { $0.workoutTags.contains(selectedTag) }
     }
-    private var canReorder: Bool { !showArchived && selectedTag.isEmpty && date == nil
+    private var canReorder: Bool { selectedTag.isEmpty && date == nil
         && !(sync.plan?.trips.contains(where: { sync.todayString >= $0.start && sync.todayString <= $0.end }) ?? false) }
     @State private var renameDayName = ""
     @State private var addingDay = false
@@ -202,6 +201,7 @@ struct WorkoutsView: View {
                 })
             }
             .navigationDestination(isPresented: $showAwayDates) { AwayDatesView(sync: sync) }
+            .navigationDestination(isPresented: $showArchivedWorkouts) { ArchivedWorkoutsView(sync: sync) }
             .sheet(item: $assignmentTarget) { workout in
                 WorkoutDateSheet(sync: sync, workout: workout)
             }
@@ -214,8 +214,56 @@ struct WorkoutsView: View {
             }
     }
 
+    /// The tab opens on a plan with nothing in it: one clear first step.
+    private var needsFirstWorkout: Bool {
+        isTabRoot && (sync.plan?.availableWorkouts.isEmpty ?? true)
+    }
+
+    private var archivedCount: Int {
+        sync.plan?.workouts.filter(\.isArchived).count ?? 0
+    }
+
     private var routineList: some View {
         List {
+            if needsFirstWorkout {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Build your plan")
+                            .font(Theme.mono(17, .bold)).foregroundStyle(Theme.text)
+                        Text("Your plan is the workouts you save and the days you do them. Start with one workout, then choose its days.")
+                            .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, 6)
+                    Button { addingDay = true } label: {
+                        Label("Create your first workout", systemImage: "plus")
+                    }
+                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                    .disabled(sync.isRoutineMutationInFlight)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .accessibilityIdentifier("plan.createFirstWorkout")
+                }
+            } else if isTabRoot {
+                // What each weekday holds, with the one action that changes
+                // it, so the tab answers "what is my plan" before anything else.
+                Section {
+                    PlanWeekSummary(sync: sync)
+                    Button { showWeeklySchedule = true } label: {
+                        Text(WorkoutLibraryPolicy.hasScheduledDay(plan: sync.plan)
+                             ? "Edit weekly schedule" : "Choose your training days")
+                    }
+                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                    .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .accessibilityIdentifier("library.weeklySchedule")
+                } header: {
+                    Text("Your week")
+                } footer: {
+                    Text("Repeats every week. To change a single date, use the calendar.")
+                }
+            }
             if isTabRoot {
                 Section {
                     Button { showCalendar = true } label: {
@@ -252,156 +300,31 @@ struct WorkoutsView: View {
                     .disabled(sync.plan == nil)
                     .accessibilityIdentifier("plan.awayDates")
                 } footer: {
-                    Text("Past workouts and what's coming up, day by day. Away dates pause your weekly schedule for travel, rest or injury.")
+                    Text("The calendar shows past workouts and what's coming up, day by day. Away dates pause your weekly schedule for travel, rest or injury.")
                 }
             }
-            Section {
-                if date == nil {
-                    Picker("Library", selection: $showArchived) {
-                        Text("Active").tag(false)
-                        Text("Archived").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("library.scope")
-                }
-                if !availableTags.isEmpty {
-                    Picker("Tag", selection: $selectedTag) {
-                        Text("All tags").tag("")
-                        ForEach(availableTags, id: \.self) { Text($0).tag($0) }
-                    }
-                    .accessibilityIdentifier("library.tagFilter")
-                }
-            }
-            Section {
-                if visibleWorkouts.isEmpty {
-                    Text(showArchived ? "No archived workouts." : selectedTag.isEmpty ? "Choose exercises to build a workout." : "No workouts with this tag.")
-                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
-                } else {
-                    ForEach(visibleWorkouts) { day in
-                        HStack(spacing: 0) {
-                            Button {
-                                detailTarget = IdentifiedString(id: day.id)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(day.name)
-                                            .font(Theme.mono(15, .bold))
-                                            .foregroundStyle(Theme.text)
-                                        Text(day.isArchived ? "Archived" : WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
-                                            .font(Theme.mono(10, .bold)).foregroundStyle(Theme.accent)
-                                            .accessibilityIdentifier("workoutSchedule-\(day.id)")
-                                        if !day.workoutTags.isEmpty {
-                                            Text(day.workoutTags.joined(separator: " · "))
-                                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                                                .accessibilityIdentifier("workoutTags-\(day.id)")
-                                        }
-                                        Text(day.exercises.isEmpty
-                                             ? "No exercises yet"
-                                             : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
-                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(Theme.muted)
-                                        .accessibilityHidden(true)
-                                }
-                                .padding(.leading, 16)
-                                .padding(.trailing, 8)
-                                .padding(.vertical, 14)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("library.workout.\(day.id)")
-                            .accessibilityHint("Opens workout details")
-                            .disabled(sync.isRoutineMutationInFlight)
-
-                            Menu {
-                                Button("Edit tags", systemImage: "tag") { taggingDay = day }
-                                if day.isArchived {
-                                    Button("Restore workout", systemImage: "arrow.uturn.backward") {
-                                        Task { await sync.setWorkoutArchived(dayID: day.id, archived: false) }
-                                    }
-                                } else {
-                                Button("Use on a date", systemImage: "calendar.badge.plus") {
-                                    assignmentTarget = day
-                                }
-                                Button("Unschedule", systemImage: "calendar.badge.minus") {
-                                    Task { await sync.unscheduleWorkout(workoutID: day.id) }
-                                }
-                                .disabled(!WorkoutLibraryPolicy.isScheduled(workoutID: day.id, plan: sync.plan))
-                                Button("Archive workout", systemImage: "archivebox") { archivingDay = day }
-                                    .disabled(sync.running && sync.selectedDayID == day.id)
-                                }
-                                if !day.isArchived {
-                                    Button("Edit exercises") {
-                                        editTarget = IdentifiedString(id: day.id)
-                                    }
-                                }
-                                Button("Rename") {
-                                    renameDayName = day.name
-                                    renamingDay = day
-                                }
-                                Button("Delete workout", role: .destructive) {
-                                    deletingDay = day
-                                }
-                                .disabled(sync.running && sync.selectedDayID == day.id)
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(Theme.muted)
-                                    .frame(width: 44, height: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .padding(.trailing, 4)
-                            .disabled(sync.isRoutineMutationInFlight)
-                            .accessibilityLabel("Actions for \(day.name)")
+            if !needsFirstWorkout { workoutsSection }
+            if date == nil && archivedCount > 0 {
+                Section {
+                    Button { showArchivedWorkouts = true } label: {
+                        HStack(spacing: 12) {
+                            Label("Archived workouts", systemImage: "archivebox")
+                                .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
+                            Spacer()
+                            Text("\(archivedCount)")
+                                .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
+                                .accessibilityHidden(true)
                         }
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Theme.surface)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            // Confirm first; a destructive swipe role would animate
-                            // the row away before the member chooses to delete it.
-                            Button {
-                                deletingDay = day
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            .tint(.red)
-                            .disabled(sync.isRoutineMutationInFlight
-                                || (sync.running && sync.selectedDayID == day.id))
-                        }
-                        .moveDisabled(sync.isRoutineMutationInFlight || !canReorder)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                     }
-                    .onMove(perform: moveDays)
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("library.archived")
+                } footer: {
+                    Text("Workouts you put away. Restore one to use it again.")
                 }
-
-                if !showArchived {
-                Button {
-                    addingDay = true
-                } label: {
-                    Label("Add workout", systemImage: "plus.circle.fill")
-                        .font(Theme.mono(13, .bold))
-                        .foregroundStyle(Theme.accent)
-                }
-                .disabled(sync.isRoutineMutationInFlight)
-                // The repeating week lives with the workouts it schedules,
-                // not only behind the calendar.
-                Button {
-                    showWeeklySchedule = true
-                } label: {
-                    Label("Weekly schedule", systemImage: "calendar.badge.clock")
-                        .font(Theme.mono(13, .bold))
-                        .foregroundStyle(Theme.accent)
-                }
-                .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
-                .accessibilityIdentifier("library.weeklySchedule")
-                }
-            } header: {
-                Text(showArchived ? "Archived workouts" : "Workouts")
-            } footer: {
-                Text(showArchived ? "Restore a workout to use it again. Completed workouts and logged sets stay in your history."
-                    : "Open a workout to view its exercises, start it, or edit the saved workout.")
             }
 
             Section("Changes") {
@@ -419,6 +342,138 @@ struct WorkoutsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder private var workoutsSection: some View {
+        Section {
+            if !availableTags.isEmpty {
+                Picker("Tag", selection: $selectedTag) {
+                    Text("All tags").tag("")
+                    ForEach(availableTags, id: \.self) { Text($0).tag($0) }
+                }
+                .accessibilityIdentifier("library.tagFilter")
+            }
+            if visibleWorkouts.isEmpty {
+                Text(selectedTag.isEmpty ? "Choose exercises to build a workout." : "No workouts with this tag.")
+                    .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+            } else {
+                ForEach(visibleWorkouts) { day in
+                    HStack(spacing: 0) {
+                        Button {
+                            detailTarget = IdentifiedString(id: day.id)
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(day.name)
+                                        .font(Theme.mono(15, .bold))
+                                        .foregroundStyle(Theme.text)
+                                    Text(WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
+                                        .font(Theme.mono(10, .bold)).foregroundStyle(Theme.accent)
+                                        .accessibilityIdentifier("workoutSchedule-\(day.id)")
+                                    if !day.workoutTags.isEmpty {
+                                        Text(day.workoutTags.joined(separator: " · "))
+                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                            .accessibilityIdentifier("workoutTags-\(day.id)")
+                                    }
+                                    Text(day.exercises.isEmpty
+                                         ? "No exercises yet"
+                                         : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
+                                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Theme.muted)
+                                    .accessibilityHidden(true)
+                            }
+                            .padding(.leading, 16)
+                            .padding(.trailing, 8)
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("library.workout.\(day.id)")
+                        .accessibilityHint("Opens workout details")
+                        .disabled(sync.isRoutineMutationInFlight)
+
+                        Menu {
+                            Button("Edit tags", systemImage: "tag") { taggingDay = day }
+                            Button("Use on a date", systemImage: "calendar.badge.plus") {
+                                assignmentTarget = day
+                            }
+                            Button("Unschedule", systemImage: "calendar.badge.minus") {
+                                Task { await sync.unscheduleWorkout(workoutID: day.id) }
+                            }
+                            .disabled(!WorkoutLibraryPolicy.isScheduled(workoutID: day.id, plan: sync.plan))
+                            Button("Archive workout", systemImage: "archivebox") { archivingDay = day }
+                                .disabled(sync.running && sync.selectedDayID == day.id)
+                            Button("Edit exercises") {
+                                editTarget = IdentifiedString(id: day.id)
+                            }
+                            Button("Rename") {
+                                renameDayName = day.name
+                                renamingDay = day
+                            }
+                            Button("Delete workout", role: .destructive) {
+                                deletingDay = day
+                            }
+                            .disabled(sync.running && sync.selectedDayID == day.id)
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 18))
+                                .foregroundStyle(Theme.muted)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .padding(.trailing, 4)
+                        .disabled(sync.isRoutineMutationInFlight)
+                        .accessibilityLabel("Actions for \(day.name)")
+                    }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Theme.surface)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        // Confirm first; a destructive swipe role would animate
+                        // the row away before the member chooses to delete it.
+                        Button {
+                            deletingDay = day
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .tint(.red)
+                        .disabled(sync.isRoutineMutationInFlight
+                            || (sync.running && sync.selectedDayID == day.id))
+                    }
+                    .moveDisabled(sync.isRoutineMutationInFlight || !canReorder)
+                }
+                .onMove(perform: moveDays)
+            }
+
+            Button {
+                addingDay = true
+            } label: {
+                Label("Add workout", systemImage: "plus.circle.fill")
+                    .font(Theme.mono(13, .bold))
+                    .foregroundStyle(Theme.accent)
+            }
+            .disabled(sync.isRoutineMutationInFlight)
+            // On the Plan tab the weekly schedule leads the screen. The
+            // library sheet keeps this route to the same editor.
+            if !isTabRoot {
+                Button {
+                    showWeeklySchedule = true
+                } label: {
+                    Label("Weekly schedule", systemImage: "calendar.badge.clock")
+                        .font(Theme.mono(13, .bold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
+                .accessibilityIdentifier("library.weeklySchedule")
+            }
+        } header: {
+            Text("Workouts")
+        } footer: {
+            Text("Open a workout to view its exercises, start it, or edit the saved workout.")
+        }
     }
 
     private var nextAwayDates: PlanTrip? {

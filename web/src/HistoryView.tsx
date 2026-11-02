@@ -72,6 +72,8 @@ export function HistoryView(props: {
     choose(null);
     setComparison(null);
     setConfirming(false);
+    // An earlier page still loading belongs to the old list; its answer is dropped.
+    setLoadingMore(false);
     setMoreProblem(null);
     fetchPlanHistory()
       .then((page) => { if (request.current === ticket) setHistory({ kind: 'ready', value: page }); })

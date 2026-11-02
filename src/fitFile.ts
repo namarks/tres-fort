@@ -134,6 +134,8 @@ export function fitKind(sport: number | null, subSport: number | null): string {
   }
 }
 
+const roundOrNull = (v: number | null) => (v === null ? null : Math.round(v));
+
 export function parseFit(bytes: Uint8Array): FitActivity {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const records: Fields[] = [];
@@ -254,7 +256,8 @@ export function parseFit(bytes: Uint8Array): FitActivity {
   const stamps = records.map(r => r.get(FIELD_TIMESTAMP)).filter((v): v is number => v !== undefined);
   const firstStamp = stamps.length > 0 ? stamps.reduce((a, b) => Math.min(a, b)) : null;
   const lastStamp = stamps.length > 0 ? stamps.reduce((a, b) => Math.max(a, b)) : null;
-  const startFit = session?.get(2) ?? firstStamp;
+  const sessionStarts = sessions.map(s => s.get(2)).filter((v): v is number => v !== undefined);
+  const startFit = sessionStarts.length > 0 ? sessionStarts.reduce((a, b) => Math.min(a, b)) : firstStamp;
   if (startFit === null || startFit === undefined) throw new FitParseError('no_data');
 
   const sum = (key: number, scale = 1) => {
@@ -270,6 +273,33 @@ export function parseFit(bytes: Uint8Array): FitActivity {
   const first = (key: number, scale = 1) => {
     const v = session?.get(key);
     return v === undefined ? null : v / scale;
+  };
+  // A file can hold several sessions of one sport (a ride saved in parts).
+  // Their intensities combine weighted by timer time: a plain mean for
+  // averages, the fourth-power mean for normalized power (how NP itself is
+  // built). One session missing the figure or its time leaves it unknown
+  // rather than scoring the whole workout from part of it.
+  const combined = (key: number, exponent = 1) => {
+    if (sessions.length <= 1) return first(key);
+    let weight = 0;
+    let total = 0;
+    for (const s of sessions) {
+      const v = s.get(key);
+      const ms = s.get(8) ?? s.get(7);
+      if (v === undefined || ms === undefined) return null;
+      weight += ms;
+      total += ms * v ** exponent;
+    }
+    return weight > 0 ? (total / weight) ** (1 / exponent) : null;
+  };
+  const highest = (key: number) => {
+    let max: number | null = null;
+    for (const s of sessions) {
+      const v = s.get(key);
+      if (v === undefined) return null;
+      max = max === null ? v : Math.max(max, v);
+    }
+    return max;
   };
 
   // Timer pauses, from the timer stop and start events. Samples are placed
@@ -332,10 +362,10 @@ export function parseFit(bytes: Uint8Array): FitActivity {
     timer_sec: timer,
     distance_m: sum(9, 100) ?? (lastDistance === null ? null : lastDistance / 100),
     calories: sum(11),
-    avg_hr: first(16),
-    max_hr: first(17),
-    avg_power: first(20),
-    normalized_power: first(34),
+    avg_hr: roundOrNull(combined(16)),
+    max_hr: highest(17),
+    avg_power: roundOrNull(combined(20)),
+    normalized_power: roundOrNull(combined(34, 4)),
     ascent_m: sum(22),
     hr,
     power,

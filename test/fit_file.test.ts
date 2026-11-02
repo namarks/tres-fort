@@ -112,6 +112,34 @@ describe('parseFit', () => {
     expect(heartRateStreamLoad(fit.hr, fit.timer_sec, 160)?.load).toBe(92);
   });
 
+  it('combines the intensity of every session, weighted by its time', () => {
+    // A ride saved in two half-hour parts, with no samples to fall back on.
+    const start = fitTime('2026-10-25T03:00:00Z');
+    const fields = [
+      { num: 2, type: 'uint32' as const }, { num: 5, type: 'enum' as const }, { num: 8, type: 'uint32' as const },
+      { num: 16, type: 'uint8' as const }, { num: 17, type: 'uint8' as const }, { num: 20, type: 'uint16' as const },
+      { num: 34, type: 'uint16' as const },
+    ];
+    const ride = (np: number | null) => new FitWriter()
+      .define(0, 0, [{ num: 0, type: 'enum' }]).data(0, [4])
+      .define(1, 18, fields)
+      .data(1, [start + 1800, 2, 1800_000, 160, 170, 300, 300])
+      .data(1, [start, 2, 1800_000, 120, 130, 100, np])
+      .bytes();
+    const fit = parseFit(ride(100));
+    expect(fit).toMatchObject({
+      start_utc_ms: Date.parse('2026-10-25T03:00:00Z'),
+      timer_sec: 3600,
+      avg_hr: 140,
+      max_hr: 170,
+      avg_power: 200,
+      // Fourth-power mean: (100⁴ + 300⁴) / 2, to the quarter power.
+      normalized_power: 253,
+    });
+    // A part without the figure leaves it unknown, not taken from the other.
+    expect(parseFit(ride(null)).normalized_power).toBeNull();
+  });
+
   it('refuses what it cannot score', () => {
     expect(code(new TextEncoder().encode('<gpx></gpx> not a fit file at all'))).toBe('not_fit');
     const whole = activityFit({ start: '2026-10-25T03:00:00Z', seconds: 60, hr: 140 });

@@ -124,7 +124,6 @@ partner training are not web features.
 | P1 | gated_by | external:owner-web-deploy-approval | Met 2026-11-02: the owner approved the first deploy in writing and signed in with Apple on `app.tresfort.app`. |
 | P2 | coordinates_with | plan:coach-free-planning | Both add member-facing planning over the same REST endpoints; new endpoints land once and both clients use them. |
 | P5 | gated_by | external:owner-web-deploy-approval | A new public site and an API Worker change need the owner's written go-ahead. |
-| P5 | coordinates_with | plan:positioning-and-open-source#P4 | Deployer-specific settings (Services ID, domains, Worker names) must follow the same per-deployer pattern as the public snapshot. |
 
 ## Next step
 

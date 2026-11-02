@@ -207,11 +207,11 @@ integration or social breadth.
 
 ### Platform (`platform`)
 
-- [Positioning and open source](positioning-and-open-source/plan.md) —
-  **active**; lead every surface with "Everything you train. One plan." and
-  AI as optional, then publish a cleaned open-source snapshot. Repository and
-  website copy are live (PR #296); the App Store listing waits for the version
-  after 1.0, and going public needs the owner's written yes.
+- [Positioning](positioning-and-open-source/plan.md) — **active**; lead every
+  surface with "Everything you train. One plan." and AI as optional.
+  Repository and website copy are live (PR #296); in-app copy is next and the
+  App Store listing waits for the version after 1.0. Open-sourcing was
+  deferred by the owner on 2026-11-02.
 - [Plan on the web](web-app/plan.md) — **planned**; sign in at
   `app.tresfort.app` with the same Apple account to plan training and analyze
   trends with a big screen and a mouse: calendar, workouts, planned runs,

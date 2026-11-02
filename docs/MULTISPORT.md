@@ -575,9 +575,14 @@ M5 only when a real pain point justifies the API coupling.
   store of record. Second exception (owner decision, 2026-10-31):
   [planned runs](plans/planned-runs/plan.md) carry structured steps with pace
   or heart rate targets in the Tres Fort plan, and the recorder follows them.
-  Completed runs still go only to intervals.icu.
+  Third exception (owner decision, 2026-11-02): Tres Fort keeps runs
+  recorded in the app itself, with their GPS route
+  ([run recorder P5](plans/run-recorder/plan.md)), and sends intervals.icu a
+  copy only when the member has connected it.
 - **A second writable cardio store.** Endurance truth stays in intervals;
-  tres-fort mirrors read-only. Never invert this.
+  tres-fort mirrors read-only. Never invert this. The exception is the
+  member's own recordings above: Tres Fort keeps them as written, and an
+  intervals.icu copy of the same run still wins dedup.
 - **A materialized weeks/calendar table.** The calendar is derived; only the
   bounded current-mesocycle materialization of §6.4 exists.
 - **Multi-athlete tri coaching.** Designed per-user-clean, but the dad case is

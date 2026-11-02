@@ -4,13 +4,16 @@ import XCTest
 
 private final class RecordingUploadStub: RecordingUploadAPI {
     var failures: [UUID: Error] = [:]
+    /// The server's `intervals.status` per run; none for an older Worker.
+    var intervalsStatus: [UUID: String] = [:]
     private(set) var uploaded: [UUID] = []
 
     func uploadRecording(_ run: RecordedRun, jwt: String) async throws -> RecordingUploadResult {
         if let error = failures[run.id] { throw error }
         uploaded.append(run.id)
         return RecordingUploadResult(
-            ok: true, deduplicated: false, recording_id: run.uploadID, intervals_activity_id: "i1")
+            ok: true, deduplicated: false, recording_id: run.uploadID, intervals_activity_id: "i1",
+            intervals: intervalsStatus[run.id].map(RecordingUploadResult.IntervalsCopy.init(status:)))
     }
 }
 
@@ -228,6 +231,49 @@ final class RunRecordingTests: XCTestCase {
         XCTAssertEqual(try store.all().map(\.id), [onlyHere.id, older.id])
         XCTAssertFalse(RunRecordingUploader.isNotConnected(APIError.http(409, #"{"error":"intervals_write_forbidden"}"#)))
         XCTAssertFalse(RunRecordingUploader.isNotConnected(APIError.http(502, "intervals_not_connected")))
+    }
+
+    func testUploaderSaysWhichRunsTresFortKeptWithoutAnIntervalsCopy() async throws {
+        let store = try RunRecordingStore(accountID: "user-a", baseURL: base)
+        let sent = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_000_000))
+        let kept = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_100_000))
+        let waiting = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_200_000))
+        let offline = makeRun(startedAt: Date(timeIntervalSince1970: 1_793_300_000))
+        for r in [sent, kept, waiting, offline] { try store.save(r) }
+        let api = RecordingUploadStub()
+        api.intervalsStatus = [sent.id: "uploaded", kept.id: "not_connected"]
+        api.failures[waiting.id] = APIError.http(
+            502, #"{"error":"intervals_unavailable","stored":true,"recording_id":"x"}"#)
+        api.failures[offline.id] = URLError(.notConnectedToInternet)
+
+        let summary = try await RunRecordingUploader.uploadPending(store: store, api: api, jwt: "jwt")
+
+        XCTAssertEqual(summary, .init(uploaded: [sent.id, kept.id], failed: [waiting.id, offline.id],
+                                      unauthorized: false, keptWithoutIntervals: [kept.id],
+                                      keptAwaitingIntervals: [waiting.id]))
+        // Tres Fort has the first failure, so only its intervals.icu copy
+        // waits; nothing reached Tres Fort for the second.
+        XCTAssertEqual(try store.all().map(\.id), [waiting.id, offline.id])
+    }
+
+    func testRecordingResultReadsTheIntervalsCopy() throws {
+        let decode = { (json: String) in
+            try JSONDecoder().decode(RecordingUploadResult.self, from: Data(json.utf8))
+        }
+        let kept = try decode(#"""
+        {"ok":true,"destination":"tres-fort","deduplicated":false,"recording_id":"r","activity_id":"a",
+         "intervals_activity_id":null,"intervals":{"status":"not_connected"}}
+        """#)
+        XCTAssertTrue(kept.keptWithoutIntervals)
+        let sent = try decode(#"""
+        {"ok":true,"deduplicated":true,"recording_id":"r","intervals_activity_id":"i1",
+         "intervals":{"status":"uploaded","deduplicated":true,"activity_id":"i1"}}
+        """#)
+        XCTAssertFalse(sent.keptWithoutIntervals)
+        // An older Worker only uploaded to intervals.icu.
+        let older = try decode(#"{"ok":true,"deduplicated":false,"recording_id":"r","intervals_activity_id":"i1"}"#)
+        XCTAssertNil(older.intervals)
+        XCTAssertFalse(older.keptWithoutIntervals)
     }
 
     func testUploaderStopsWhenTheBearerIsRejected() async throws {

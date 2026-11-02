@@ -297,7 +297,12 @@ chat start) and a **prompt** (`coach_brief`).
   stores only their threshold-independent summaries (migration `0061`).
   `POST /api/activities/fit` imports a `.fit` file (`src/fitFile.ts`) as a
   `source='fit'` activity scored the same way; dedup keeps intervals.icu over
-  `.fit` over Apple Health. `GET /api/me/thresholds/suggestions` offers the
+  `.fit` over Apple Health. `POST /api/activities/recordings` keeps a run
+  recorded in the app (TCX, `src/tcxFile.ts`) the same way as a
+  `source='recording'` activity, ranked like `.fit`, with its GPS route in
+  `activity_routes` (migration 0063, `src/activityRoute.ts`). Routes are
+  private to the member: never in group views or coach tools. The file then
+  goes to intervals.icu only when the member has connected it. `GET /api/me/thresholds/suggestions` offers the
   thresholds intervals.icu scored the member's latest synced workouts with;
   only the member's tap saves one (`source='intervals'`).
   Missing data stays unknown; never fabricate a load. See

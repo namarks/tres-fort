@@ -10,6 +10,7 @@ import { requireAppJwt } from '../auth';
 import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
 import type { Sample } from '../trainingLoad';
 import { parseFit, FitParseError, type FitActivity } from '../fitFile';
+import { parseTcx, TcxParseError, type TcxRun } from '../tcxFile';
 import { importFitActivity, deleteFitActivity } from '../db';
 import type { HealthKitStreams } from '../db';
 import { isGroupId } from '../exerciseGroups';
@@ -106,6 +107,9 @@ import {
   swapExercise,
   upsertHealthKitActivity,
   uploadRecordedRun,
+  storeRecordedRun,
+  getActivityRoute,
+  deleteRecordedRun,
   logEnduranceActivity,
   getUserTimezone,
   recordingFormat,
@@ -1595,10 +1599,20 @@ apiRoutes.delete('/activities/fit/:id', async (c) => {
 
 // POST /api/activities/recordings — a run recorded in the app, as multipart
 // form data: `id` (client UUID, the idempotency key), `date` (civil start
-// date), optional `name`, and `file` (.fit, .gpx or .tcx). The file is
-// uploaded to the member's intervals.icu account and never stored here
-// (docs/plans/run-recorder). 201 when uploaded, 200 when an earlier attempt
-// already did.
+// date), optional `name`, and `file` (.tcx, the recorder's format). Tres
+// Fort keeps the run and its GPS route (docs/plans/run-recorder P5), then
+// uploads the file to the member's intervals.icu account when one is
+// connected. 201 when anything new was kept or uploaded, 200 when earlier
+// attempts already did both. Without a connection the run is kept and
+// `intervals.status` says so. A provider failure keeps its error status and
+// adds `stored: true`, so the app keeps the file and retries the
+// intervals.icu copy; the retry finds the run already kept.
+const TCX_ERROR_STATUS = {
+  not_tcx: 400,
+  not_a_run: 422,
+  no_data: 422,
+} as const;
+
 const RECORDING_ERROR_STATUS = {
   intervals_not_connected: 409,
   intervals_write_forbidden: 409,
@@ -1629,18 +1643,72 @@ apiRoutes.post('/activities/recordings', async (c) => {
   }
   if (file.size > MAX_RECORDING_BYTES) return c.json({ error: 'file_too_large' }, 413);
   const head = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
-  const format = recordingFormat(file.name, head);
-  if (format === null) return c.json({ error: 'unsupported_file' }, 400);
+  if (recordingFormat(file.name, head) !== 'tcx') return c.json({ error: 'unsupported_file' }, 400);
+  let run: TcxRun;
+  try {
+    run = parseTcx(await file.text());
+  } catch (e) {
+    if (e instanceof TcxParseError) return c.json({ error: e.code }, TCX_ERROR_STATUS[e.code]);
+    throw e;
+  }
+  const userId = c.get('userId');
+  const recordingId = id.toLowerCase();
+  const trimmedName = name && name.trim().length > 0 ? name.trim() : null;
+  const stored = await storeRecordedRun(c.env.DB, userId, { recording_id: recordingId, date, name: trimmedName, run });
+  const kept = { recording_id: recordingId, activity_id: stored.activity.id };
+  // A run the member deleted from Tres Fort is not sent anywhere again.
+  if (stored.deleted) {
+    return c.json({
+      ok: true, destination: 'tres-fort', deduplicated: true, deleted: true, ...kept,
+      intervals_activity_id: null, intervals: { status: 'skipped' },
+    }, 200);
+  }
 
-  const result = await uploadRecordedRun(c.env.DB, c.env, c.get('userId'), {
-    recording_id: id,
+  const upload = await uploadRecordedRun(c.env.DB, c.env, userId, {
+    recording_id: recordingId,
     date,
     file,
-    format,
-    name: name && name.trim().length > 0 ? name.trim() : null,
+    format: 'tcx',
+    name: trimmedName,
   });
-  if ('error' in result) return c.json(result, RECORDING_ERROR_STATUS[result.error]);
-  return c.json(result, result.deduplicated ? 200 : 201);
+  if ('error' in upload) {
+    if (upload.error === 'intervals_not_connected') {
+      return c.json({
+        ok: true, destination: 'tres-fort', deduplicated: stored.deduplicated, ...kept,
+        intervals_activity_id: null, intervals: { status: 'not_connected' },
+      }, stored.deduplicated ? 200 : 201);
+    }
+    return c.json({ ...upload, stored: true, ...kept }, RECORDING_ERROR_STATUS[upload.error]);
+  }
+  const deduplicated = stored.deduplicated && upload.deduplicated;
+  return c.json({
+    ok: true, destination: 'tres-fort', deduplicated, ...kept,
+    intervals_activity_id: upload.intervals_activity_id,
+    intervals: { status: 'uploaded', deduplicated: upload.deduplicated, activity_id: upload.intervals_activity_id },
+    refresh: upload.refresh,
+  }, deduplicated ? 200 : 201);
+});
+
+// GET /api/activities/:id/route — the GPS route behind one of the member's
+// activities: a run recorded in the app, or the intervals.icu copy of one.
+// Encoded as src/activityRoute.ts describes. 404 when there is none. Only
+// the member's own routes are ever served.
+apiRoutes.get('/activities/:id/route', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const found = await getActivityRoute(c.env.DB, c.get('userId'), c.req.param('id'));
+  if (!found) return c.json({ error: 'not_found' }, 404);
+  return c.json(found);
+});
+
+// DELETE /api/activities/recordings/:id — remove a run recorded in the app,
+// by its recording id: the activity is tombstoned and its route deleted. A
+// copy already uploaded to intervals.icu stays there.
+apiRoutes.delete('/activities/recordings/:id', async (c) => {
+  const id = c.req.param('id');
+  if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400);
+  const ok = await deleteRecordedRun(c.env.DB, c.get('userId'), id);
+  if (!ok) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
 });
 
 // POST /api/activities/endurance — a run, ride, swim or walk entered by hand

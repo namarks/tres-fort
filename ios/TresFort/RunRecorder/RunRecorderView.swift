@@ -70,8 +70,8 @@ struct RunRecorderView: View {
             Text(model.isTooShortToSave
                  ? "Runs under a minute or 100 m aren’t saved."
                  : (model.plannedRun == nil
-                    ? "Saving adds the run to Apple Health, and to intervals.icu if it’s connected."
-                    : "Saving adds the run to Apple Health, and to intervals.icu if it’s connected. It also marks the planned run done."))
+                    ? "Saving keeps the run and its route in Tres Fort and Apple Health, and sends it to intervals.icu if it’s connected."
+                    : "Saving keeps the run and its route in Tres Fort and Apple Health, and sends it to intervals.icu if it’s connected. It also marks the planned run done."))
         }
     }
 
@@ -284,10 +284,11 @@ struct RunRecorderView: View {
     private var uploadText: String {
         switch model.uploadStatus {
         case .idle: ""
-        case .uploading: "Sending the route to intervals.icu…"
-        case .uploaded:
-            model.run?.savedToHealth == false ? "Sent to intervals.icu." : "Saved to Apple Health and intervals.icu."
-        case .waiting: "Saved on this iPhone. It uploads to intervals.icu when it can, so check your intervals.icu connection in Profile if it doesn’t appear."
+        case .uploading: "Saving the run…"
+        case .uploaded: "Saved in Tres Fort and sent to intervals.icu."
+        case .keptInTresFort: "Saved in Tres Fort with its route."
+        case .waitingForIntervals: "Saved in Tres Fort. The copy for intervals.icu retries later; check the connection in Profile if it doesn’t appear there."
+        case .waiting: "Saved on this iPhone. It uploads when the iPhone is back online."
         case .notConnected: "Saved to Apple Health with its route. intervals.icu isn’t connected, so nothing else was sent."
         }
     }

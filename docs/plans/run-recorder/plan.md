@@ -1,13 +1,15 @@
 # Run recorder on iPhone
 
-Slug: run-recorder · Status: active · Updated: 2026-10-31 · Theme: connected-training
+Slug: run-recorder · Status: active · Updated: 2026-11-02 · Theme: connected-training
 
 ## Goal
 
 Let a member record an outdoor run in the Tres Fort iPhone app instead of
 Strava. The run gets live time, distance and pace and a GPS route, is saved
-to Apple Health, and reaches intervals.icu as a full activity file, so the coach
-sees it in the same place as Garmin runs.
+to Apple Health, and is kept by Tres Fort itself, route included, so the app
+and web can show it without any other service. When the member has
+intervals.icu, it also reaches intervals.icu as a full activity file, so the
+coach sees it in the same place as Garmin runs.
 
 ## Phases
 
@@ -22,7 +24,8 @@ sees it in the same place as Garmin runs.
   - Only `.fit`, `.gpx` and `.tcx` files up to 10 MB whose first bytes match
     the extension are accepted. The file passes through and is never stored
     in D1; the existing activity sync brings the run into
-    `external_activities`.
+    `external_activities`. (P5 changes this: Tres Fort keeps the run itself
+    and accepts only the recorder's TCX.)
   - Provider failure is an error with no local fallback. A write 401/403
     never disconnects the read credential, the same as `log_activity`.
 - [x] **P1 — Record a run on iPhone**
@@ -131,10 +134,55 @@ sees it in the same place as Garmin runs.
     Finish on one discards it without a Health workout or upload. In
     TestFlight build 59 (2026-10-31).
 
+- [ ] **P5 — Keep recorded runs in Tres Fort**
+  - The owner decided on 2026-11-02 that the recorder saves runs straight to
+    Tres Fort, GPS route included, so the app and web can show maps. This
+    reverses the earlier rule that Tres Fort keeps no GPS streams and leaves
+    recorded runs to intervals.icu
+    ([MULTISPORT.md §11](../../MULTISPORT.md) records the exception).
+    intervals.icu becomes an optional copy.
+  - [ ] **(a) Keep the run and its route**
+    - `POST /api/activities/recordings` reads the recorder's TCX
+      (`src/tcxFile.ts`) and keeps the run as an `external_activities` row
+      with `source='recording'`, id `recording:activity:<user>:<recording
+      id>`. Moving time, distance, elapsed time, average and maximum heart
+      rate come from the file. Heart rate on moving time gives the same
+      stream summary a .fit import keeps, so the run's load is scored from
+      the member's thresholds.
+    - The GPS route goes to `activity_routes` (migration 0063), one row per
+      recording, in `src/activityRoute.ts`'s encoding: delta-coded
+      milliseconds, micro-degrees and decimeter altitudes, one segment per
+      track between pauses. Every fix is kept up to 12 hours at one a
+      second; a longer route keeps each segment's ends and an even share of
+      the points between them.
+    - Then the file goes to intervals.icu as before when the member has a
+      connection. Without one the answer is 201 with
+      `intervals.status = "not_connected"`. A provider failure keeps its
+      error status and adds `stored: true`, so the app keeps the file and
+      retries only the intervals.icu copy; the retry finds the run already
+      kept. A recording the member deleted is never kept or sent again.
+    - Dedup: an intervals.icu copy of the run wins over the recording, as
+      it does over a .fit import, and the recording wins over Apple
+      Health's copy. `GET /api/activities/:id/route` serves the route for
+      the recording or for the activity it is hidden behind, only to its
+      member. `DELETE /api/activities/recordings/:id` tombstones the run and
+      deletes its route; a copy on intervals.icu stays there.
+    - Routes are private: group views and the coach never read them. The
+      account export includes them and account deletion removes them. The
+      privacy policy says the app records location during a run, writes the
+      workout to Apple Health and keeps the route in Tres Fort.
+    - The recorder says where the run went: "Saved in Tres Fort and sent to
+      intervals.icu.", "Saved in Tres Fort with its route." without a
+      connection, or that only the intervals.icu copy retries later.
+  - [ ] **(b) Show the route**
+    - A map of the route on the run's record in the app and on the web, and
+      a way to delete a recorded run in the app.
+
 ## Execution frontier
 
 - P3
 - P4
+- P5
 
 ## Dependencies
 
@@ -142,6 +190,7 @@ sees it in the same place as Garmin runs.
 |---|---|---|---|
 | P3 | gated_by | external:owner-run-recorder-device-verification | Real GPS runs on the owner's iPhone need an authorized device build. |
 | P1 | coordinates_with | plan:app-store-submission | New location and Health write permissions change the App Privacy answers and review notes. |
+| P5 | coordinates_with | plan:app-store-submission | Keeping GPS routes in Tres Fort adds precise location, linked to the member, to the App Privacy answers. |
 
 Phases run in order: P1 needs P0's upload path, and P2's Live Activity
 mirrors P1's session.
@@ -151,6 +200,10 @@ mirrors P1's session.
 **Now (@owner):** Record the remaining P3 runs on TestFlight build 60
 (main 2832d0c), which carries auto-pause, the running layout, planned runs
 and planning them in the app.
+
+**Next (@agent):** Show the route (P5(b)) once P5(a) merges. P5(a) needs
+migration 0063 applied in production before its Worker is deployed, both
+with the owner's go-ahead.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -190,6 +243,18 @@ the scene delegate is left to P3's force-quit check.
   their spoken cues, a manual pause that moving doesn't resume, turning
   auto-pause off and keeping that choice, a run too short to save (no Health
   workout, upload or checkpoint), and the kept running-layout choices.
+- P5(a): `test/activity_route.test.ts` covers the route encoding (round
+  trip, dropped points, thinning past 12 hours, refused stored text) and the
+  TCX reader (laps, tracks, heart rate on moving time, missing positions,
+  refused files). `test/run_recording.test.ts` covers keeping the run and
+  its route and uploading the file, a retry, a member without a connection,
+  provider failures with the run kept, file validation, dedup against Apple
+  Health and intervals.icu copies with the route served through the
+  intervals.icu copy, another member getting 404, and deleting a recording
+  and its route. `account_deletion.test.ts` and
+  `account_export_service.test.ts` cover routes leaving and joining the
+  account. `RunRecordingTests` and `RunRecorderTests` cover reading the
+  intervals.icu copy's status and the recorder's three outcomes.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing
@@ -236,11 +301,11 @@ the scene delegate is left to P3's force-quit check.
   Apple's sensor fusion, which Strava's iPhone app also relies on. Strava's
   extras (segments, social feed, heatmaps, elevation correction) are out of
   scope.
-- intervals.icu stays the store of record for endurance activities, as
-  [MULTISPORT.md §11](../../MULTISPORT.md) requires. Tres Fort uploads files
-  and never keeps a second writable cardio store or GPS streams in D1.
-  Since planned-runs P7 the connection is optional: without one, a run
-  Apple Health saved with its route stays there and leaves the upload queue.
+- Until P5, intervals.icu was the store of record for recorded runs and
+  Tres Fort kept no GPS streams in D1. Since planned-runs P7 the connection
+  was optional, with Apple Health keeping the route. P5 has Tres Fort keep
+  the run and its route itself; intervals.icu stays the store of record for
+  the activities it syncs.
 - Heart rate on iPhone comes only from what Health provides during the
   session (a paired watch or supported headphones). Direct Bluetooth chest
   straps and an Apple Watch app are possible later slices, not part of this
@@ -248,5 +313,6 @@ the scene delegate is left to P3's force-quit check.
 - Recovering the Sep 4 to Oct 27, 2026 Strava runs is an owner task (Strava
   export uploaded to intervals.icu), not part of this plan.
 - `delete_activity` deletes only `tresfort:activity:` activities, so it can't
-  remove a recorded run. Whether it should is open.
+  remove a recorded run's intervals.icu copy. P5's delete removes only Tres
+  Fort's copy; whether it should also remove the intervals.icu copy is open.
 - Merging any phase doesn't authorize a Worker deploy or an iOS distribution.

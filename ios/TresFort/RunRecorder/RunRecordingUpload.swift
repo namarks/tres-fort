@@ -1,14 +1,28 @@
 import Foundation
 
-/// `POST /api/activities/recordings` response for an accepted upload. A 200
-/// (`deduplicated`) means an earlier attempt already reached intervals.icu.
-/// A 409 `intervals_not_connected` means the account has no intervals.icu
-/// connection, so the run stays in Apple Health only.
+/// `POST /api/activities/recordings` response for an accepted upload. Tres
+/// Fort keeps the run and its route (docs/plans/run-recorder P5) and sends
+/// the file on to intervals.icu when the account has a connection;
+/// `intervals.status` says which ("uploaded", "not_connected", or "skipped"
+/// for a run the member deleted). A 200 (`deduplicated`) means earlier
+/// attempts already did both. An older Worker sends no `intervals`, only
+/// uploads to intervals.icu, and answers 409 `intervals_not_connected`
+/// without a connection.
 struct RecordingUploadResult: Decodable, Equatable {
+    struct IntervalsCopy: Decodable, Equatable {
+        let status: String
+    }
+
     let ok: Bool
     let deduplicated: Bool
     let recording_id: String
     let intervals_activity_id: String?
+    var intervals: IntervalsCopy? = nil
+
+    /// Tres Fort kept the run and no copy went to intervals.icu.
+    var keptWithoutIntervals: Bool {
+        intervals.map { $0.status != "uploaded" } ?? false
+    }
 }
 
 protocol RecordingUploadAPI {
@@ -52,17 +66,32 @@ extension APIClient: RecordingUploadAPI {
 
 /// Sends every finished run the store holds, oldest first, and removes each
 /// one only after the server acknowledges it. One failure doesn't stop the
-/// others; failed runs stay for the next attempt. intervals.icu is optional:
-/// when the account has no connection and Apple Health saved the run with
-/// its route, the run leaves the queue instead of retrying forever.
+/// others; failed runs stay for the next attempt. Tres Fort keeps each run
+/// it accepts, so intervals.icu is optional. A failure that comes with
+/// `stored: true` means Tres Fort has the run and only the intervals.icu copy
+/// waits; the run stays queued to retry that. With an older Worker that
+/// only uploads to intervals.icu, a run Apple Health saved in full leaves the
+/// queue when the account has no connection.
 enum RunRecordingUploader {
     struct Summary: Equatable {
         var uploaded: [UUID] = []
         var failed: [UUID] = []
         /// True when the server rejected the bearer; the caller re-authenticates.
         var unauthorized = false
-        /// Runs not sent because this account has no intervals.icu connection.
+        /// Runs an older Worker didn't send because this account has no
+        /// intervals.icu connection; Apple Health keeps them.
         var notConnected: [UUID] = []
+        /// Uploaded runs Tres Fort kept without an intervals.icu copy.
+        var keptWithoutIntervals: [UUID] = []
+        /// Failed runs Tres Fort already kept; only the intervals.icu copy
+        /// waits.
+        var keptAwaitingIntervals: [UUID] = []
+    }
+
+    /// A failure after Tres Fort kept the run: only intervals.icu failed.
+    static func isKept(_ error: Error) -> Bool {
+        guard case let APIError.http(_, body) = error else { return false }
+        return body.contains("\"stored\":true")
     }
 
     /// The Worker's answer when the account has no intervals.icu connection.
@@ -79,9 +108,10 @@ enum RunRecordingUploader {
         var summary = Summary()
         for run in try store.pendingUploads() {
             do {
-                _ = try await api.uploadRecording(run, jwt: jwt)
+                let result = try await api.uploadRecording(run, jwt: jwt)
                 try store.remove(id: run.id)
                 summary.uploaded.append(run.id)
+                if result.keptWithoutIntervals { summary.keptWithoutIntervals.append(run.id) }
             } catch let APIError.http(code, _) where code == 401 {
                 summary.failed.append(run.id)
                 summary.unauthorized = true
@@ -91,6 +121,7 @@ enum RunRecordingUploader {
                 summary.notConnected.append(run.id)
             } catch {
                 summary.failed.append(run.id)
+                if isKept(error) { summary.keptAwaitingIntervals.append(run.id) }
             }
         }
         return summary

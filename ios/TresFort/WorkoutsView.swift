@@ -56,6 +56,9 @@ enum RoutineCreationPolicy {
     }
 }
 
+/// The two sides of the Plan tab.
+enum PlanSide: Hashable { case schedule, workouts }
+
 /// Compact member-owned editor for the same plan tree and weekly schedule the
 /// coach reads and edits. There is intentionally no separate "manual" plan.
 /// It is the Plan tab's root, and the sheet Today opens to choose a workout.
@@ -64,11 +67,9 @@ struct WorkoutsView: View {
     @ObservedObject var sync: SyncModel
     var onStart: ((String) -> Void)? = nil
     var date: String? = nil
-    /// The Plan tab: no Done. It shows the week and links, and pushes the
-    /// workout library instead of listing it.
+    /// The Plan tab: no Done, and two sides. Schedule is when you train;
+    /// Workouts is what each saved workout contains.
     var isTabRoot = false
-    /// The library pushed from the Plan tab onto the tab's own stack.
-    var isPushed = false
     /// Shows the workout on Today after the calendar starts one.
     var onShowWorkout: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
@@ -97,17 +98,14 @@ struct WorkoutsView: View {
     @State private var showWeeklySchedule = false
     @State private var showCalendar = false
     @State private var showAwayDates = false
-    @State private var showLibrary = false
-    /// The tab and the library it pushes stay put when a workout starts; the
-    /// sheet closes.
-    private var staysOpen: Bool { isTabRoot || isPushed }
+    @State private var planSide = PlanSide.schedule
+    /// The tab stays put when a workout starts; the sheet closes.
+    private var staysOpen: Bool { isTabRoot }
 
     var body: some View {
         Group {
             if let date {
                 WorkoutDatePickerView(sync: sync, date: date)
-            } else if isPushed {
-                libraryContent
             } else {
                 NavigationStack { libraryContent }
             }
@@ -131,7 +129,7 @@ struct WorkoutsView: View {
             .navigationTitle(isTabRoot ? "Plan" : date == nil ? "Workouts" : "Choose a workout")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if !isTabRoot && !isPushed {
+                if !isTabRoot {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
                     }
@@ -145,7 +143,8 @@ struct WorkoutsView: View {
                         .accessibilityLabel("Plan changes")
                         .accessibilityIdentifier("plan.changes")
                     }
-                } else if canReorder && visibleWorkouts.count > 1 {
+                }
+                if (!isTabRoot || planSide == .workouts) && canReorder && visibleWorkouts.count > 1 {
                     ToolbarItem(placement: .topBarTrailing) {
                         EditButton().disabled(sync.isRoutineMutationInFlight)
                     }
@@ -222,9 +221,6 @@ struct WorkoutsView: View {
             }
             .navigationDestination(isPresented: $showAwayDates) { AwayDatesView(sync: sync) }
             .navigationDestination(isPresented: $showArchivedWorkouts) { ArchivedWorkoutsView(sync: sync) }
-            .navigationDestination(isPresented: $showLibrary) {
-                WorkoutsView(sync: sync, onStart: onStart, isPushed: true)
-            }
             .sheet(item: $assignmentTarget) { workout in
                 WorkoutDateSheet(sync: sync, workout: workout)
             }
@@ -246,66 +242,76 @@ struct WorkoutsView: View {
         sync.plan?.workouts.filter(\.isArchived).count ?? 0
     }
 
-    /// The Plan tab: the repeating week with the one action that changes it,
-    /// then links to the workout library, the calendar and away dates.
+    /// The Plan tab. Schedule answers when you train: the repeating week with
+    /// the one action that changes it, the calendar and away dates. Workouts
+    /// answers what you do: the saved workouts and making a new one.
     private var planHome: some View {
         List {
-            if needsFirstWorkout {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Build your plan")
-                            .font(Theme.mono(17, .bold)).foregroundStyle(Theme.text)
-                        Text("Your plan is the workouts you save and the days you do them. Start with one workout, then choose its days.")
-                            .font(Theme.mono(13)).foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.vertical, 6)
-                    Button { addingDay = true } label: {
-                        Label("Create your first workout", systemImage: "plus")
-                    }
-                    .buttonStyle(WorkoutPrimaryButtonStyle())
-                    .disabled(sync.isRoutineMutationInFlight)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    .accessibilityIdentifier("plan.createFirstWorkout")
-                }
-            } else {
-                Section {
-                    PlanWeekSummary(sync: sync) { detailTarget = IdentifiedString(id: $0) }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                    Button { showWeeklySchedule = true } label: {
-                        Text(WorkoutLibraryPolicy.hasScheduledDay(plan: sync.plan)
-                             ? "Edit weekly schedule" : "Choose your training days")
-                    }
-                    .buttonStyle(WorkoutPrimaryButtonStyle())
-                    .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    .accessibilityIdentifier("library.weeklySchedule")
-                } header: {
-                    Text("Your week")
-                } footer: {
-                    Text("Repeats every week. To change a single date, use the calendar.")
-                }
-            }
             Section {
-                if !needsFirstWorkout || archivedCount > 0 {
-                    planLink("Workouts", systemImage: "list.bullet",
-                             detail: "\(sync.plan?.availableWorkouts.count ?? 0)",
-                             id: "plan.workouts") { showLibrary = true }
+                Picker("Plan", selection: $planSide) {
+                    Text("Schedule").tag(PlanSide.schedule)
+                    Text("Workouts").tag(PlanSide.workouts)
                 }
-                planLink("Calendar", systemImage: "calendar", id: "plan.calendar") { showCalendar = true }
-                planLink("Away dates", systemImage: "airplane",
-                         detail: nextAwayDates.map(AwayDatesText.range), id: "plan.awayDates") {
-                    showAwayDates = true
-                }
-                .disabled(sync.plan == nil)
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("plan.side")
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            }
+            if planSide == .schedule {
+                scheduleSections
+            } else {
+                workoutsSection
+                archivedSection
             }
             if let error = sync.loadError {
                 Section { Text(error).foregroundStyle(Theme.danger) }
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder private var scheduleSections: some View {
+        if needsFirstWorkout {
+            Section {
+                Text("Your week is empty. Save a workout on the Workouts side, then choose the days you do it.")
+                    .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 6)
+                Button { planSide = .workouts } label: { Text("Go to Workouts") }
+                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .accessibilityIdentifier("plan.goToWorkouts")
+            } header: {
+                Text("Your week")
+            }
+        } else {
+            Section {
+                PlanWeekSummary(sync: sync) { detailTarget = IdentifiedString(id: $0) }
+                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                Button { showWeeklySchedule = true } label: {
+                    Text(WorkoutLibraryPolicy.hasScheduledDay(plan: sync.plan)
+                         ? "Edit weekly schedule" : "Choose your training days")
+                }
+                .buttonStyle(WorkoutPrimaryButtonStyle())
+                .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                .accessibilityIdentifier("library.weeklySchedule")
+            } header: {
+                Text("Your week")
+            } footer: {
+                Text("Repeats every week. To change a single date, use the calendar.")
+            }
+        }
+        Section {
+            planLink("Calendar", systemImage: "calendar", id: "plan.calendar") { showCalendar = true }
+            planLink("Away dates", systemImage: "airplane",
+                     detail: nextAwayDates.map(AwayDatesText.range), id: "plan.awayDates") {
+                showAwayDates = true
+            }
+            .disabled(sync.plan == nil)
+        }
     }
 
     private func planLink(_ title: String, systemImage: String, detail: String? = nil,
@@ -329,45 +335,21 @@ struct WorkoutsView: View {
         .accessibilityIdentifier(id)
     }
 
-    /// The workout library: the sheet Today opens, and the screen the Plan
-    /// tab pushes.
+    /// The workout library sheet Today opens.
     private var routineList: some View {
         List {
             workoutsSection
-            if date == nil && archivedCount > 0 {
-                Section {
-                    Button { showArchivedWorkouts = true } label: {
-                        HStack(spacing: 12) {
-                            Label("Archived workouts", systemImage: "archivebox")
-                                .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
-                            Spacer()
-                            Text("\(archivedCount)")
-                                .font(Theme.mono(12)).foregroundStyle(Theme.muted)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
-                                .accessibilityHidden(true)
-                        }
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("library.archived")
-                } footer: {
-                    Text("Workouts you put away. Restore one to use it again.")
-                }
-            }
+            archivedSection
 
-            // The Plan tab keeps plan changes in its toolbar.
-            if !isPushed {
-                Section("Changes") {
-                    RecentPlanChanges(sync: sync) { showHistory = true }
-                    Button {
-                        showHistory = true
-                    } label: {
-                        Label("Plan changes", systemImage: "clock.arrow.circlepath")
-                    }
-                    .disabled(sync.isRoutineMutationInFlight)
+            // The Plan tab keeps plan changes in its toolbar instead.
+            Section("Changes") {
+                RecentPlanChanges(sync: sync) { showHistory = true }
+                Button {
+                    showHistory = true
+                } label: {
+                    Label("Plan changes", systemImage: "clock.arrow.circlepath")
                 }
+                .disabled(sync.isRoutineMutationInFlight)
             }
 
             if let error = sync.loadError {
@@ -375,6 +357,31 @@ struct WorkoutsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder private var archivedSection: some View {
+        if date == nil && archivedCount > 0 {
+            Section {
+                Button { showArchivedWorkouts = true } label: {
+                    HStack(spacing: 12) {
+                        Label("Archived workouts", systemImage: "archivebox")
+                            .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
+                        Spacer()
+                        Text("\(archivedCount)")
+                            .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("library.archived")
+            } footer: {
+                Text("Workouts you put away. Restore one to use it again.")
+            }
+        }
     }
 
     @ViewBuilder private var workoutsSection: some View {
@@ -489,9 +496,9 @@ struct WorkoutsView: View {
                     .foregroundStyle(Theme.accent)
             }
             .disabled(sync.isRoutineMutationInFlight)
-            // The Plan tab leads with the weekly schedule. The library sheet
-            // keeps this route to the same editor.
-            if !isPushed {
+            // The Plan tab edits the week on its Schedule side. The library
+            // sheet keeps this route to the same editor.
+            if !isTabRoot {
                 Button {
                     showWeeklySchedule = true
                 } label: {
@@ -505,7 +512,7 @@ struct WorkoutsView: View {
         } header: {
             Text("Workouts")
         } footer: {
-            Text("Open a workout to view its exercises, start it, or edit the saved workout.")
+            Text("Saved workouts you can put on any day. Open one to view its exercises, start it, or edit it.")
         }
     }
 

@@ -228,8 +228,8 @@ without adding provider accounts, server collection or new data stores.
   less clunky: unplanned training one tap from Today, one-tap exercise actions,
   one finish screen, fewer stacked sheets, a Plan tab, endurance logging
   without AI and one visual system. P0 to P4 are merged (PRs #287 to #291).
-  P6 makes the Plan tab your week plus three links, moves the workout list
-  to its own screen and replaces the Active/Archived toggle. A TestFlight build and an owner device check remain.
+  P6 splits the Plan tab into Schedule (when you train) and Workouts (what
+  you do) and replaces the Active/Archived toggle. A TestFlight build and an owner device check remain.
 - [Progress and Apple Health weight](apple-health-weight/plan.md) — **gated**;
   the private weight view and Progress tab are merged and included in internal
   TestFlight build 42. Owner verification on a real iPhone with Health readings

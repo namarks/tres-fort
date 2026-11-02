@@ -62,20 +62,20 @@ Active/Archived toggle, which P6 addresses.
     Endurance card and the new type and buttons.
 
 - [ ] **P6 — A Plan tab with a clear first action**
-  - The tab shows only "Your week" and three links. Each weekday shows its
-    workout or Rest, and a day with a workout opens it. One primary button,
-    Edit weekly schedule (Choose your training days when nothing is
-    scheduled), sits under the week. Workouts (with a count), Calendar and
-    Away dates follow as rows; plan changes move to a toolbar button.
-  - The workout library is its own pushed screen instead of a list on the
-    tab. A plan with no workouts shows one step, Create your first workout.
-  - The Active/Archived toggle is gone. The library lists active workouts,
-    and an Archived workouts row with a count, shown only when something is
-    archived, opens its own screen to restore or delete them. The tag filter
-    lists tags of active workouts only.
-  - The owner reviewed mocks on 2026-11-02 and asked for the calmer
-    version with the workout list off the tab.
-  - Unit test for the week rows; UI journeys for the Plan tab and the archive
+  - The owner found the tab unclear on landing, then found that it mixed
+    planning the week with making workouts. After three rounds of mocks on
+    2026-11-02, the tab has two sides behind a Schedule | Workouts switch.
+  - Schedule (the default) is when you train: "Your week" lists each weekday
+    with its workout or Rest, a day with a workout opens it, and one primary
+    button, Edit weekly schedule (Choose your training days when nothing is
+    scheduled), sits under it. Calendar and Away dates follow as rows. With
+    no workouts it points to the Workouts side instead.
+  - Workouts is what you do: the saved workouts, Add workout, the tag filter
+    and reordering. Plan changes move to a toolbar button.
+  - The Active/Archived toggle is gone. An Archived workouts row with a
+    count, shown only when something is archived, opens its own screen to
+    restore or delete them. The tag filter lists tags of active workouts.
+  - Unit test for the week rows; UI journeys for both sides and the archive
     screen. Needs the owner's look on a TestFlight build like P5.
 
 ## Execution frontier

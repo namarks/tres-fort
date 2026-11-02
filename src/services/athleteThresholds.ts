@@ -190,7 +190,8 @@ export async function deleteAthleteThreshold(db: D1Database, userId: string, id:
 //
 // Every activity intervals.icu sends carries the sport settings it was scored
 // with: `icu_ftp` (watts), `lthr` (bpm) and `threshold_pace` (metres per
-// second). The newest synced run and ride therefore say what the member's
+// second, the unit of the activity's own `pace`; intervals.icu doesn't
+// document it). The newest synced run and ride therefore say what the member's
 // intervals.icu settings are, with no extra request and no extra OAuth scope.
 // They are only suggestions: nothing is saved until the member confirms one.
 

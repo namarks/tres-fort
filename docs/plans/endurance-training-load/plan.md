@@ -135,7 +135,12 @@ provider connection.
 - [x] **P7 — Starting values from intervals.icu**
   - Every activity intervals.icu sends carries the sport settings it was
     scored with (`icu_ftp` in watts, `lthr` in bpm, `threshold_pace` in metres
-    per second), and the synced row keeps that JSON. `GET
+    per second), and the synced row keeps that JSON. intervals.icu does not
+    document `threshold_pace`'s unit; metres per second matches its activity
+    `pace`, which equals distance over moving time on the owner's synced
+    rows. On 2026-11-02 those rows carried FTP and threshold heart rate but no
+    threshold pace, so a member without one set in intervals.icu gets no pace
+    suggestion. `GET
     /api/me/thresholds/suggestions` reads the newest synced run and ride for
     each metric, so it needs no extra request and no new OAuth scope.
   - A value is suggested only when it is newer than every value the member

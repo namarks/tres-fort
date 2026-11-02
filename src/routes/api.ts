@@ -115,6 +115,7 @@ import {
   saveAthleteThreshold,
   removeAthleteThreshold,
   getAthleteThresholds,
+  getThresholdSuggestions,
   parseThresholdInput,
   isCivilDate,
 } from '../db';
@@ -1733,6 +1734,14 @@ apiRoutes.get('/me/thresholds', async (c) => {
   const asOf = c.req.query('as_of');
   if (asOf !== undefined && !isCivilDate(asOf)) return c.json({ error: 'invalid_fields', fields: ['as_of'] }, 400);
   return c.json(await getAthleteThresholds(c.env.DB, c.get('userId'), asOf ?? null));
+});
+
+// Values from the member's intervals.icu sport settings that differ from
+// theirs (P7). Read-only: the app saves one only when the member confirms it,
+// through POST /me/thresholds with source 'intervals'.
+apiRoutes.get('/me/thresholds/suggestions', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json({ suggestions: await getThresholdSuggestions(c.env.DB, c.get('userId')) });
 });
 
 apiRoutes.post('/me/thresholds', async (c) => {

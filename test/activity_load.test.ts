@@ -159,6 +159,16 @@ describe('effective training load', () => {
     await sync();
     expect((await row(`intervals:activity:${id}:zwift`)).synced_at).toBe(ride.synced_at);
     expect((await row(`intervals:activity:${id}:treadmill`)).synced_at).toBe(run.synced_at);
+
+    // A sport setting corrected in intervals.icu alone still reaches the
+    // stored JSON, so threshold suggestions follow it (P7).
+    Object.assign(activities[0]!, { icu_ftp: 240, lthr: 165 });
+    await sync();
+    const corrected = await env.DB.prepare(
+      "SELECT json_extract(raw,'$.icu_ftp') AS ftp, json_extract(raw,'$.lthr') AS lthr FROM external_activities WHERE id=?1",
+    ).bind(`intervals:activity:${id}:zwift`).first<any>();
+    expect(corrected).toEqual({ ftp: 240, lthr: 165 });
+    expect((await row(`intervals:activity:${id}:treadmill`)).synced_at).toBe(run.synced_at);
   });
 
   it('never stores a load overtaken by a concurrent source change', async () => {

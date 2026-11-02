@@ -2,6 +2,7 @@ import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 import { exportUserData } from '../src/db';
+import { intervalsThresholdValue, thresholdSuggestions } from '../src/services/athleteThresholds';
 
 // Athlete thresholds REST surface (migration 0059,
 // docs/plans/endurance-training-load P0).
@@ -130,3 +131,85 @@ describe('athlete thresholds', () => {
     ]);
   });
 });
+
+// Suggestions from intervals.icu (P7): each synced activity carries the sport
+// settings intervals.icu scored it with.
+async function intervalsActivity(userId: string, kind: string, date: string, raw: Record<string, unknown>, source = 'intervals') {
+  const ext = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO external_activities (id,user_id,source,external_id,date,start_date_local_ms,kind,name,raw,synced_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,'Workout',?8,1)`,
+  ).bind(`${source}:activity:${userId}:${ext}`, userId, source, ext, date, Date.parse(`${date}T07:00:00Z`), kind,
+    JSON.stringify(raw)).run();
+}
+
+const suggestions = async (jwt: string) => {
+  const r = await SELF.fetch(`${BASE}/api/me/thresholds/suggestions`, { headers: headers(jwt) });
+  expect(r.status).toBe(200);
+  return (await r.json<any>()).suggestions;
+};
+
+describe('threshold suggestions from intervals.icu', () => {
+  it('requires auth and is empty without intervals.icu workouts', async () => {
+    expect((await SELF.fetch(`${BASE}/api/me/thresholds/suggestions`)).status).toBe(401);
+    const u = await makeUser('nosuggest');
+    expect(await suggestions(u.jwt)).toEqual([]);
+  });
+
+  it('suggests the newest settings per sport, and saving one as intervals clears it', async () => {
+    const u = await makeUser('suggest');
+    await intervalsActivity(u.id, 'ride', '2026-10-01', { icu_ftp: 240, lthr: 160 });
+    await intervalsActivity(u.id, 'ride', '2026-10-20', { icu_ftp: 251, lthr: null });
+    await intervalsActivity(u.id, 'run', '2026-10-25', { lthr: 171, threshold_pace: 3.7 });
+    // Another source's row and a deleted row are ignored.
+    await intervalsActivity(u.id, 'ride', '2026-10-30', { icu_ftp: 400 }, 'healthkit');
+    await intervalsActivity(u.id, 'ride', '2026-10-31', { icu_ftp: 300 });
+    await env.DB.prepare("UPDATE external_activities SET deleted_at = 1 WHERE user_id = ?1 AND date = '2026-10-31'").bind(u.id).run();
+
+    expect(await suggestions(u.jwt)).toEqual([
+      { sport: 'ride', metric: 'ftp_w', value: 251, as_of: '2026-10-20' },
+      { sport: 'ride', metric: 'threshold_hr', value: 160, as_of: '2026-10-01' },
+      { sport: 'run', metric: 'threshold_hr', value: 171, as_of: '2026-10-25' },
+      // 3.7 m/s is 270 s per km (4:30 /km).
+      { sport: 'run', metric: 'threshold_pace_s_per_km', value: 270, as_of: '2026-10-25' },
+    ]);
+
+    const saved = await post(u.jwt, ftp({ value: 251, effective_date: '2026-10-20', source: 'intervals' }));
+    expect(saved.status).toBe(201);
+    expect((await saved.json<any>()).threshold.source).toBe('intervals');
+    expect((await suggestions(u.jwt)).map((s: any) => s.metric)).toEqual(['threshold_hr', 'threshold_hr', 'threshold_pace_s_per_km']);
+  });
+
+  it('never second-guesses a value the member set after the workout', async () => {
+    const u = await makeUser('later');
+    await intervalsActivity(u.id, 'ride', '2026-10-20', { icu_ftp: 251 });
+    await post(u.jwt, ftp({ value: 265, effective_date: '2026-10-28' }));
+    expect(await suggestions(u.jwt)).toEqual([]);
+  });
+
+  it('suggests a newer value even when the member has an older one', async () => {
+    const u = await makeUser('newer');
+    await post(u.jwt, ftp({ value: 229, effective_date: '2026-06-01' }));
+    await intervalsActivity(u.id, 'ride', '2026-10-20', { icu_ftp: 251 });
+    expect(await suggestions(u.jwt)).toEqual([{ sport: 'ride', metric: 'ftp_w', value: 251, as_of: '2026-10-20' }]);
+  });
+
+  it('reads values in range only', () => {
+    expect(intervalsThresholdValue('ftp_w', 250.4)).toBe(250);
+    expect(intervalsThresholdValue('ftp_w', 0)).toBeNull();
+    expect(intervalsThresholdValue('ftp_w', '250')).toBeNull();
+    expect(intervalsThresholdValue('threshold_hr', 300)).toBeNull();
+    expect(intervalsThresholdValue('threshold_pace_s_per_km', 3.7)).toBe(270);
+    // Slower than 20:00 per km is out of range.
+    expect(intervalsThresholdValue('threshold_pace_s_per_km', 0.5)).toBeNull();
+    expect(thresholdSuggestions([{ kind: 'ride', date: 'bad', icu_ftp: 250, lthr: null, threshold_pace: null }], [])).toEqual([]);
+  });
+
+  it('rejects any other source', async () => {
+    const u = await makeUser('badsource');
+    const r = await post(u.jwt, ftp({ source: 'garmin' }));
+    expect(r.status).toBe(400);
+    expect((await r.json<any>()).fields).toEqual(['source']);
+  });
+});
+

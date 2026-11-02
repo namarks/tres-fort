@@ -406,6 +406,12 @@ final class SyncModel: ObservableObject {
     /// continue using the replacement account's bearer.
     var exerciseDemoJWT: String? { currentJWT }
 
+    /// The account and bearer for reading this account's recorded run routes.
+    var activityRouteAccess: ActivityRouteAccess? {
+        guard let accountID, let jwt = currentJWT else { return nil }
+        return ActivityRouteAccess(accountID: accountID, jwt: jwt)
+    }
+
     private var currentJWT: String? {
         guard let accountID, auth.userID == accountID else { return nil }
         return auth.featureJWT

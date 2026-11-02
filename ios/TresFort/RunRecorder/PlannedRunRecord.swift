@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 /// A finished run workout read against the run it planned
 /// (docs/plans/planned-runs P7): what was run, and how it compares with the
@@ -140,10 +141,18 @@ struct PlannedRunRecord: Equatable {
 struct PlannedRunRecordView: View {
     let slot: TemplateExercise
     let run: ExternalActivity?
+    /// Reads the run's route, when it was recorded in the app.
+    var routeAccess: ActivityRouteAccess? = nil
     @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
     private var unit: RunDistanceUnit { RunDistanceUnit(rawValue: unitRaw) ?? .miles }
 
     var body: some View {
+        WithActivityRoute(activity: run, access: routeAccess) { segments in
+            record(routeSegments: segments)
+        }
+    }
+
+    private func record(routeSegments: [[CLLocationCoordinate2D]]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "figure.run")
@@ -180,6 +189,9 @@ struct PlannedRunRecordView: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("workoutRecord.run.\(row.id)")
                     }
+                }
+                if !routeSegments.isEmpty {
+                    ActivityRouteThumbnail(segments: routeSegments)
                 }
             } else {
                 Text("The run shows here once it syncs from the recorder, Apple Health or intervals.icu.")

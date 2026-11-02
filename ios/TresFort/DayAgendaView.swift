@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 // Milestone n — agenda tap-through (presented as a sheet from a tapped
 // calendar day).
@@ -469,7 +470,7 @@ struct DayAgendaView: View {
             // A planned run's record is the run itself, against its plan,
             // not a count of sets.
             if let runSlot {
-                PlannedRunRecordView(slot: runSlot, run: run)
+                PlannedRunRecordView(slot: runSlot, run: run, routeAccess: sync.activityRouteAccess)
             }
             if let session = realSession {
                 let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
@@ -642,8 +643,16 @@ struct DayAgendaView: View {
         }
     }
 
-    /// A completed activity's title + the intervals.icu basic stats grid.
+    /// A completed activity's title + the intervals.icu basic stats grid,
+    /// and the route map of a run recorded in the app.
     private func activityCard(_ a: ExternalActivity) -> some View {
+        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments in
+            activityCardContent(a, routeSegments: segments)
+        }
+    }
+
+    private func activityCardContent(_ a: ExternalActivity,
+                                     routeSegments: [[CLLocationCoordinate2D]]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: a.glyph)
@@ -677,6 +686,9 @@ struct DayAgendaView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+            }
+            if !routeSegments.isEmpty {
+                ActivityRouteThumbnail(segments: routeSegments)
             }
         }
         .padding(16)

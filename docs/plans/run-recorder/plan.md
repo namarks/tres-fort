@@ -141,7 +141,7 @@ coach sees it in the same place as Garmin runs.
     recorded runs to intervals.icu
     ([MULTISPORT.md §11](../../MULTISPORT.md) records the exception).
     intervals.icu becomes an optional copy.
-  - [ ] **(a) Keep the run and its route**
+  - [x] **(a) Keep the run and its route** (PR #322)
     - `POST /api/activities/recordings` reads the recorder's TCX
       (`src/tcxFile.ts`) and keeps the run as an `external_activities` row
       with `source='recording'`, id `recording:activity:<user>:<recording
@@ -174,9 +174,21 @@ coach sees it in the same place as Garmin runs.
     - The recorder says where the run went: "Saved in Tres Fort and sent to
       intervals.icu.", "Saved in Tres Fort with its route." without a
       connection, or that only the intervals.icu copy retries later.
-  - [ ] **(b) Show the route**
-    - A map of the route on the run's record in the app and on the web, and
-      a way to delete a recorded run in the app.
+  - [ ] **(b) Show the route in the app**
+    - A run's card in the day view, and a planned run's record, show its
+      route on a map when the run was recorded in the app, either as the
+      recording itself or as the intervals.icu copy it was matched to.
+      Each segment between pauses is its own line, framed to fit. Tapping
+      the map opens it full screen to move and zoom.
+    - The app reads `GET /api/activities/:id/route` only for runs from the
+      recorder or intervals.icu, once per route and account in memory; "no
+      route" is remembered for ten minutes, and a failed read is retried.
+  - [ ] **(c) Show the route on the web, and delete a recorded run**
+    - The web app shows the same route. Choosing its base map is open: map
+      tiles from a third party learn roughly where the member ran.
+    - The app offers deleting a recorded run. Deleting brings back the
+      Apple Health copy it hid, as deleting a .fit import does, so the
+      wording has to say so, or deleting should also hide that copy.
 
 ## Execution frontier
 
@@ -201,9 +213,10 @@ mirrors P1's session.
 (main 2832d0c), which carries auto-pause, the running layout, planned runs
 and planning them in the app.
 
-**Next (@agent):** Show the route (P5(b)) once P5(a) merges. P5(a) needs
-migration 0063 applied in production before its Worker is deployed, both
-with the owner's go-ahead.
+**Next (@agent):** Show the route on the web and offer deleting a recorded
+run in the app (P5(c)) once P5(b) merges. P5(a) and P5(b) need migration
+0063 applied in production before the Worker is deployed, both with the
+owner's go-ahead.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -255,6 +268,12 @@ the scene delegate is left to P3's force-quit check.
   `account_export_service.test.ts` cover routes leaving and joining the
   account. `RunRecordingTests` and `RunRecorderTests` cover reading the
   intervals.icu copy's status and the recorder's three outcomes.
+- P5(b): `ActivityRouteTests` covers decoding the served route into
+  segments, drawing only lines of two or more points, refusing mismatched
+  arrays and unknown versions, framing every point, which activities can
+  have a route, reading a route once per account, remembering "no route"
+  for ten minutes, retrying a failed read, and the client's request path
+  with a 404 read as no route.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

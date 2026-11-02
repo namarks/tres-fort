@@ -16,7 +16,7 @@ import { describeWriteError } from './editing';
 import { WorkoutsPage, type Catalog, type Write } from './WorkoutEditor';
 import { AwayDates, DateActions, RoutineEditor } from './CalendarEditing';
 import { HistoryView } from './HistoryView';
-import { RouteMap } from './RouteMap';
+import { RouteMap } from './RouteMapView';
 import { routableActivityIds } from './routeMap';
 import {
   activityLoads,

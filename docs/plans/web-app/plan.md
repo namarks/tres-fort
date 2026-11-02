@@ -63,8 +63,9 @@ partner training are not web features.
       and run steps use `src/runSteps.ts`, so the web runs the same code as
       the Worker rather than a third copy of those rules. Sign out works.
   - Still to do in P1:
-    - Plan version history, a week view, and a link to delete the account
-      (the existing `DELETE /api/me`).
+    - A week view, and a link to delete the account (the existing
+      `DELETE /api/me`). Plan version history is built with P2's restore,
+      below.
     - New accounts: `/auth/apple` already creates an ordinary account for
       any new Apple identity, so a person can sign up on the web first. A
       short first-run offers the existing starter workouts and a link to the
@@ -95,11 +96,34 @@ partner training are not web features.
     version on screen; a 409 reloads the plan, closes any open form and says
     the plan changed elsewhere. Moving a slot after another was removed now
     works for the app too: a gap in stored indexes made the move a no-op.
+  - Built next: supersets and circuits (tick two or more neighboring
+    exercises, then set rounds, rest between exercises and rest after each
+    round; edit, ungroup, move the whole group, and reorder exercises within
+    it) through `PUT /api/workouts/:id/groups`, and moving workouts up and
+    down the list.
+  - Then the run step editor: a run's steps and repeats, each ending after a
+    time or a distance with an optional pace (per mile or kilometer, by the
+    browser's region) or heart rate range, checked with the Worker's own
+    `parseRunSteps` and saved as the slot's `run_steps`. Stored distances and
+    paces are kept exactly until their text changes; steps in a format the
+    web can't read can only be removed.
+  - Then the calendar: the weekly routine (a menu per weekday, or dragging a
+    workout or Rest onto a weekday; each change sends the whole week with
+    the plan version), single dates (choose another workout, move it to a
+    later empty date, or make it a rest day, each checked against the
+    date's `sessions.attempt` as the app does; past, started and
+    away-without-training dates stay as they are), and away dates (add,
+    edit only the changed fields, and remove, with the plan version).
+  - Then plan changes: every saved version, newest first, with who changed
+    it (the coach, the app or the web), the coach's reason and what it
+    touched. Choosing one compares it with the plan now, field by field;
+    restoring it sends the plan ID and the version it was compared with,
+    and saves it as a new version, so the replaced plan stays in the list.
+    A plan changed elsewhere since the comparison is refused and reloaded,
+    and a workout in progress in the app blocks a restore.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
-    rest, and superset or circuit groups. Still to do here: creating,
-    editing, moving and ungrouping supersets and circuits, and reordering
-    workouts.
+    rest, and superset or circuit groups.
   - Planned run step editor with pace or heart rate targets.
   - Weekly schedule by dragging a workout onto a weekday (with a keyboard
     alternative); assign, move and skip single dates; add, edit and remove
@@ -143,10 +167,11 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** Continue P2 with supersets and circuits and the planned
-run step editor, then the weekly routine, single dates and away dates. The
-workout and slot editor is built and waits for the owner's written go-ahead to
-deploy (the API Worker and `tres-fort-web` together). The rest of P1 (plan
+**Now (@agent):** P2's editing is built: workouts, slots, groups, run
+steps, the calendar and restoring a plan version. It waits for review and
+the owner's written go-ahead to deploy (the API Worker and `tres-fort-web`
+together). Race goal, training phases and deloads follow coach-free
+planning's REST. The rest of P1 (plan
 history, week view, delete-account link, first-run for web sign-ups, invite
 codes, committed browser checks) follows before the site is linked publicly
 in P5. Each later deploy needs the owner's written go-ahead.

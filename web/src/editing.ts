@@ -5,7 +5,7 @@
  * it, and the Worker's own validation stays the final word.
  */
 import { RUN_EXERCISE_ID } from '../../src/runSteps';
-import { slotBlocks, type Slot, type Workout } from './model';
+import { orderedSlots, slotBlocks, type SlotBlock, type Slot, type Workout } from './model';
 
 /** One row of GET /api/exercises. */
 export interface CatalogExercise {
@@ -297,14 +297,121 @@ export function prescriptionFields(
 export function moveDestination(workout: Workout, slotId: string, direction: -1 | 1): number | null {
   const blocks = slotBlocks(workout);
   const index = blocks.findIndex((block) => block.members.some((member) => member.id === slotId));
-  const block = blocks[index];
-  if (!block || block.group) return null;
+  if (index < 0 || blocks[index]!.group) return null;
+  return blockDestination(blocks, index, direction);
+}
+
+/**
+ * Where a whole superset or circuit lands when moved one block up or down:
+ * the number of other exercises before it, which is how the Worker places a
+ * group's `order_index`. Null at either end.
+ */
+export function groupMoveDestination(workout: Workout, groupId: string, direction: -1 | 1): number | null {
+  const blocks = slotBlocks(workout);
+  const index = blocks.findIndex((block) => block.members[0]!.group_id === groupId);
+  if (index < 0) return null;
+  return blockDestination(blocks, index, direction);
+}
+
+function blockDestination(blocks: SlotBlock[], index: number, direction: -1 | 1): number | null {
   const target = index + direction;
   if (target < 0 || target >= blocks.length) return null;
   const reordered = [...blocks];
-  reordered.splice(index, 1);
-  reordered.splice(target, 0, block);
+  const [block] = reordered.splice(index, 1);
+  reordered.splice(target, 0, block!);
   return reordered.slice(0, target).reduce((count, other) => count + other.members.length, 0);
+}
+
+/** A group's member ids with one member moved a place within it; null at either end. */
+export function reorderedMembers(members: readonly Slot[], slotId: string, direction: -1 | 1): string[] | null {
+  const ids = members.map((member) => member.id);
+  const index = ids.indexOf(slotId);
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= ids.length) return null;
+  [ids[index], ids[target]] = [ids[target]!, ids[index]!];
+  return ids;
+}
+
+/**
+ * The exercises to group, in workout order: two or more, next to each other,
+ * none already in a group, as the app's ExerciseGroupBlock.selectedMembers
+ * allows. Null for any other choice.
+ */
+export function selectedMembers(workout: Workout, ids: ReadonlySet<string>): Slot[] | null {
+  if (ids.size < 2) return null;
+  const slots = orderedSlots(workout);
+  const indices = slots.flatMap((slot, index) => (ids.has(slot.id) ? [index] : []));
+  if (indices.length !== ids.size) return null;
+  if (indices[indices.length - 1]! - indices[0]! + 1 !== indices.length) return null;
+  if (indices.some((index) => slots[index]!.group_id)) return null;
+  return indices.map((index) => slots[index]!);
+}
+
+/** The rounds and rests a superset or circuit form edits, as typed. */
+export interface GroupDraft {
+  rounds: string;
+  roundRest: string;
+  transitionRest: string;
+}
+
+/**
+ * A new group starts from its first exercise's sets and rest, with no rest
+ * between exercises, as the app's group sheet does; an existing one shows its
+ * stored values.
+ */
+export function groupDraft(members: readonly Slot[]): GroupDraft {
+  const first = members[0]!;
+  return {
+    rounds: String(first.target_sets),
+    roundRest: String(first.group_rest_seconds ?? first.rest_seconds),
+    transitionRest: String(first.group_transition_seconds ?? 0),
+  };
+}
+
+export interface GroupValues {
+  target_sets: number;
+  round_rest: number;
+  transition_rest: number;
+}
+
+export function groupValues(draft: GroupDraft): { ok: true; values: GroupValues } | { ok: false; errors: string[] } {
+  const rounds = wholeNumber(draft.rounds, 1, 99);
+  const roundRest = wholeNumber(draft.roundRest, 0, 3600);
+  const transitionRest = wholeNumber(draft.transitionRest, 0, 3600);
+  const errors: string[] = [];
+  if (rounds === null) errors.push('Rounds must be a whole number from 1 to 99.');
+  if (roundRest === null) errors.push('Round rest must be 0 to 3600 seconds.');
+  if (transitionRest === null) errors.push('Rest between exercises must be 0 to 3600 seconds.');
+  if (rounds === null || roundRest === null || transitionRest === null) return { ok: false, errors };
+  return { ok: true, values: { target_sets: rounds, round_rest: roundRest, transition_rest: transitionRest } };
+}
+
+/** A group's current values, to resend unchanged when only its order moves. */
+export function storedGroupValues(members: readonly Slot[]): GroupValues {
+  const first = members[0]!;
+  return {
+    target_sets: first.target_sets,
+    round_rest: first.group_rest_seconds ?? first.rest_seconds,
+    transition_rest: first.group_transition_seconds ?? 0,
+  };
+}
+
+/** "Superset" for two exercises, "Circuit" for more, as the app names them. */
+export const groupKind = (count: number): string => (count === 2 ? 'superset' : 'circuit');
+
+/**
+ * Where a workout lands in the plan's full order (archived ones included)
+ * when moved past its active neighbor; null at either end of the active list.
+ */
+export function workoutMoveDestination(workouts: readonly Workout[], workoutId: string, direction: -1 | 1): number | null {
+  const ordered = [...workouts].sort((a, b) => a.order_index - b.order_index);
+  const active = ordered.filter((workout) => !workout.archived_at);
+  const index = active.findIndex((workout) => workout.id === workoutId);
+  const neighbor = index < 0 ? undefined : active[index + direction];
+  if (!neighbor) return null;
+  const remaining = ordered.filter((workout) => workout.id !== workoutId);
+  const at = remaining.findIndex((workout) => workout.id === neighbor.id);
+  return direction < 0 ? at : at + 1;
 }
 
 function aliasesOf(exercise: CatalogExercise): string[] {
@@ -358,13 +465,24 @@ export function tagsOf(workout: Workout): string[] {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  active_workout: 'This workout is in progress in the app. Finish or discard it there first.',
+  active_workout: 'A workout is in progress in the app. Finish or discard it there first.',
   day_in_progress: 'This workout is in progress in the app. Finish or discard it there first.',
-  group_conflict: 'Sets and rest of a superset or circuit belong to the group. Change them in the app for now.',
+  group_conflict: 'That would split a superset or circuit. Only exercises next to each other can be grouped, and a group’s rounds and rests are set on the group.',
   unknown_exercise: 'That exercise isn’t in the catalog.',
   no_active_plan: 'There is no plan to edit yet.',
   not_found: 'That workout or exercise is no longer in your plan.',
+  day_not_found: 'That workout is no longer in your plan, or it is archived.',
   incompatible_measure: 'That exercise is measured differently, so it can’t replace this one.',
+  session_already_started: 'A workout was started on that date, so it can’t be changed.',
+  session_attempt_conflict: 'That date changed in the app since this page loaded, so the calendar has been reloaded. Check it, then try again.',
+  session_attempt_missing: 'That date changed in the app since this page loaded, so the calendar has been reloaded. Check it, then try again.',
+  session_state_conflict: 'That date changed in the app since this page loaded, so the calendar has been reloaded. Check it, then try again.',
+  calendar_move_conflict: 'One of those dates changed since this page loaded, so the calendar has been reloaded. Check both dates, then try again.',
+  invalid_move: 'That workout can’t move to that date. Choose today or a later date without a workout.',
+  unknown_day_ref: 'That workout is no longer in your plan.',
+  invalid_range: 'The last day can’t be before the first day.',
+  invalid_date: 'Choose a valid date.',
+  trip_not_found: 'Those away dates were already removed.',
 };
 
 /** A sentence for a refused write; field names are shown as the API names them. */

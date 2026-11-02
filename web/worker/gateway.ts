@@ -47,7 +47,7 @@ const MAX_WRITE_BYTES = 64 * 1024;
 const SEGMENT = '[^/]+';
 /**
  * The writes the web may make, one per screen action. Everything else (sets,
- * sessions, account, groups, connections) is refused here, so a bug or an
+ * sessions, account, member groups, connections) is refused here, so a bug or an
  * injected script on the page cannot reach it through the session.
  */
 const WRITE_ROUTES: { method: string; path: RegExp }[] = [
@@ -59,6 +59,14 @@ const WRITE_ROUTES: { method: string; path: RegExp }[] = [
   { method: 'PATCH', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}$`) },
   { method: 'DELETE', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}$`) },
   { method: 'POST', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}/swap$`) },
+  { method: 'PUT', path: new RegExp(`^/api/workouts/${SEGMENT}/groups$`) },
+  { method: 'PUT', path: /^\/api\/plan\/schedule$/ },
+  { method: 'POST', path: /^\/api\/plan\/trips$/ },
+  { method: 'PATCH', path: new RegExp(`^/api/plan/trips/${SEGMENT}$`) },
+  { method: 'DELETE', path: new RegExp(`^/api/plan/trips/${SEGMENT}$`) },
+  { method: 'PUT', path: new RegExp(`^/api/calendar/${SEGMENT}$`) },
+  { method: 'POST', path: new RegExp(`^/api/calendar/${SEGMENT}/move$`) },
+  { method: 'POST', path: /^\/api\/plan\/history\/\d+\/restore$/ },
 ];
 
 export function isAllowedWrite(method: string, path: string): boolean {

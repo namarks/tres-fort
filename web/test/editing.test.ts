@@ -3,13 +3,21 @@ import {
   describeWriteError,
   draftFromSlot,
   factsOfSlot,
+  groupDraft,
+  groupKind,
+  groupMoveDestination,
+  groupValues,
   moveDestination,
   newDraft,
   parseNumber,
   parseTags,
   prescriptionFields,
+  reorderedMembers,
   searchCatalog,
+  selectedMembers,
+  storedGroupValues,
   switchUnit,
+  workoutMoveDestination,
   type CatalogExercise,
   type ExerciseFacts,
 } from '../src/editing';
@@ -27,8 +35,8 @@ function slot(overrides: Partial<Slot>): Slot {
   };
 }
 
-function workout(exercises: Slot[]): Workout {
-  return { id: 'w1', plan_id: 'p1', name: 'Lower', day_label: null, order_index: 0, notes: null, created_at: 0, updated_at: 0, archived_at: null, exercises };
+function workout(exercises: Slot[], overrides: Partial<Workout> = {}): Workout {
+  return { id: 'w1', plan_id: 'p1', name: 'Lower', day_label: null, order_index: 0, notes: null, created_at: 0, updated_at: 0, archived_at: null, exercises, ...overrides };
 }
 
 const barbell: ExerciseFacts = { id: 'ex_bench', modality: 'barbell', laterality: 'bilateral', loadMode: 'total' };
@@ -158,6 +166,73 @@ describe('moving a slot', () => {
 
   it('leaves group members to the group', () => {
     expect(moveDestination(plan, 'b1', 1)).toBeNull();
+  });
+
+  it('moves a whole group past its neighbor, counting the other exercises before it', () => {
+    expect(groupMoveDestination(plan, 'g', -1)).toBe(0);
+    expect(groupMoveDestination(plan, 'g', 1)).toBe(2);
+    expect(groupMoveDestination(workout([b1, b2, c]), 'g', -1)).toBeNull();
+    expect(groupMoveDestination(plan, 'missing', 1)).toBeNull();
+  });
+
+  it('reorders members within their group only', () => {
+    expect(reorderedMembers([b1, b2], 'b2', -1)).toEqual(['b2', 'b1']);
+    expect(reorderedMembers([b1, b2], 'b1', -1)).toBeNull();
+    expect(reorderedMembers([b1, b2], 'b2', 1)).toBeNull();
+  });
+});
+
+describe('making a superset or circuit', () => {
+  const a = slot({ id: 'a', order_index: 0, target_sets: 4, rest_seconds: 90 });
+  const b = slot({ id: 'b', order_index: 1 });
+  const c = slot({ id: 'c', order_index: 2 });
+  const d1 = slot({ id: 'd1', order_index: 3, group_id: 'g', group_rest_seconds: 60, group_transition_seconds: 15 });
+  const d2 = slot({ id: 'd2', order_index: 4, group_id: 'g', group_rest_seconds: 60, group_transition_seconds: 15 });
+  const day = workout([c, a, d2, b, d1]);
+
+  it('takes two or more neighbors that are not grouped yet, in workout order', () => {
+    expect(selectedMembers(day, new Set(['b', 'a']))?.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(selectedMembers(day, new Set(['a', 'b', 'c']))?.map((s) => s.id)).toEqual(['a', 'b', 'c']);
+    expect(selectedMembers(day, new Set(['a']))).toBeNull();
+    expect(selectedMembers(day, new Set(['a', 'c']))).toBeNull();
+    expect(selectedMembers(day, new Set(['c', 'd1']))).toBeNull();
+    expect(selectedMembers(day, new Set(['a', 'gone']))).toBeNull();
+  });
+
+  it('starts from the first exercise’s sets and rest, and names the group by size', () => {
+    expect(groupDraft([a, b])).toEqual({ rounds: '4', roundRest: '90', transitionRest: '0' });
+    expect(groupDraft([d1, d2])).toEqual({ rounds: '3', roundRest: '60', transitionRest: '15' });
+    expect(storedGroupValues([d1, d2])).toEqual({ target_sets: 3, round_rest: 60, transition_rest: 15 });
+    expect(groupKind(2)).toBe('superset');
+    expect(groupKind(3)).toBe('circuit');
+  });
+
+  it('checks rounds and rests', () => {
+    expect(groupValues({ rounds: '5', roundRest: '120', transitionRest: '0' }))
+      .toEqual({ ok: true, values: { target_sets: 5, round_rest: 120, transition_rest: 0 } });
+    expect(groupValues({ rounds: '0', roundRest: '-1', transitionRest: '1.5' })).toEqual({
+      ok: false,
+      errors: [
+        'Rounds must be a whole number from 1 to 99.',
+        'Round rest must be 0 to 3600 seconds.',
+        'Rest between exercises must be 0 to 3600 seconds.',
+      ],
+    });
+  });
+});
+
+describe('ordering workouts', () => {
+  const w = (id: string, order_index: number, archived = false) =>
+    workout([], { id, order_index, archived_at: archived ? 1 : null });
+  const all = [w('d', 3), w('a', 0), w('x', 1, true), w('b', 2)];
+
+  it('moves past the next active workout in the full order', () => {
+    expect(workoutMoveDestination(all, 'b', -1)).toBe(0);
+    expect(workoutMoveDestination(all, 'a', 1)).toBe(2);
+    expect(workoutMoveDestination(all, 'b', 1)).toBe(3);
+    expect(workoutMoveDestination(all, 'a', -1)).toBeNull();
+    expect(workoutMoveDestination(all, 'd', 1)).toBeNull();
+    expect(workoutMoveDestination(all, 'x', 1)).toBeNull();
   });
 });
 

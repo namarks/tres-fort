@@ -153,3 +153,174 @@ describe('moving a slot after another was removed', () => {
     ]);
   });
 });
+
+describe('supersets and circuits from the web', () => {
+  type GroupSlot = Slot & { group_id: string | null; target_sets: number; group_rest_seconds: number | null; group_transition_seconds: number | null };
+  const slotsOf = async (workout: string) => (await env.DB.prepare(
+    `SELECT id, order_index, group_id, target_sets, group_rest_seconds, group_transition_seconds
+       FROM template_exercises WHERE workout_id=?1 ORDER BY order_index`,
+  ).bind(workout).all<GroupSlot>()).results;
+
+  it('groups, reorders members, moves the block past a gap and ungroups, all as the web', async () => {
+    const web = await devJwt('web');
+    const plan = await activePlan(web);
+    const workout = (await call<{ id: string }>(web, 'POST', '/api/workouts', {
+      name: 'Circuits', expected_plan_id: plan.id, expected_version: plan.version,
+    })).body.id;
+    const ids: string[] = [];
+    for (const exercise of ['Bench Press', 'Back Squat', 'Deadlift', 'Overhead Press', 'Pull-Up']) {
+      const slot = await call<Slot>(web, 'POST', `/api/workouts/${workout}/exercises`, {
+        exercise, target_sets: 3, target_reps: 5, rest_seconds: 120, expected_version: await version(web),
+      });
+      expect(slot.status).toBe(201);
+      ids.push(slot.body.id);
+    }
+    const group = crypto.randomUUID();
+    const put = (body: Record<string, unknown>) => call<{ ok?: boolean; conflict?: boolean }>(
+      web, 'PUT', `/api/workouts/${workout}/groups`, { group_id: group, ...body },
+    );
+
+    // A superset of the third and fourth exercises.
+    const made = await put({
+      exercises: [ids[2], ids[3]], target_sets: 4, round_rest: 90, transition_rest: 15,
+      expected_version: await version(web),
+    });
+    expect(made.status).toBe(200);
+    // Swap its members; rounds and rests are resent unchanged.
+    expect((await put({
+      exercises: [ids[3], ids[2]], target_sets: 4, round_rest: 90, transition_rest: 15,
+      expected_version: await version(web),
+    })).status).toBe(200);
+    expect((await slotsOf(workout)).map((slot) => slot.id)).toEqual([ids[0], ids[1], ids[3], ids[2], ids[4]]);
+
+    // Removing the first exercise leaves a gap; the group then moves up past
+    // the second one: no other exercise before it.
+    expect((await call(web, 'DELETE',
+      `/api/workouts/${workout}/exercises/${ids[0]}?expected_version=${await version(web)}`)).status).toBe(200);
+    expect((await put({
+      exercises: [ids[3], ids[2]], target_sets: 4, round_rest: 90, transition_rest: 15, order_index: 0,
+      expected_version: await version(web),
+    })).status).toBe(200);
+    expect(await slotsOf(workout)).toEqual([
+      { id: ids[3], order_index: 0, group_id: group, target_sets: 4, group_rest_seconds: 90, group_transition_seconds: 15 },
+      { id: ids[2], order_index: 1, group_id: group, target_sets: 4, group_rest_seconds: 90, group_transition_seconds: 15 },
+      { id: ids[1], order_index: 2, group_id: null, target_sets: 3, group_rest_seconds: null, group_transition_seconds: null },
+      { id: ids[4], order_index: 3, group_id: null, target_sets: 3, group_rest_seconds: null, group_transition_seconds: null },
+    ]);
+
+    // A stale version changes nothing.
+    const stale = await put({ exercises: [], expected_version: plan.version });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toEqual({ conflict: true, current_version: await version(web) });
+
+    expect((await put({ exercises: [], expected_version: await version(web) })).status).toBe(200);
+    expect((await slotsOf(workout)).every((slot) => slot.group_id === null)).toBe(true);
+
+    const audits = await env.DB.prepare(
+      `SELECT tool, actor FROM audit_log WHERE tool IN ('group_exercises','ungroup_exercises')
+        AND json_extract(args,'$.group_id')=?1 ORDER BY created_at, rowid`,
+    ).bind(group).all<{ tool: string; actor: string }>();
+    expect(audits.results).toEqual([
+      { tool: 'group_exercises', actor: 'web' },
+      { tool: 'group_exercises', actor: 'web' },
+      { tool: 'group_exercises', actor: 'web' },
+      { tool: 'ungroup_exercises', actor: 'web' },
+    ]);
+  });
+});
+
+describe('the routine, single dates and away dates from the web', () => {
+  it('records the web as the actor on schedule, date and away-date writes', async () => {
+    const web = await devJwt('web');
+    const plan = await activePlan(web);
+    const workout = (await call<{ id: string }>(web, 'POST', '/api/workouts', {
+      name: 'Routine', expected_plan_id: plan.id, expected_version: plan.version,
+    })).body.id;
+    const week = { mon: workout, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
+    const schedule = await call(web, 'PUT', '/api/plan/schedule', {
+      week, expected_plan_id: plan.id, expected_version: await version(web),
+    });
+    expect(schedule.status).toBe(200);
+
+    const trip = await call<{ ok: boolean }>(web, 'POST', '/api/plan/trips', {
+      start: '2031-03-01', end: '2031-03-05', type: 'travel', can_train_light: true, expected_version: await version(web),
+    });
+    expect(trip.status).toBe(200);
+    const trips = (await call<{ plan: { trips: { id: string }[] } }>(web, 'GET', '/api/state')).body.plan.trips;
+    const tripId = trips[trips.length - 1]!.id;
+    expect((await call(web, 'PATCH', `/api/plan/trips/${tripId}`, {
+      can_train_light: false, expected_version: await version(web),
+    })).status).toBe(200);
+    expect((await call(web, 'DELETE', `/api/plan/trips/${tripId}?expected_version=${await version(web)}`)).status).toBe(200);
+
+    const assigned = await call<{ session: { attempt: number } }>(web, 'PUT', '/api/calendar/2031-04-02', {
+      workout_id: workout, expected_attempt: 0,
+    });
+    expect(assigned.status).toBe(200);
+    const moved = await call(web, 'POST', '/api/calendar/2031-04-02/move', {
+      id: crypto.randomUUID(), to_date: '2031-04-04', today: '2031-04-01', workout_id: workout,
+      expected_plan_id: plan.id, expected_version: await version(web),
+      expected_from_attempt: assigned.body.session.attempt, expected_to_attempt: 0,
+    });
+    expect(moved.status).toBe(200);
+    // The page's view of a date is stale once another device changed it.
+    const stale = await call<{ error: string }>(web, 'PUT', '/api/calendar/2031-04-04', { workout_id: null, expected_attempt: 0 });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toBe('session_attempt_conflict');
+
+    const audits = await env.DB.prepare(
+      `SELECT tool, actor FROM audit_log
+        WHERE tool IN ('set_schedule','add_trip','update_trip','remove_trip','set_planned_session','move_calendar_workout')
+          AND user_id = (SELECT user_id FROM plans WHERE id=?1)
+        ORDER BY created_at, rowid`,
+    ).bind(plan.id).all<{ tool: string; actor: string }>();
+    expect(audits.results.map((row) => row.actor)).toEqual(audits.results.map(() => 'web'));
+    expect(audits.results.map((row) => row.tool)).toEqual(expect.arrayContaining([
+      'set_schedule', 'add_trip', 'update_trip', 'remove_trip', 'set_planned_session', 'move_calendar_workout',
+    ]));
+  });
+});
+
+describe('restoring a plan version from the web', () => {
+  it('compares, restores as a new web version, and refuses a version it did not review', async () => {
+    const web = await devJwt('web');
+    const plan = await activePlan(web);
+    const workout = (await call<{ id: string }>(web, 'POST', '/api/workouts', {
+      name: 'Restore me', expected_plan_id: plan.id, expected_version: plan.version,
+    })).body.id;
+    const saved = await version(web);
+    expect((await call(web, 'PATCH', `/api/workouts/${workout}`, {
+      name: 'Renamed', expected_version: saved,
+    })).status).toBe(200);
+    const current = await version(web);
+
+    const history = await call<{ plan_id: string; current_version: number; items: { version: number; actor: string }[] }>(
+      web, 'GET', '/api/plan/history?limit=5');
+    expect(history.status).toBe(200);
+    expect(history.body.current_version).toBe(current);
+    expect(history.body.items[0]).toMatchObject({ version: current, actor: 'web' });
+    const comparison = await call<{ from_version: number; to_version: number; changes: { kind: string }[] }>(
+      web, 'GET', `/api/plan/history/${saved}/compare?to_version=${current}`);
+    expect(comparison.body).toMatchObject({ from_version: saved, to_version: current });
+    expect(comparison.body.changes.map((change) => change.kind)).toContain('day');
+
+    // A version the page didn't compare against is refused, not overwritten.
+    const stale = await call<{ conflict: boolean }>(web, 'POST', `/api/plan/history/${saved}/restore`, {
+      expected_plan_id: plan.id, expected_version: saved, reason: 'Restored from the web plan history',
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.conflict).toBe(true);
+
+    const restored = await call<{ version: number; restored_from_version: number }>(web, 'POST', `/api/plan/history/${saved}/restore`, {
+      expected_plan_id: plan.id, expected_version: current, reason: 'Restored from the web plan history',
+    });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({ restored_from_version: saved, version: current + 1 });
+    const state = await call<{ plan: { workouts: { id: string; name: string }[] } }>(web, 'GET', '/api/state');
+    expect(state.body.plan.workouts.find((w) => w.id === workout)?.name).toBe('Restore me');
+    const snapshot = await env.DB.prepare(
+      'SELECT actor, operation, reason FROM plan_snapshots WHERE plan_id=?1 AND version=?2',
+    ).bind(plan.id, current + 1).first<{ actor: string; operation: string; reason: string }>();
+    expect(snapshot).toEqual({ actor: 'web', operation: 'restore_plan', reason: 'Restored from the web plan history' });
+  });
+});

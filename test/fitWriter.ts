@@ -1,3 +1,5 @@
+import { fitCrc } from '../src/fitFile';
+
 // Builds FIT files for tests (src/fitFile.ts reads them). Supports exactly
 // what the reader handles: definitions in either byte order, developer
 // fields, normal and compressed-timestamp data messages, chained files.
@@ -79,8 +81,12 @@ export class FitWriter {
     const out: number[] = [];
     for (const body of [...this.files, this.body]) {
       const size = body.length;
-      out.push(14, 0x20, 0x08, 0x08, size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >>> 24) & 0xff,
-        0x2e, 0x46, 0x49, 0x54, 0, 0, ...body, 0, 0);
+      const header = [14, 0x20, 0x08, 0x08, size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >>> 24) & 0xff,
+        0x2e, 0x46, 0x49, 0x54];
+      const headerCrc = fitCrc(new Uint8Array(header));
+      const file = [...header, headerCrc & 0xff, headerCrc >> 8, ...body];
+      const crc = fitCrc(new Uint8Array(file));
+      out.push(...file, crc & 0xff, crc >> 8);
     }
     return new Uint8Array(out);
   }

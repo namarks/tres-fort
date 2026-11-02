@@ -9211,7 +9211,18 @@ export async function importFitActivity(
     )
     .bind(userId, id, fit.kind, fit.start_utc_ms)
     .first<ExternalActivityRow>();
-  if (existing) return { activity: existing, deduplicated: true };
+  if (existing) {
+    // A first attempt can store the row and then fail before reconciling
+    // it; finishing that work here makes a retry converge. Both are
+    // idempotent, so a completed import is left as it is.
+    await dedupeHealthKitAgainstIntervals(db, userId);
+    await refreshActivityLoads(db, userId, { fromDate: existing.date, toDate: existing.date });
+    const current = await db
+      .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+      .bind(existing.id, userId)
+      .first<ExternalActivityRow>();
+    return { activity: current ?? existing, deduplicated: true };
+  }
 
   const local = fitLocalTime(fit.start_utc_ms, fit.local_offset_sec, await getUserTimezone(db, userId));
   const moving = fit.timer_sec === null ? null : Math.round(fit.timer_sec);

@@ -87,6 +87,18 @@ describe('POST /api/activities/fit', () => {
     expect(count?.n).toBe(1);
   });
 
+  it('finishes scoring on a retry when the first attempt stopped after storing the row', async () => {
+    const u = await makeUser('fit-unfinished');
+    await setThreshold(u.jwt, 'ride', 'ftp_w', 250);
+    const id = crypto.randomUUID();
+    const first = await (await upload(u.jwt, ride(), id)).json<any>();
+    // As if the load refresh had failed after the insert.
+    await env.DB.prepare('UPDATE external_activities SET effective_load = NULL, effective_intensity = NULL, load_method = NULL WHERE id = ?1')
+      .bind(first.activity.id).run();
+    const retry = await (await upload(u.jwt, ride(), id)).json<any>();
+    expect(retry).toMatchObject({ deduplicated: true, activity: { effective_load: 64, load_method: 'power' } });
+  });
+
   it('uses the member’s timezone when the file has no local time, and heart rate without power', async () => {
     const u = await makeUser('fit-zone', 'Europe/Paris');
     await setThreshold(u.jwt, 'run', 'threshold_hr', 150);

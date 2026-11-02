@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FitParseError, fitKind, parseFit } from '../src/fitFile';
+import { FitParseError, fitCrc, fitKind, parseFit } from '../src/fitFile';
 import { activityFit, FitWriter, fitTime } from './fitWriter';
 
 // FIT reader (docs/plans/endurance-training-load P4).
@@ -90,6 +90,14 @@ describe('parseFit', () => {
     expect(code(new TextEncoder().encode('<gpx></gpx> not a fit file at all'))).toBe('not_fit');
     const whole = activityFit({ start: '2026-10-25T03:00:00Z', seconds: 60, hr: 140 });
     expect(code(whole.slice(0, 200))).toBe('truncated');
+    // Without its closing CRC, or with a changed byte, the file is damaged.
+    expect(code(whole.slice(0, whole.length - 2))).toBe('truncated');
+    const flipped = whole.slice();
+    flipped[60] = flipped[60]! ^ 0x01;
+    expect(code(flipped)).toBe('truncated');
+    const badHeader = whole.slice();
+    badHeader[12] = badHeader[12]! ^ 0xff;
+    expect(code(badHeader)).toBe('truncated');
     const course = new FitWriter().define(0, 0, [{ num: 0, type: 'enum' }]).data(0, [6]).bytes();
     expect(code(course)).toBe('not_an_activity');
     const empty = new FitWriter().define(0, 0, [{ num: 0, type: 'enum' }]).data(0, [4]).bytes();
@@ -101,6 +109,13 @@ describe('parseFit', () => {
       .data(1, [start, 5]).data(1, [start + 1800, 2]).data(1, [start + 5400, 1])
       .bytes();
     expect(code(triathlon)).toBe('multisport');
+  });
+
+  it('computes the FIT CRC', () => {
+    // Over a whole file including its CRC, the CRC-16 comes out zero.
+    const whole = activityFit({ start: '2026-10-25T03:00:00Z', seconds: 60, hr: 140 });
+    expect(fitCrc(whole)).toBe(0);
+    expect(fitCrc(new TextEncoder().encode('123456789'))).toBe(0xbb3d);
   });
 
   it('maps sports to the kinds other sources use', () => {

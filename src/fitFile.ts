@@ -69,6 +69,26 @@ type Fields = Map<number, number>;
 /** Byte size of each base type (low five bits of the base-type byte). */
 const BASE_SIZE = [1, 1, 1, 2, 2, 4, 4, 1, 4, 8, 1, 2, 4, 1, 8, 8, 8];
 
+const CRC_TABLE = [
+  0x0000, 0xcc01, 0xd801, 0x1400, 0xf001, 0x3c00, 0x2800, 0xe401,
+  0xa001, 0x6c00, 0x7800, 0xb401, 0x5000, 0x9c01, 0x8801, 0x4400,
+];
+
+/** The FIT CRC-16 over bytes [from, to). */
+export function fitCrc(bytes: Uint8Array, from = 0, to = bytes.length): number {
+  let crc = 0;
+  for (let i = from; i < to; i++) {
+    const byte = bytes[i]!;
+    let tmp = CRC_TABLE[crc & 0xf]!;
+    crc = (crc >> 4) & 0x0fff;
+    crc = crc ^ tmp ^ CRC_TABLE[byte & 0xf]!;
+    tmp = CRC_TABLE[crc & 0xf]!;
+    crc = (crc >> 4) & 0x0fff;
+    crc = crc ^ tmp ^ CRC_TABLE[(byte >> 4) & 0xf]!;
+  }
+  return crc;
+}
+
 function readValue(view: DataView, at: number, field: FieldDef, little: boolean): number | null {
   const type = field.baseType & 0x1f;
   const size = BASE_SIZE[type];
@@ -132,7 +152,15 @@ export function parseFit(bytes: Uint8Array): FitActivity {
     const dataSize = view.getUint32(pos + 4, true);
     const start = pos + headerSize;
     const end = start + dataSize;
-    if (end > bytes.length) throw new FitParseError('truncated');
+    // Each file ends with a CRC over its header and data; a 14-byte header
+    // also carries its own CRC, where zero means none was written. A file
+    // that fails either check is damaged, and its values can't be trusted.
+    if (end + 2 > bytes.length) throw new FitParseError('truncated');
+    if (headerSize === 14) {
+      const headerCrc = view.getUint16(pos + 12, true);
+      if (headerCrc !== 0 && headerCrc !== fitCrc(bytes, pos, pos + 12)) throw new FitParseError('truncated');
+    }
+    if (view.getUint16(end, true) !== fitCrc(bytes, pos, end)) throw new FitParseError('truncated');
     const definitions = new Map<number, Definition>();
     let lastTimestamp: number | null = null;
     let at = start;

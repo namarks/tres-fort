@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handle, SESSION_COOKIE, SIGNIN_COOKIE, type Fetchable, type GatewayEnv } from '../worker/gateway';
+import { handle, isAllowedWrite, isWebSession, SESSION_COOKIE, SIGNIN_COOKIE, type Fetchable, type GatewayEnv } from '../worker/gateway';
 
 const ORIGIN = 'https://app.tresfort.app';
+
+function base64url(text: string): string {
+  return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** An app JWT shape; the gateway reads only its claims, the API checks the signature. */
+function fakeJwt(claims: Record<string, unknown>): string {
+  return `${base64url('{"alg":"HS256","typ":"JWT"}')}.${base64url(JSON.stringify(claims))}.signature`;
+}
+
+const WEB_JWT = fakeJwt({ sub: 'user-1', client: 'web', iat: 1, exp: 2 });
+const APP_JWT = fakeJwt({ sub: 'user-1', iat: 1, exp: 2 });
 
 function makeEnv(api: (request: Request) => Promise<Response> | Response = () => new Response('{}')) {
   const apiFetch = vi.fn(async (request: Request) => api(request));
@@ -146,7 +158,8 @@ describe('Sign in with Apple', () => {
 });
 
 describe('API forwarding', () => {
-  const pageHeaders = { cookie: `${SESSION_COOKIE}=app-jwt; other=1`, 'x-tres-fort-web': '1', 'sec-fetch-site': 'same-origin' };
+  const pageHeaders = { cookie: `${SESSION_COOKIE}=${WEB_JWT}; other=1`, 'x-tres-fort-web': '1', 'sec-fetch-site': 'same-origin' };
+  const writeHeaders = { ...pageHeaders, origin: ORIGIN, 'content-type': 'application/json' };
 
   it('adds the bearer from the cookie and forwards only safe headers', async () => {
     const { env, apiFetch } = makeEnv(() => Response.json({ ok: true }, { headers: { 'set-cookie': 'leak=1' } }));
@@ -159,7 +172,7 @@ describe('API forwarding', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
     const sent = apiFetch.mock.calls[0]![0] as Request;
     expect(new URL(sent.url).pathname + new URL(sent.url).search).toBe('/api/state?since=0');
-    expect(sent.headers.get('authorization')).toBe('Bearer app-jwt');
+    expect(sent.headers.get('authorization')).toBe(`Bearer ${WEB_JWT}`);
     expect(sent.headers.get('x-tresfort-capabilities')).toBe('groups');
     expect(sent.headers.get('accept')).toBe('application/json');
     expect(sent.headers.get('cookie')).toBeNull();
@@ -168,7 +181,7 @@ describe('API forwarding', () => {
 
   it('refuses calls without the page header, from another site, or without a session', async () => {
     const { env, apiFetch } = makeEnv();
-    const noHeader = await handle(new Request(`${ORIGIN}/api/me`, { headers: { cookie: `${SESSION_COOKIE}=app-jwt` } }), env);
+    const noHeader = await handle(new Request(`${ORIGIN}/api/me`, { headers: { cookie: `${SESSION_COOKIE}=${WEB_JWT}` } }), env);
     expect(noHeader.status).toBe(403);
     const crossSite = await handle(new Request(`${ORIGIN}/api/me`, {
       headers: { ...pageHeaders, 'sec-fetch-site': 'cross-site' },
@@ -183,16 +196,98 @@ describe('API forwarding', () => {
     expect(apiFetch).not.toHaveBeenCalled();
   });
 
-  it('stays read-only and never exposes the iPad Station link key', async () => {
+  it('allows only the plan edits the page makes, and never the iPad Station link key', async () => {
+    expect(isAllowedWrite('POST', '/api/workouts')).toBe(true);
+    expect(isAllowedWrite('PUT', '/api/plan/active')).toBe(true);
+    expect(isAllowedWrite('PATCH', '/api/workouts/w1')).toBe(true);
+    expect(isAllowedWrite('DELETE', '/api/workouts/w1')).toBe(true);
+    expect(isAllowedWrite('POST', '/api/workouts/w1/exercises')).toBe(true);
+    expect(isAllowedWrite('PATCH', '/api/workouts/w1/exercises/s1')).toBe(true);
+    expect(isAllowedWrite('DELETE', '/api/workouts/w1/exercises/s1')).toBe(true);
+    expect(isAllowedWrite('POST', '/api/workouts/w1/exercises/s1/swap')).toBe(true);
+
     const { env, apiFetch } = makeEnv();
-    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
-      const response = await handle(new Request(`${ORIGIN}/api/workouts`, {
-        method, headers: { ...pageHeaders, origin: ORIGIN },
-      }), env);
-      expect(response.status).toBe(405);
+    for (const [method, path] of [
+      ['PUT', '/api/workouts'],
+      ['DELETE', '/api/me'],
+      ['POST', '/api/sessions'],
+      ['POST', '/api/sessions/s1/sets'],
+      ['PATCH', '/api/me/profile'],
+      ['POST', '/api/groups/join'],
+      ['POST', '/api/workouts/w1/exercises/s1'],
+      ['PATCH', '/api/workouts/w1/extra/segment'],
+    ] as const) {
+      const response = await handle(new Request(`${ORIGIN}${path}`, { method, headers: writeHeaders, body: '{}' }), env);
+      expect(response.status, `${method} ${path}`).toBe(405);
     }
     const key = await handle(new Request(`${ORIGIN}/api/me/station-link-key`, { headers: pageHeaders }), env);
     expect(key.status).toBe(404);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('forwards an allowed write with its JSON body', async () => {
+    const { env, apiFetch } = makeEnv(() => Response.json({ id: 'slot-1' }, { status: 201 }));
+    const body = JSON.stringify({ exercise: 'Bench Press', target_sets: 3, target_reps: 5, expected_version: 4 });
+    const response = await handle(new Request(`${ORIGIN}/api/workouts/w1/exercises`, {
+      method: 'POST', headers: writeHeaders, body,
+    }), env);
+
+    expect(response.status).toBe(201);
+    const sent = apiFetch.mock.calls[0]![0] as Request;
+    expect(sent.method).toBe('POST');
+    expect(new URL(sent.url).pathname).toBe('/api/workouts/w1/exercises');
+    expect(sent.headers.get('content-type')).toBe('application/json');
+    expect(sent.headers.get('authorization')).toBe(`Bearer ${WEB_JWT}`);
+    expect(await sent.text()).toBe(body);
+
+    const removed = await handle(new Request(`${ORIGIN}/api/workouts/w1/exercises/s1?expected_version=5`, {
+      method: 'DELETE', headers: { ...pageHeaders, origin: ORIGIN },
+    }), env);
+    expect(removed.status).toBe(201);
+    const deleted = apiFetch.mock.calls[1]![0] as Request;
+    expect(deleted.method).toBe('DELETE');
+    expect(new URL(deleted.url).search).toBe('?expected_version=5');
+  });
+
+  it('requires the page origin, the page header and a JSON body on writes', async () => {
+    const { env, apiFetch } = makeEnv();
+    const path = `${ORIGIN}/api/workouts`;
+    const noOrigin = await handle(new Request(path, {
+      method: 'POST', headers: { ...pageHeaders, 'content-type': 'application/json' }, body: '{}',
+    }), env);
+    expect(noOrigin.status).toBe(403);
+    const otherOrigin = await handle(new Request(path, {
+      method: 'POST', headers: { ...writeHeaders, origin: 'https://evil.example' }, body: '{}',
+    }), env);
+    expect(otherOrigin.status).toBe(403);
+    const noPageHeader = await handle(new Request(path, {
+      method: 'POST', headers: { ...writeHeaders, 'x-tres-fort-web': '' }, body: '{}',
+    }), env);
+    expect(noPageHeader.status).toBe(403);
+    const form = await handle(new Request(path, {
+      method: 'POST', headers: { ...writeHeaders, 'content-type': 'text/plain' }, body: '{}',
+    }), env);
+    expect(form.status).toBe(415);
+    const huge = await handle(new Request(path, {
+      method: 'POST', headers: writeHeaders, body: JSON.stringify({ name: 'x'.repeat(70 * 1024) }),
+    }), env);
+    expect(huge.status).toBe(413);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('signs out a session from before web sign-ins were marked', async () => {
+    expect(isWebSession(WEB_JWT)).toBe(true);
+    expect(isWebSession(APP_JWT)).toBe(false);
+    expect(isWebSession('not-a-jwt')).toBe(false);
+    expect(isWebSession('a.!!!.c')).toBe(false);
+
+    const { env, apiFetch } = makeEnv();
+    const response = await handle(new Request(`${ORIGIN}/api/me`, {
+      headers: { ...pageHeaders, cookie: `${SESSION_COOKIE}=${APP_JWT}` },
+    }), env);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'signed_out' });
+    expect(cookieValue(response, SESSION_COOKIE)).toBe('');
     expect(apiFetch).not.toHaveBeenCalled();
   });
 

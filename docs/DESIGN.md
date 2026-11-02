@@ -307,8 +307,13 @@ In-app manual authoring uses the same `plans` / `workouts` /
 screen creates and orders workouts, edits exercise prescriptions, and maps weekdays;
 the calendar writes only concrete `sessions` exceptions. These REST endpoints
 are thin wrappers over the shared service layer and audit as `actor='ios'`.
+The web app (`web/`, docs/plans/web-app) uses the same endpoints through its
+same-origin gateway, which forwards only an allowlist of plan writes; its
+sign-in token carries `client: 'web'`, so those writes audit as `actor='web'`.
 Every recurring plan-tree write bumps `plans.version`; one-date exceptions do
-not.
+not. A slot's `order_index` patch is its destination position: when the stored
+indexes collide or have gaps (left by a removed slot), the workout's slots are
+re-numbered densely around it.
 
 Plan writes share runtime prescription validation and a D1 transaction that
 commits the mutation, order normalization, version, audit and full-document

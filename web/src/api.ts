@@ -7,6 +7,7 @@ import type {
   Trip,
   WeeklySchedule,
 } from '../../src/types';
+import type { CatalogExercise } from './editing';
 
 /** The plan tree as GET /api/state returns it, with parsed plan meta. */
 export type StatePlan = PlanTree & {
@@ -40,18 +41,74 @@ export class SignedOutError extends Error {
   }
 }
 
+/** A refused request, with the API's JSON answer. */
+export class ApiError extends Error {
+  constructor(readonly status: number, readonly body: unknown) {
+    super(`Request failed (${status})`);
+  }
+}
+
+/** The plan changed since the page loaded it (in the app, or by the coach). */
+export function isVersionConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409
+    && (error.body as { conflict?: unknown } | null)?.conflict === true;
+}
+
 /** Every API call carries this header; the gateway refuses calls without it. */
 const WEB_HEADERS = { 'x-tres-fort-web': '1', accept: 'application/json' };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: WEB_HEADERS, credentials: 'same-origin' });
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    credentials: 'same-origin',
+    headers: body === undefined ? WEB_HEADERS : { ...WEB_HEADERS, 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
   if (response.status === 401) throw new SignedOutError();
-  if (!response.ok) throw new Error(`Request failed (${response.status})`);
-  return (await response.json()) as T;
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(response.status, payload);
+  return payload as T;
 }
+
+const getJson = <T>(path: string) => request<T>('GET', path);
 
 export const fetchMe = () => getJson<Me>('/api/me');
 export const fetchState = () => getJson<StateResponse>('/api/state');
+export const fetchExercises = () => getJson<CatalogExercise[]>('/api/exercises');
+
+/** The plan version a write was reviewed against. */
+export interface Reviewed {
+  planId: string;
+  version: number;
+}
+
+const id = encodeURIComponent;
+
+/** Every plan write names the version the member saw; a newer plan answers 409. */
+export const planWrites = {
+  /** A member's first plan, for a web sign-up with nothing yet. */
+  startPlan: () => request<{ plan: { id: string; version: number } }>('PUT', '/api/plan/active', { name: 'My Training' }),
+  addWorkout: (name: string, at: Reviewed) =>
+    request<{ id: string }>('POST', '/api/workouts', {
+      name, expected_plan_id: at.planId, expected_version: at.version,
+    }),
+  updateWorkout: (workoutId: string, fields: Record<string, unknown>, at: Reviewed) =>
+    request('PATCH', `/api/workouts/${id(workoutId)}`, { ...fields, expected_version: at.version }),
+  deleteWorkout: (workoutId: string, at: Reviewed) =>
+    request('DELETE', `/api/workouts/${id(workoutId)}?expected_version=${at.version}`),
+  addSlot: (workoutId: string, exerciseId: string, fields: Record<string, unknown>, at: Reviewed) =>
+    request('POST', `/api/workouts/${id(workoutId)}/exercises`, {
+      ...fields, exercise: exerciseId, expected_version: at.version,
+    }),
+  updateSlot: (workoutId: string, slotId: string, fields: Record<string, unknown>, at: Reviewed) =>
+    request('PATCH', `/api/workouts/${id(workoutId)}/exercises/${id(slotId)}`, { ...fields, expected_version: at.version }),
+  removeSlot: (workoutId: string, slotId: string, at: Reviewed) =>
+    request('DELETE', `/api/workouts/${id(workoutId)}/exercises/${id(slotId)}?expected_version=${at.version}`),
+  replaceSlot: (workoutId: string, slotId: string, exerciseId: string, at: Reviewed) =>
+    request('POST', `/api/workouts/${id(workoutId)}/exercises/${id(slotId)}/swap`, {
+      to_exercise: exerciseId, expected_version: at.version,
+    }),
+};
 
 export async function signOut(): Promise<void> {
   await fetch('/auth/signout', { method: 'POST', headers: WEB_HEADERS, credentials: 'same-origin' });

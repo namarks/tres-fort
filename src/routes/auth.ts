@@ -165,7 +165,8 @@ export function createAuthRoutes(
     } catch {
       return c.json({ error: 'apple_verification_failed' }, 401);
     }
-    if (webServicesId && claims.audience === webServicesId) {
+    const isWebSignIn = !!webServicesId && claims.audience === webServicesId;
+    if (isWebSignIn) {
       if (
         typeof body.nonce !== 'string' ||
         body.nonce.length === 0 ||
@@ -379,7 +380,12 @@ export function createAuthRoutes(
       }
     }
 
-    const jwt = await dependencies.issueAppJwt(user.id, c.env.APP_JWT_SECRET);
+    // A web sign-in's token says so, so its plan edits are audited as the web.
+    const jwt = await dependencies.issueAppJwt(
+      user.id,
+      c.env.APP_JWT_SECRET,
+      isWebSignIn ? { client: 'web' } : undefined,
+    );
     // Back-compat shim for pre-open-signin clients (see file header). If
     // a code was posted, best-effort redeem it against the just-created
     // user. We do NOT fail sign-in on a bad code — the legacy UX was
@@ -417,6 +423,7 @@ export function createAuthRoutes(
         nowSeconds: nowSec,
         authTimeSeconds: authTimeSec,
         appReview: c.get('appReview'),
+        client: c.get('appClient'),
       },
     );
     return c.json({ jwt });
@@ -429,8 +436,8 @@ export function createAuthRoutes(
       return c.json({ error: 'dev_auth_disabled' }, 404);
     }
     const body = await c.req
-      .json<{ secret?: string }>()
-      .catch(() => ({}) as { secret?: string });
+      .json<{ secret?: string; client?: unknown }>()
+      .catch(() => ({}) as { secret?: string; client?: unknown });
     if (body.secret !== c.env.DEV_AUTH_SECRET) {
       return c.json({ error: 'bad_dev_secret' }, 401);
     }
@@ -451,7 +458,12 @@ export function createAuthRoutes(
     if (await isAccountDeletionInProgress(c.env.DB, user.id)) {
       return c.json({ error: 'account_deletion_in_progress' }, 409);
     }
-    const jwt = await dependencies.issueAppJwt(user.id, c.env.APP_JWT_SECRET);
+    // The web app's local gateway signs in as the web.
+    const jwt = await dependencies.issueAppJwt(
+      user.id,
+      c.env.APP_JWT_SECRET,
+      body.client === 'web' ? { client: 'web' } : undefined,
+    );
     return c.json({ jwt, user: publicUser(user) });
   });
 

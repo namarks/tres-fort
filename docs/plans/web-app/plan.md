@@ -72,8 +72,8 @@ partner training are not web features.
       as it does in the app.
     - Playwright checks against a local Worker and D1 at 1280 and 800 px
       widths, and a keyboard-only pass, kept in the repository.
-  - Writes from the gateway are audited as `actor='web'`, not `'ios'`; this
-    lands in P2 with the first write.
+  - Writes from the gateway are audited as `actor='web'`, not `'ios'`
+    (built with the first P2 write, below).
   - Released 2026-11-02 with the owner's written go-ahead: migrations 0059
     and 0060 were applied in production, then the API Worker (version
     89bfec82, rollback target af46e7a3) and `tres-fort-web` on
@@ -81,9 +81,25 @@ partner training are not web features.
     The owner signed in with Apple there and saw their plan, which checks
     the shared Apple `sub` end to end.
 - [ ] **P2 — Edit the plan**
+  - Built first (owner chose plan editing next on 2026-11-02): a Workouts
+    view to create, rename, tag, add notes to, archive, restore and delete
+    workouts; add exercises and warm-ups from a searchable catalog; edit a
+    slot's sets, reps or rep range, hold or cardio duration, weight with its
+    lb or kg unit, target RPE, rest and warm-up flag; replace, reorder and
+    remove slots. Group members are editable, but their rounds and rests
+    stay group-owned. The gateway forwards only those writes (an allowlist of
+    method and path), each with the page's own origin and header and a JSON
+    body of at most 64 KB. A web sign-in's app JWT carries `client: 'web'`,
+    so the API records `actor='web'` on audit rows and plan versions; a
+    session from before that claim is signed out once. Every write sends the
+    version on screen; a 409 reloads the plan, closes any open form and says
+    the plan changed elsewhere. Moving a slot after another was removed now
+    works for the app too: a gap in stored indexes made the move a no-op.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
-    rest, and superset or circuit groups.
+    rest, and superset or circuit groups. Still to do here: creating,
+    editing, moving and ungrouping supersets and circuits, and reordering
+    workouts.
   - Planned run step editor with pace or heart rate targets.
   - Weekly schedule by dragging a workout onto a weekday (with a keyboard
     alternative); assign, move and skip single dates; add, edit and remove
@@ -128,8 +144,10 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** Plan editing (P2), starting with workouts and exercise
-slots, since editing is the reason for the web app. The rest of P1 (plan
+**Now (@agent):** Continue P2 with supersets and circuits and the planned
+run step editor, then the weekly routine, single dates and away dates. The
+workout and slot editor is built and waits for the owner's written go-ahead to
+deploy (the API Worker and `tres-fort-web` together). The rest of P1 (plan
 history, week view, delete-account link, first-run for web sign-ups, invite
 codes, committed browser checks) follows before the site is linked publicly
 in P5. Each later deploy needs the owner's written go-ahead.

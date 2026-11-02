@@ -5,7 +5,7 @@ import { sign, verify } from 'hono/jwt';
 import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { APP_REVIEW_SUB } from './appReview';
-import type { HonoEnv } from './types';
+import type { AppClient, HonoEnv } from './types';
 import {
   accountDeletionContinuationMatches,
   setUserTimezoneIfChanged,
@@ -47,6 +47,8 @@ export async function issueAppJwt(
     ttlSeconds?: number;
     authTimeSeconds?: number;
     appReview?: boolean;
+    /** Marks a web sign-in so its writes are attributed to the web. */
+    client?: AppClient;
   } = {},
 ): Promise<string> {
   const nowSec = options.nowSeconds ?? Math.floor(Date.now() / 1000);
@@ -56,6 +58,7 @@ export async function issueAppJwt(
     {
       sub: userId,
       ...(options.appReview ? { app_review: true } : {}),
+      ...(options.client === 'web' ? { client: 'web' } : {}),
       iat: nowSec,
       auth_time: authTimeSec,
       exp: Math.min(
@@ -72,7 +75,7 @@ type AppJwtPayload = Awaited<ReturnType<typeof verify>>;
 
 function appJwtPrincipal(
   payload: AppJwtPayload,
-): { userId: string; authTime: number } | null {
+): { userId: string; authTime: number; client: AppClient } | null {
   if (!payload.sub || typeof payload.sub !== 'string') return null;
   // Tokens issued before auth_time shipped fall back to their original iat.
   // Renewal then stamps that value into auth_time, so a legacy bearer cannot
@@ -84,7 +87,8 @@ function appJwtPrincipal(
         ? payload.iat
         : null;
   if (authTime === null || !Number.isFinite(authTime)) return null;
-  return { userId: payload.sub, authTime };
+  // Only a web sign-in carries a client claim; every other token is the app's.
+  return { userId: payload.sub, authTime, client: payload.client === 'web' ? 'web' : 'ios' };
 }
 
 /** Bearer-app-JWT middleware for /api/*. Sets `userId` on the context. */
@@ -135,6 +139,7 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   if (!principal) return c.json({ error: 'invalid_token' }, 401);
   c.set('userId', principal.userId);
   c.set('appAuthTime', principal.authTime);
+  c.set('appClient', principal.client);
   // App JWTs are stateless, so deleting an account cannot revoke one bearer
   // from a token table. Requiring the subject row on every authenticated call
   // makes all outstanding app tokens unusable immediately after DELETE /api/me

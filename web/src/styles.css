@@ -177,13 +177,116 @@ p { margin: 0 0 0.75rem; }
 .group-head strong { color: var(--accent); font-weight: 650; }
 .group-block > .slots { border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); padding-left: 0.75rem; }
 
+/* ---- views and notices ------------------------------------------------ */
+.views { display: flex; gap: 0.25rem; }
+.views a {
+  color: var(--muted); text-decoration: none; padding: 0.4rem 0.8rem; border-radius: 8px;
+  font-family: JetBrains, monospace; font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.views a:hover { color: var(--text); }
+.views a[aria-current='page'] { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.notice {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  margin: 16px max(24px, calc((100% - 1392px) / 2)) 0; padding: 0.75rem 1rem; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface);
+}
+.notice p { margin: 0; }
+.notice.error { border-color: var(--danger); }
+.notice.conflict { border-color: var(--accent); }
+
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+button[type='submit'], .add-actions > button:first-child, .centered > button, .danger-fill {
+  background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 0.45rem 0.9rem; font-weight: 600;
+}
+button[type='submit']:hover:not(:disabled), .add-actions > button:first-child:hover:not(:disabled), .centered > button:hover { background: var(--accent-hover); }
+.danger-fill { background: var(--danger); border-color: var(--danger); color: var(--surface); }
+.ghost.danger { color: var(--danger); }
+.ghost.small, .ghost.icon, button.icon { padding: 0.2rem 0.55rem; font-size: 0.8125rem; }
+button.icon { background: transparent; border: 1px solid var(--line); border-radius: 8px; min-width: 2rem; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.section-head h3 { margin-bottom: 0.5rem; }
+
+input, select, textarea {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.6rem; min-width: 0;
+}
+input:disabled { opacity: 0.6; }
+textarea { width: 100%; resize: vertical; }
+label { font-size: 0.8125rem; color: var(--muted); }
+.field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.75rem; }
+.field input { width: 100%; }
+.field-row { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.small-field { width: 11rem; }
+.inline-fields { display: flex; gap: 0.5rem; }
+.inline-fields input { flex: 1; }
+.check { display: flex; align-items: center; gap: 0.5rem; color: var(--text); font-size: 0.875rem; margin-bottom: 0.75rem; }
+.segmented { border: 0; padding: 0; margin: 0 0 0.75rem; display: flex; gap: 1rem; }
+.segmented legend { font-size: 0.8125rem; color: var(--muted); margin-bottom: 0.25rem; padding: 0; }
+.segmented label { color: var(--text); font-size: 0.875rem; display: inline-flex; gap: 0.35rem; align-items: center; }
+.form-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+ul.problem { margin: 0.5rem 0; padding-left: 1.1rem; }
+.slot-form > small { display: block; margin: -0.25rem 0 0.9rem; font-size: 0.8125rem; }
+
+/* ---- workouts --------------------------------------------------------- */
+.workouts {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px;
+  padding: 24px; max-width: 1440px; margin: 0 auto;
+}
+.workout-list h1 { margin-bottom: 1rem; }
+.workout-list ul { list-style: none; margin: 1rem 0; padding: 0; display: grid; gap: 0.25rem; }
+.workout-link {
+  width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px;
+  padding: 0.55rem 0.7rem; display: flex; flex-direction: column; gap: 0.1rem;
+}
+.workout-link:hover { background: var(--surface); }
+.workout-link[aria-current='page'] { background: var(--surface); border-color: var(--accent); }
+.workout-link .muted { font-size: 0.8125rem; }
+.new-workout { display: flex; flex-direction: column; gap: 0.25rem; }
+.editor, .empty-editor { min-width: 0; }
+.empty-editor { border: 1px dashed var(--line); border-radius: var(--radius); padding: 2rem; text-align: center; }
+.workout-editor {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem 1.5rem;
+}
+.editor-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.editor-head p { margin: 0.35rem 0 0; }
+.head-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.tags { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.panel {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  padding: 1rem; margin: 0.75rem 0;
+}
+.panel h3 { margin-top: 0; }
+.confirm p { margin-bottom: 0.5rem; }
+.slots.editable > li { padding: 0.65rem 0; }
+.slot-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.slot-text { min-width: 0; }
+.row-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
+.add-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
+.picker label { display: block; margin-bottom: 0.25rem; }
+.picker input[type='search'] { width: 100%; }
+.matches {
+  list-style: none; margin: 0.75rem 0 0; padding: 0; max-height: 320px; overflow: auto;
+  display: grid; gap: 0.15rem;
+}
+.matches button {
+  width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 8px;
+  padding: 0.4rem 0.6rem; display: flex; justify-content: space-between; gap: 1rem;
+}
+.matches button:hover { background: var(--surface); border-color: var(--line); }
+
 @media (max-width: 1000px) {
   .planner { grid-template-columns: 1fr; padding: 16px; }
+  .workouts { grid-template-columns: 1fr; padding: 16px; }
   .detail { position: static; max-height: none; }
   .routine ol { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
-  .topbar { padding: 0.75rem 16px; }
+  .topbar { padding: 0.75rem 16px; flex-wrap: wrap; }
+  .slot-row { flex-direction: column; }
+  .row-actions { justify-content: flex-start; }
+  .notice { margin-inline: 16px; }
+  .workout-editor { padding: 1rem; }
   .day { min-height: 64px; padding: 0.3rem; }
   .chip { font-size: 0.68rem; padding: 0.1rem 0.25rem; }
   h1 { font-size: 2rem; }

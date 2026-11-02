@@ -315,7 +315,7 @@ apiRoutes.post('/plan/history/:version/restore', async (c) => {
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const result = await restorePlanSnapshot(c.env.DB, c.get('userId'), {
     plan_id: String(b.expected_plan_id), snapshot_version: version!,
-    expected_version: Number(b.expected_version), actor: 'ios',
+    expected_version: Number(b.expected_version), actor: c.get('appClient'),
     reason: typeof b.reason === 'string' ? b.reason : null,
   });
   if ('conflict' in result || ('error' in result && result.error === 'active_workout')) {
@@ -340,7 +340,7 @@ apiRoutes.put('/plan/active', async (c) => {
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const userId = c.get('userId');
   const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim(), {
-    actor: 'ios', operation: 'ensure_active_plan', args: parsed.body,
+    actor: c.get('appClient'), operation: 'ensure_active_plan', args: parsed.body,
   });
   return c.json(result, result.created ? 201 : 200);
 });
@@ -354,7 +354,7 @@ apiRoutes.post('/plan', async (c) => {
   });
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   return c.json(await createPlan(c.env.DB, c.get('userId'), String(b.name).trim(), b.meta ?? null, {
-    actor: 'ios', operation: 'create_plan', args: b,
+    actor: c.get('appClient'), operation: 'create_plan', args: b,
   }), 201);
 });
 
@@ -399,7 +399,7 @@ apiRoutes.post('/workouts', async (c) => {
     String(b.name).trim(),
     typeof b.day_label === 'string' ? b.day_label : null,
     orderIndex,
-    { actor: 'ios', operation: 'add_workout', args: b },
+    { actor: c.get('appClient'), operation: 'add_workout', args: b },
     b.exercise_ids as string[] | undefined,
     { tags: b.tags as string[] | undefined, archived_at: b.archived_at as number | null | undefined },
   );
@@ -438,7 +438,7 @@ apiRoutes.patch('/workouts/:id', async (c) => {
   const { expected_version: _expectedVersion, ...patch } = b;
   const row = await patchWorkoutAtVersion(
     c.env.DB, userId, plan, c.req.param('id'), patch,
-    { actor: 'ios', operation: 'update_workout', args: b },
+    { actor: c.get('appClient'), operation: 'update_workout', args: b },
   );
   if (!row) return c.json({ error: 'not_found' }, 404);
   if ('conflict' in row) return c.json(row, 409);
@@ -462,7 +462,7 @@ apiRoutes.delete('/workouts/:id', async (c) => {
   }
   const dayId = c.req.param('id');
   const result = await deleteWorkoutAtVersion(c.env.DB, userId, plan, dayId, {
-    actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'delete_workout' : 'delete_day', args: { workout_id: dayId },
+    actor: c.get('appClient'), operation: c.req.path.startsWith('/api/workouts') ? 'delete_workout' : 'delete_day', args: { workout_id: dayId },
   });
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result && result.error === 'day_in_progress') {
@@ -502,7 +502,7 @@ apiRoutes.put('/plan/schedule', async (c) => {
     week as Partial<Record<Weekday, string | null>>,
     typeof b.expected_version === 'number' ? b.expected_version : null,
     typeof b.expected_plan_id === 'string' ? b.expected_plan_id : null,
-    { actor: 'ios', operation: 'set_schedule', args: b },
+    { actor: c.get('appClient'), operation: 'set_schedule', args: b },
   );
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result) return c.json(result, 400);
@@ -511,7 +511,7 @@ apiRoutes.put('/plan/schedule', async (c) => {
 
 // Away dates (plans.meta.trips): the member's own add, edit and remove of the
 // availability ranges the coach writes with add_trip / update_trip /
-// remove_trip. Same versioned plan-meta writer and audit row, actor 'ios'.
+// remove_trip. Same versioned plan-meta writer and audit row, actor 'ios' or 'web'.
 // The app always holds the plan it shows, so expected_version is required.
 const TRIP_FIELDS: Record<string, FieldRule> = {
   start: (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v),
@@ -556,7 +556,7 @@ apiRoutes.post('/plan/trips', async (c) => {
   if (typeof b.can_train_light === 'boolean') trip.can_train_light = b.can_train_light;
   if (typeof b.note === 'string') trip.note = b.note;
   const result = await addTrip(c.env.DB, c.get('userId'), trip, b.expected_version as number, {
-    actor: 'ios', operation: 'add_trip', args: b,
+    actor: c.get('appClient'), operation: 'add_trip', args: b,
   });
   return tripWriteResponse(c, result);
 });
@@ -580,7 +580,7 @@ apiRoutes.patch('/plan/trips/:id', async (c) => {
   const id = c.req.param('id');
   const result = await updateTrip(
     c.env.DB, c.get('userId'), id, patch, b.expected_version as number,
-    { actor: 'ios', operation: 'update_trip', args: { ...b, id } },
+    { actor: c.get('appClient'), operation: 'update_trip', args: { ...b, id } },
   );
   return tripWriteResponse(c, result);
 });
@@ -592,7 +592,7 @@ apiRoutes.delete('/plan/trips/:id', async (c) => {
   }
   const id = c.req.param('id');
   const result = await removeTrip(c.env.DB, c.get('userId'), id, expected, {
-    actor: 'ios', operation: 'remove_trip', args: { id, expected_version: expected },
+    actor: c.get('appClient'), operation: 'remove_trip', args: { id, expected_version: expected },
   });
   return tripWriteResponse(c, result);
 });
@@ -634,7 +634,7 @@ apiRoutes.put('/calendar/:date', async (c) => {
     isRest ? 'skip_planned_session' : 'set_planned_session',
     { date, workout_id: b.workout_id },
     result.session.id,
-    'ios',
+    c.get('appClient'),
   );
   return c.json(result);
 });
@@ -659,7 +659,7 @@ apiRoutes.post('/calendar/:date/move', async (c) => {
     workout_id: String(b.workout_id), expected_plan_id: String(b.expected_plan_id),
     expected_version: Number(b.expected_version), expected_from_attempt: Number(b.expected_from_attempt),
     expected_to_attempt: Number(b.expected_to_attempt),
-  });
+  }, c.get('appClient'));
   return c.json(result, 'error' in result ? 409 : 200);
 });
 
@@ -681,7 +681,7 @@ apiRoutes.put('/workouts/:id/groups', async (c) => {
   const members = b.exercises as string[];
   const userId = c.get('userId');
   const dayId = c.req.param('id');
-  const attribution = { actor: 'ios' as const, operation: members.length ? 'group_exercises' : 'ungroup_exercises',
+  const attribution = { actor: c.get('appClient'), operation: members.length ? 'group_exercises' : 'ungroup_exercises',
     args: b, note: members.length ? 'Grouped exercise slots.' : 'Ungrouped exercise slots.' };
   if (members.length === 0) {
     if (['round_rest', 'transition_rest', 'target_sets', 'order_index'].some((field) => hasOwn(b, field))) {
@@ -763,7 +763,7 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     cues: b.cues ?? null,
     is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
     ...(b.run_steps === undefined ? {} : { run_steps: b.run_steps }),
-  }, { actor: 'ios', operation: 'add_exercise', args: b }, { expectedVersion: b.expected_version });
+  }, { actor: c.get('appClient'), operation: 'add_exercise', args: b }, { expectedVersion: b.expected_version });
   const response = slotEditResponse(row, 201);
   return c.json(response.body, response.status);
 });
@@ -807,7 +807,7 @@ apiRoutes.post('/workouts/:id/exercises/:teId/swap', async (c) => {
     expected_version: b.expected_version as number,
   };
   const row = await swapExercise(c.env.DB, c.get('userId'), ref, {
-    actor: 'ios', operation: 'swap_exercise', args: ref,
+    actor: c.get('appClient'), operation: 'swap_exercise', args: ref,
   });
   if (!row) return c.json({ error: 'not_found' }, 404);
   if ('conflict' in row) return c.json(row, 409);
@@ -845,7 +845,7 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
   const patch: Record<string, unknown> = { ...fields };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
   const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, patch, {
-    actor: 'ios', operation: 'update_exercise', args: b,
+    actor: c.get('appClient'), operation: 'update_exercise', args: b,
   }, { expectedVersion: expected_version });
   const response = slotEditResponse(row);
   return c.json(response.body, response.status);
@@ -865,7 +865,7 @@ apiRoutes.delete('/workouts/:id/exercises/:teId', async (c) => {
     return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
   }
   const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, {
-    actor: 'ios', operation: 'delete_exercise', args: { template_exercise_id: teId, expected_version: expectedVersion },
+    actor: c.get('appClient'), operation: 'delete_exercise', args: { template_exercise_id: teId, expected_version: expectedVersion },
   }, { expectedVersion });
   const response = slotEditResponse(row);
   return c.json(response.body, response.status);

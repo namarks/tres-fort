@@ -58,7 +58,7 @@ final class StationConnectionJourneyTests: XCTestCase {
 
     private func assertDisplayedCodeDecodes(in app: XCUIApplication) throws {
         let code = app.images["station.setupCode"]
-        XCTAssertTrue(code.waitForExistence(timeout: 5))
+        XCTAssertTrue(code.waitForExistence(timeout: UITestWait.screen))
         UITestScrolling.reveal(code, in: app, maxAttempts: 12)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(code.frame), "Keep the full code and white border on screen")
         let image = try XCTUnwrap(code.screenshot().image.cgImage)
@@ -80,22 +80,22 @@ final class StationConnectionJourneyTests: XCTestCase {
         app.navigationBars["iPad display"].buttons["Done"].tap()
         openIPadDisplay(in: app)
         tap(app.buttons["station.phoneConnect"], in: app)
-        XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: UITestWait.screen))
         // The fixture refuses the key request. The real setup must expose
         // recovery without requesting local networking or starting a workout.
         let offline = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@", "internet"),
             object: app.staticTexts["station.phoneStatus"])
-        XCTAssertEqual(XCTWaiter.wait(for: [offline], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [offline], timeout: UITestWait.screen), .completed)
         app.navigationBars["iPad display"].buttons["Done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
         openIPadDisplay(in: app)
         XCTAssertTrue(app.buttons["station.phoneDisconnect"].waitForExistence(timeout: UITestWait.screen))
         tap(app.buttons["station.phoneDisconnect"], in: app)
-        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
         app.navigationBars["iPad display"].buttons["Done"].tap()
         tap(app.buttons["today.startWorkout"], in: app)
-        XCTAssertTrue(app.buttons["runner.logSet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["runner.logSet"].waitForExistence(timeout: UITestWait.screen))
         openIPadDisplay(in: app)
         XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
     }
@@ -103,7 +103,7 @@ final class StationConnectionJourneyTests: XCTestCase {
     func testPhoneSetupShortcutOpensConfirmationWithoutEnablingOrStartingWorkout() throws {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone)
         let app = launch(shortcut: true)
-        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["station.phoneConnect"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.buttons["station.phoneDisconnect"].exists)
         app.navigationBars["iPad display"].buttons["Done"].tap(until: app.buttons["today.startWorkout"])
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
@@ -117,13 +117,13 @@ final class StationConnectionJourneyTests: XCTestCase {
         tap(app.buttons["today.station"], in: app)
         XCTAssertFalse(app.images["station.setupCode"].exists)
         tap(app.buttons["station.connectPhone"], in: app)
-        XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["station.connectionProblem"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.staticTexts["station.connectionProblem"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["station.connectionProblem"].label.contains("internet"))
         try assertDisplayedCodeDecodes(in: app)
         capture("ipad-scan-to-connect")
         tap(app.buttons["station.retryConnection"], in: app)
-        XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["station.done"].tap(until: app.buttons["today.station"])
         tap(app.buttons["today.station"], in: app)
         XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: UITestWait.screen),

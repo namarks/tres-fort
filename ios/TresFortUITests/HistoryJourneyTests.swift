@@ -16,7 +16,7 @@ final class HistoryJourneyTests: XCTestCase {
         app.buttons["progress.strength"].tap()
         app.buttons["history.exercise.exercise-0"].tap()
         let chart = app.descendants(matching: .any).matching(identifier: "history.progress.chart")
-        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(chart.count, 1)
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'SESSION · 2026-07-01'")).firstMatch.isHittable)
         let overall = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -27,7 +27,7 @@ final class HistoryJourneyTests: XCTestCase {
         let selector = app.buttons["history.progress.selector"]
         selector.tap()
         app.buttons["33 lb · Best reps"].tap()
-        XCTAssertTrue(app.staticTexts["history.progress.summary"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["history.progress.summary"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.staticTexts["history.progress.summary"].label, "8 reps · 2026-06-14")
         XCTAssertFalse(chart.firstMatch.exists)
         let sparse = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -37,12 +37,12 @@ final class HistoryJourneyTests: XCTestCase {
 
         selector.tap()
         app.buttons["35 lb · Best reps"].tap()
-        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(chart.count, 1)
         XCTAssertFalse(app.staticTexts["history.progress.summary"].exists)
         selector.tap()
         app.buttons["Estimated 1RM"].tap()
-        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(chart.count, 1)
         app.terminate()
     }
@@ -74,11 +74,11 @@ final class HistoryJourneyTests: XCTestCase {
             let row = app.buttons.matching(identifier: "history.exercise.exercise-0").firstMatch
             // Only a viewport is built eagerly; scroll to a real history row.
             for _ in 0..<12 where !row.exists || !row.isHittable { app.swipeUp() }
-            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            XCTAssertTrue(row.waitForExistence(timeout: UITestWait.screen))
             times["exercise_list_and_scroll_wall_ms"] = Date().timeIntervalSince(start) * 1_000
             start = Date()
             row.tap()
-            XCTAssertTrue(app.navigationBars["Exercise 0"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.navigationBars["Exercise 0"].waitForExistence(timeout: UITestWait.screen))
             times["exercise_detail_wall_ms"] = Date().timeIntervalSince(start) * 1_000
             let capture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             capture.name = "\(fixture)-detail-\(iteration)"

@@ -18,28 +18,28 @@ final class FreestyleJourneyTests: XCTestCase {
         // Freestyle starts from Today itself or from its "+" menu.
         if large {
             let start = app.buttons["today.quick.freestyle"]
-            XCTAssertTrue(start.waitForExistence(timeout: 10))
+            XCTAssertTrue(start.waitForExistence(timeout: UITestWait.screen))
             XCTAssertEqual(start.label, "Freestyle lift")
             reveal(start, app: app); start.tap()
         } else {
             let more = app.buttons["today.moreWaysToTrain"]
-            XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
+            XCTAssertTrue(more.waitForExistence(timeout: UITestWait.screen)); more.tap()
             let start = app.buttons["today.startFreestyle"]
-            XCTAssertTrue(start.waitForExistence(timeout: 5))
+            XCTAssertTrue(start.waitForExistence(timeout: UITestWait.screen))
             XCTAssertEqual(start.label, "Start freestyle"); start.tap()
         }
         let search = app.textFields["exercisePicker.search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertTrue(search.waitForExistence(timeout: UITestWait.screen))
         search.tap(); search.typeText((timed ? "Goblet Hold" : "Barbell Squat") + "\n")
         let squat = app.buttons[timed ? "freestyle.exercise.synthetic-hold" : "freestyle.exercise.synthetic-exercise"]
-        XCTAssertTrue(squat.waitForExistence(timeout: 5)); squat.tap()
+        XCTAssertTrue(squat.waitForExistence(timeout: UITestWait.screen)); squat.tap()
         let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow"]
         if allow.waitForExistence(timeout: 2) { allow.tap() }
         let first = app.buttons[timed ? "START SET 1" : "LOG SET 1"]
-        XCTAssertTrue(first.waitForExistence(timeout: 5)); first.tap()
+        XCTAssertTrue(first.waitForExistence(timeout: UITestWait.screen)); first.tap()
         if timed {
             let stop = app.buttons["STOP & LOG"]
-            XCTAssertTrue(stop.waitForExistence(timeout: 5))
+            XCTAssertTrue(stop.waitForExistence(timeout: UITestWait.screen))
             // The runner intentionally ignores reflexive taps in the first
             // two seconds. Observe the live countdown before ending the hold.
             let remaining = app.staticTexts["runner.timer.remaining"]
@@ -47,44 +47,44 @@ final class FreestyleJourneyTests: XCTestCase {
                 guard let seconds = Int(remaining.label.dropLast()) else { return false }
                 return seconds > 0 && seconds <= 27
             }, evaluatedWith: remaining)
-            waitForExpectations(timeout: 8)
+            waitForExpectations(timeout: UITestWait.screen)
             stop.tap()
         }
         let skip = app.buttons["rest.done"]
-        XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
-        XCTAssertTrue(app.buttons[timed ? "START SET 2" : "LOG SET 2"].waitForExistence(timeout: 5))
+        XCTAssertTrue(skip.waitForExistence(timeout: UITestWait.screen)); skip.tap()
+        XCTAssertTrue(app.buttons[timed ? "START SET 2" : "LOG SET 2"].waitForExistence(timeout: UITestWait.screen))
         let outline = app.buttons["runner.outline"]
         reveal(outline, app: app); outline.tap()
         app.buttons["Current exercise options"].tap()
         let addExercise = app.buttons["runner.addFreestyleExercise"]
         reveal(addExercise, app: app); addExercise.tap()
-        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertTrue(search.waitForExistence(timeout: UITestWait.screen))
         search.tap(); search.typeText("Dumbbell Goblet Squat\n")
         let replacement = app.buttons["freestyle.exercise.synthetic-replacement"]
-        XCTAssertTrue(replacement.waitForExistence(timeout: 5)); replacement.tap()
+        XCTAssertTrue(replacement.waitForExistence(timeout: UITestWait.screen)); replacement.tap()
         app.buttons["runner.outline.done"].tap()
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5)); app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen)); app.buttons["LOG SET 1"].tap()
+        XCTAssertTrue(skip.waitForExistence(timeout: UITestWait.screen)); skip.tap()
         let actions = app.buttons["today.workoutActions"]
         actions.tap(); app.buttons["Finish workout"].tap()
         let finish = app.buttons["FINISH"]
-        XCTAssertTrue(finish.waitForExistence(timeout: 5)); reveal(finish, app: app); finish.tap()
+        XCTAssertTrue(finish.waitForExistence(timeout: UITestWait.screen)); reveal(finish, app: app); finish.tap()
         let history = app.buttons["today.viewCompletedWorkout"]
-        XCTAssertTrue(history.waitForExistence(timeout: 10)); reveal(history, app: app); history.tap()
+        XCTAssertTrue(history.waitForExistence(timeout: UITestWait.screen)); reveal(history, app: app); history.tap()
         let saveAs = app.buttons["freestyle.saveAsWorkout"]
-        XCTAssertTrue(saveAs.waitForExistence(timeout: 5)); reveal(saveAs, app: app); saveAs.tap()
-        XCTAssertTrue(app.navigationBars["Save as workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(saveAs.waitForExistence(timeout: UITestWait.screen)); reveal(saveAs, app: app); saveAs.tap()
+        XCTAssertTrue(app.navigationBars["Save as workout"].waitForExistence(timeout: UITestWait.screen))
         // The front Form is a CollectionView whose Save row is lazy. Bind its
         // unique surface before scrolling; the underlying summary stays mounted.
         let saveForm = app.collectionViews.element
-        XCTAssertTrue(saveForm.waitForExistence(timeout: 5))
+        XCTAssertTrue(saveForm.waitForExistence(timeout: UITestWait.screen))
         let save = app.buttons["freestyle.save"]
         UITestScrolling.reveal(save, in: app, maxAttempts: 8, surface: saveForm)
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = large ? "freestyle-review-large" : "freestyle-review"; shot.lifetime = .keepAlways; add(shot)
         save.tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: save)
-        waitForExpectations(timeout: 10)
+        waitForExpectations(timeout: UITestWait.screen)
         XCTAssertFalse(app.buttons["freestyle.saveAsWorkout"].exists)
     }
     func testStartLogAddFinishAndSave() { journey(large: false) }

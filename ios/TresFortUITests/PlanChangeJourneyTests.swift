@@ -27,7 +27,7 @@ final class PlanChangeJourneyTests: XCTestCase {
         app.buttons["today.chooseWorkout"].tap()
         revealChanges(in: app)
         app.buttons["Plan changes"].tap()
-        XCTAssertTrue(app.buttons["planHistory.before.3"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["planHistory.before.3"].waitForExistence(timeout: UITestWait.screen))
         let coach = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Reduced load after your feedback' AND label CONTAINS 'Coach'"))
         for _ in 0..<4 where !app.buttons["planHistory.before.2"].isHittable { app.swipeUp() }
         XCTAssertTrue(coach.firstMatch.exists)
@@ -36,14 +36,14 @@ final class PlanChangeJourneyTests: XCTestCase {
         app.buttons["planHistory.before.2"].tap()
         let restore = app.buttons["Restore version 1"]
         for _ in 0..<4 where !restore.isHittable { app.swipeDown() }
-        XCTAssertTrue(restore.waitForExistence(timeout: 5))
+        XCTAssertTrue(restore.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.staticTexts["65 lb → 45 lb"].exists)
         restore.tap()
         app.buttons["Restore as a new version"].tap()
-        XCTAssertTrue(app.buttons["planHistory.before.4"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["planHistory.before.4"].waitForExistence(timeout: UITestWait.screen))
         app.navigationBars["Plan changes"].buttons["Done"].tap()
         revealChanges(in: app)
-        XCTAssertTrue(app.buttons["planChanges.review"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["planChanges.review"].waitForExistence(timeout: UITestWait.screen))
         let after = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         after.name = "plan-change-restore-visible"; after.lifetime = .keepAlways; add(after)
     }
@@ -58,16 +58,16 @@ final class PlanChangeJourneyTests: XCTestCase {
         revealChanges(in: app)
         XCTAssertTrue(app.buttons["planChanges.review"].waitForExistence(timeout: 15))
         app.buttons["planChanges.review"].tap()
-        XCTAssertTrue(app.buttons["planHistory.correct"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["planHistory.correct"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["planHistory.correct"].tap()
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: UITestWait.screen))
         let workout = app.buttons["library.workout.synthetic-day"]
         for _ in 0..<5 where !workout.isHittable { app.swipeDown() }
         workout.tap()
-        XCTAssertTrue(app.buttons["workoutDetails.edit"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["workoutDetails.edit"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["workoutDetails.edit"].tap()
-        XCTAssertTrue(app.buttons["Workout actions"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Workout actions"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Workout actions"].tap()
-        XCTAssertTrue(app.buttons["Add exercise"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Add exercise"].waitForExistence(timeout: UITestWait.screen))
     }
 }

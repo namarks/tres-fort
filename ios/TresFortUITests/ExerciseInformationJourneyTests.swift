@@ -18,10 +18,10 @@ final class ExerciseInformationJourneyTests: XCTestCase {
 
     private func openInfo(_ name: String, in app: XCUIApplication) {
         let info = app.buttons["Exercise information for " + name]
-        XCTAssertTrue(info.waitForExistence(timeout: 5))
+        XCTAssertTrue(info.waitForExistence(timeout: UITestWait.screen))
         for _ in 0..<8 where !info.isHittable { app.swipeUp() }
         XCTAssertTrue(info.isHittable); info.tap()
-        XCTAssertTrue(app.segmentedControls["exerciseInfo.tabs"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls["exerciseInfo.tabs"].waitForExistence(timeout: UITestWait.screen))
     }
 
     private func history(_ app: XCUIApplication) {
@@ -38,7 +38,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
     func testWorkoutPreviewShowsTechniqueComparableSessionAndFullHistory() {
         let app = launch("app-store")
         let preview = app.buttons["today.viewWorkout"]
-        XCTAssertTrue(preview.waitForExistence(timeout: 10)); preview.tap()
+        XCTAssertTrue(preview.waitForExistence(timeout: UITestWait.screen)); preview.tap()
         openInfo("Barbell Squat", in: app)
         XCTAssertTrue(app.staticTexts["MUSCLES"].exists)
         capture("exercise-information-technique")
@@ -50,7 +50,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
         history(app)
         capture("exercise-information-history")
         app.buttons["exerciseInfo.history.full"].tap()
-        XCTAssertTrue(app.staticTexts["PROGRESS"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["PROGRESS"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'SESSION · 2026-09-05'")).firstMatch.exists)
         app.navigationBars.buttons["BackButton"].tap()
         app.buttons["exerciseInfo.done"].tap()
@@ -60,8 +60,8 @@ final class ExerciseInformationJourneyTests: XCTestCase {
     func testRunnerRetainsDraftValuesAndRestWhileViewingInformation() {
         let app = launch("app-store")
         let start = app.buttons["today.startWorkout"]
-        XCTAssertTrue(start.waitForExistence(timeout: 10)); start.tap()
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(start.waitForExistence(timeout: UITestWait.screen)); start.tap()
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Increase reps by 1"].tap()
         let draft = app.buttons["runner.reps"].value as? String
         openInfo("Barbell Squat", in: app)
@@ -69,7 +69,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
         app.buttons["exerciseInfo.done"].tap()
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, draft)
         app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: UITestWait.screen))
         for _ in 0..<4 where !app.buttons["Exercise information for Barbell Squat"].isHittable { app.swipeDown() }
         openInfo("Barbell Squat", in: app)
         history(app)
@@ -83,16 +83,16 @@ final class ExerciseInformationJourneyTests: XCTestCase {
     func testActiveTimedSetContinuesWhileInformationIsOpen() {
         let app = launch("timed-navigation")
         let start = app.buttons["START SET 1"]
-        XCTAssertTrue(start.waitForExistence(timeout: 10)); start.tap()
+        XCTAssertTrue(start.waitForExistence(timeout: UITestWait.screen)); start.tap()
         let remaining = app.staticTexts["runner.timer.remaining"]
-        XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+        XCTAssertTrue(remaining.waitForExistence(timeout: UITestWait.screen))
         let before = Int(remaining.label.dropLast())!
         openInfo("Stationary Bike", in: app)
         XCTAssertTrue(app.staticTexts["Log time in seconds."].exists)
         history(app)
         XCTAssertTrue(app.staticTexts["exerciseInfo.history.empty"].exists)
         app.buttons["exerciseInfo.done"].tap()
-        XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+        XCTAssertTrue(remaining.waitForExistence(timeout: UITestWait.screen))
         XCTAssertLessThan(Int(remaining.label.dropLast())!, before)
         XCTAssertFalse(start.exists)
         XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String, "bike:0;other:0;seconds:0;warmup:0")
@@ -101,7 +101,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
     func testCreationInfoAtLargeTextPreservesSearchFilterAndSelection() {
         let app = launch("empty", large: true)
         let create = app.buttons["Create a workout"]
-        XCTAssertTrue(create.waitForExistence(timeout: 10)); create.tap()
+        XCTAssertTrue(create.waitForExistence(timeout: UITestWait.screen)); create.tap()
         app.buttons["Upper body"].tap()
         let search = app.textFields["exercisePicker.search"]
         search.tap(); search.typeText("bp\n")
@@ -127,12 +127,12 @@ final class ExerciseInformationJourneyTests: XCTestCase {
     func testAddAndWarmupInfoDoesNotNavigateToConfiguration() {
         let app = launch("library")
         let library = app.buttons["today.chooseWorkout"]
-        XCTAssertTrue(library.waitForExistence(timeout: 10)); library.tap()
+        XCTAssertTrue(library.waitForExistence(timeout: UITestWait.screen)); library.tap()
         app.buttons["Actions for Gym"].tap()
         app.buttons["Edit exercises"].tap()
         for action in ["Add exercise", "Add warm-up"] {
             app.buttons["editor.actions"].tap(); app.buttons[action].tap()
-            XCTAssertTrue(app.navigationBars[action].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.navigationBars[action].waitForExistence(timeout: UITestWait.screen))
             app.buttons["Core"].tap()
             openInfo("Plank", in: app)
             XCTAssertTrue(app.staticTexts["Log time in seconds."].exists)
@@ -146,11 +146,11 @@ final class ExerciseInformationJourneyTests: XCTestCase {
 
     func testSwapInfoDoesNotSelectAndRunnerUsesReplacementHistory() {
         let app = launch("workout-swap")
-        XCTAssertTrue(app.buttons["runner.outline"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["runner.outline"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["runner.outline"].tap()
         app.buttons["Current exercise options"].tap()
         let swap = app.buttons["runner.swap-exercise"]
-        XCTAssertTrue(swap.waitForExistence(timeout: 10))
+        XCTAssertTrue(swap.waitForExistence(timeout: UITestWait.screen))
         for _ in 0..<8 where !swap.isHittable { app.swipeUp() }
         swap.tap()
         openInfo("Dumbbell Goblet Squat", in: app)
@@ -161,7 +161,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
         app.buttons.containing(.staticText, identifier: "Dumbbell Goblet Squat").firstMatch.tap()
         app.buttons["runner.confirm-swap"].tap()
         app.buttons["runner.outline.done"].tap()
-        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: UITestWait.screen))
         openInfo("Dumbbell Goblet Squat", in: app)
         history(app)
         XCTAssertTrue(app.staticTexts["exerciseInfo.history.empty"].exists)

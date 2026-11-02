@@ -3,7 +3,10 @@ import XCTest
 /// How long a UI test gives a screen to appear or go away. Simulators on a
 /// loaded CI runner can take several seconds to present a sheet or cover, so
 /// a fixed few seconds fails healthy runs. A wait ends as soon as its element
-/// appears, so a longer limit only slows a run that is already failing.
+/// appears, so a longer limit only slows a run that is already failing. Use it
+/// for every wait a test asserts. Keep a short literal only where the element
+/// is optional (`if alert.waitForExistence(timeout: 3) { ... }`), since that
+/// wait runs to its end whenever the element never comes.
 enum UITestWait {
     static let screen: TimeInterval = 15
 }

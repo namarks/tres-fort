@@ -60,6 +60,13 @@ elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-bui
         print('Example.swift:42: error: XCTest assertion failed')
         print("Test Case '-[Suite testExample]' failed (2.000 seconds).")
         print('accessibility dump\\n' * 120)
+    if args[0] == 'test-without-building' and os.environ.get('MOCK_RETRIED_TESTS'):
+        # Xcode's retry: one test fails, then passes when run again.
+        print("Test Case '-[TresFortUITests.Steady testAlwaysPasses]' passed (1.000 seconds).")
+        print("Test Case '-[TresFortUITests.Slow testNeedsRetry]' failed (9.000 seconds).")
+        print("Test Case '-[TresFortUITests.Slow testNeedsRetry]' passed (4.000 seconds).")
+        print("Test Case '-[TresFortUITests.Broken testFailsTwice]' failed (2.000 seconds).")
+        print("Test Case '-[TresFortUITests.Broken testFailsTwice]' failed (2.000 seconds).")
     if args[0] == 'test-without-building' and os.environ.get('MOCK_CANCEL_DURING_TEST'):
         # Kill only the disposable verifier shell, emulating a runner that
         # cannot wait for cleanup. The test owns and removes its whole temp tree.
@@ -217,6 +224,37 @@ else: print('synthetic-tool-version')
         for option in ['-project','-scheme','-destination','-derivedDataPath']:
             self.assertEqual(build[build.index(option)+1],test[test.index(option)+1])
         self.assertEqual(test[test.index('-parallel-testing-enabled')+1],'NO')
+        # A failed test runs once more in place, never more than once.
+        self.assertIn('-retry-tests-on-failure',test)
+        self.assertEqual(test[test.index('-test-iterations')+1],'2')
+        self.assertNotIn('-retry-tests-on-failure',build)
+
+    def test_tests_that_pass_only_on_retry_are_reported_as_flaky(self):
+        summary=self.root/'summary.md'
+        self.env.update(MOCK_RETRIED_TESTS='1',GITHUB_ACTIONS='true',GITHUB_STEP_SUMMARY=str(summary))
+        result=self.run_script()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('Passed only when run again',result.stdout)
+        self.assertIn('::warning title=Flaky iOS test::TresFortUITests.Slow testNeedsRetry failed',result.stdout)
+        self.assertIn('TresFortUITests.Slow testNeedsRetry',summary.read_text())
+        # Neither a steady pass nor a test that failed every time is "flaky".
+        for name in ['testAlwaysPasses','testFailsTwice']:
+            self.assertNotIn(name,result.stdout)
+            self.assertNotIn(name,summary.read_text())
+        self.env['MOCK_TEST_EXIT']='1'
+        summary.unlink()
+        result=self.run_script()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('TresFortUITests.Slow testNeedsRetry',result.stderr)
+        self.assertIn('Example.swift:42: error',result.stderr)
+
+    def test_quiet_run_reports_no_flaky_tests(self):
+        summary=self.root/'summary.md'
+        self.env.update(GITHUB_ACTIONS='true',GITHUB_STEP_SUMMARY=str(summary))
+        result=self.run_script()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertNotIn('Passed only when run again',result.stdout)
+        self.assertFalse(summary.exists())
 
     def test_ci_shards_are_complementary_and_reject_extra_filters(self):
         universe={'TresFortTests'} | {

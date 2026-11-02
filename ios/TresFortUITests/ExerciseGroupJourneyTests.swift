@@ -11,16 +11,16 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         // Notification permission is covered by the activation journeys.
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["today.chooseWorkout"].tap()
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: UITestWait.screen))
         let workout = app.buttons["library.workout.synthetic-day"]
-        XCTAssertTrue(workout.waitForExistence(timeout: 10))
+        XCTAssertTrue(workout.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(workout.isHittable)
         workout.tap()
-        XCTAssertTrue(app.buttons["workoutDetails.edit"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["workoutDetails.edit"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["workoutDetails.edit"].tap()
-        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -60,7 +60,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         let save = app.buttons["Save group"]
         reveal(save, in: app)
         save.tap()
-        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testAuthorWarmupAndWorkingSupersetThenRunAlternatingRounds() throws {
@@ -74,9 +74,9 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         screenshot("authored-two-groups")
         app.navigationBars["Edit Warm-up and strength"].buttons["Done"].tap()
         let details = app.navigationBars["Warm-up and strength"]
-        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        XCTAssertTrue(details.waitForExistence(timeout: UITestWait.screen))
         details.backButton.tap()
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: UITestWait.screen))
         app.navigationBars["Workouts"].buttons["Done"].tap()
         let start = app.buttons["today.startWorkout"]
         reveal(start, in: app)
@@ -91,10 +91,10 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         let rounds = [1, 1, 2, 2, 1, 1, 2, 2]
         for index in names.indices {
             let name = app.staticTexts[names[index]]
-            XCTAssertTrue(name.waitForExistence(timeout: 10))
+            XCTAssertTrue(name.waitForExistence(timeout: UITestWait.screen))
             if index == 0 {
                 screenshot("superset-runner-before-header-check")
-                XCTAssertTrue(app.descendants(matching: .any)["runner.group"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.descendants(matching: .any)["runner.group"].waitForExistence(timeout: UITestWait.screen))
                 XCTAssertTrue(app.descendants(matching: .any)["runner.group.member.group-pushup"].exists)
                 XCTAssertTrue(app.descendants(matching: .any)["runner.group.member.group-squat"].exists)
                 XCTAssertTrue(app.staticTexts["runner.group.next"].label.contains("Bodyweight Squat"))
@@ -119,7 +119,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 if index == 6 { screenshot("superset-second-round-retains-kilograms") }
             }
             let log = app.buttons["LOG SET \(rounds[index])"]
-            XCTAssertTrue(log.waitForExistence(timeout: 5))
+            XCTAssertTrue(log.waitForExistence(timeout: UITestWait.screen))
             XCTAssertTrue(log.isEnabled)
             XCTAssertTrue(app.frame.contains(log.frame))
             XCTAssertGreaterThanOrEqual(log.frame.height, 44)
@@ -130,31 +130,31 @@ final class ExerciseGroupJourneyTests: XCTestCase {
             // fixture sequence below prove the tap logged one physical set.
             log.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             if index + 1 == names.count {
-                XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: UITestWait.screen))
                 XCTAssertFalse(app.buttons["rest.done"].exists, "Final work must go directly to completion")
             } else if index == 0 || index == 2 {
                 // A zero transition advances immediately without a rest cue.
-                XCTAssertTrue(app.staticTexts[names[index + 1]].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts[names[index + 1]].waitForExistence(timeout: UITestWait.screen))
                 XCTAssertFalse(app.buttons["rest.done"].exists)
             } else {
                 let done = app.buttons["rest.done"]
-                XCTAssertTrue(done.waitForExistence(timeout: 5))
+                XCTAssertTrue(done.waitForExistence(timeout: UITestWait.screen))
                 XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label,
                                names[index + 1])
                 if index == 4 { screenshot("transition-rest-next-member") }
                 done.tap()
             }
         }
-        XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Ready to finish"].waitForExistence(timeout: UITestWait.screen))
         let finish = app.buttons["FINISH"]
-        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertTrue(finish.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(finish.isEnabled)
         XCTAssertTrue(app.frame.contains(finish.frame))
         XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
         // Finish stays reachable immediately after the final logged member.
         // Verify a real touch and the acknowledged completion below.
         finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["Synthetic member sequence mismatch"].exists)
         screenshot("completed-alternating-workout")
     }
@@ -174,12 +174,12 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         let edit = app.buttons["Edit Superset A"]
         // Scroll back to the start of the card after returning from a long form.
         for _ in 0..<5 where !edit.isHittable { app.swipeDown() }
-        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(edit.waitForExistence(timeout: UITestWait.screen))
         edit.tap()
         let ungroup = app.buttons["Ungroup"]
         reveal(ungroup, in: app)
         ungroup.tap()
-        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertFalse(app.staticTexts["Superset A"].exists)
         let pushup = app.buttons["editor.slot.group-pushup"]
         for _ in 0..<5 where !pushup.isHittable { app.swipeDown() }

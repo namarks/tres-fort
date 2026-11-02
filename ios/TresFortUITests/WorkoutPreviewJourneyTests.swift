@@ -8,9 +8,10 @@ final class WorkoutPreviewJourneyTests: XCTestCase {
 
     private let longName = "Single-Arm Dumbbell Shoulder Press with a Controlled Eccentric"
 
-    private func launch() throws -> XCUIApplication {
+    private func launch(reduceMotion: Bool = false) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
+        if reduceMotion { app.launchEnvironment["TRESFORT_UI_REDUCE_MOTION"] = "1" }
         // Twelve rows, four circuits, with an offline demo, unmapped movement,
         // and failed remote image in each group. Never contact a real account.
         let slots: [[String: Any]] = (0..<12).map { index in
@@ -30,8 +31,8 @@ final class WorkoutPreviewJourneyTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
         app.launch()
         let preview = app.buttons["today.viewWorkout"]
-        XCTAssertTrue(preview.waitForExistence(timeout: 10)); preview.tap()
-        XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))
+        XCTAssertTrue(preview.waitForExistence(timeout: UITestWait.screen)); preview.tap()
+        XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: UITestWait.screen))
         return app
     }
 
@@ -68,7 +69,7 @@ final class WorkoutPreviewJourneyTests: XCTestCase {
         capture("preview-thumbnails")
         let info = app.buttons.matching(identifier: "Exercise information for " + longName).firstMatch
         reveal(info, in: app); info.tap()
-        XCTAssertTrue(app.staticTexts["No demo available yet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No demo available yet"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["exerciseInfo.done"].tap()
         let last = app.otherElements["workoutPreview.exercise.preview-11"]
         reveal(last, in: app)
@@ -77,31 +78,15 @@ final class WorkoutPreviewJourneyTests: XCTestCase {
         XCTAssertTrue(start.isHittable)
         capture("preview-thumbnails-long-workout-end")
         app.navigationBars["Strength A"].buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: UITestWait.screen))
     }
 
     func testReducedMotionPreviewKeepsInformationAndStartReachable() throws {
-        // Only changes the verifier's disposable simulator; restore the
-        // preference afterward so this journey cannot affect other tests.
-        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
-        settings.launch()
-        let accessibility = settings.staticTexts["Accessibility"]
-        for _ in 0..<8 where !accessibility.isHittable { settings.swipeUp() }
-        XCTAssertTrue(accessibility.waitForExistence(timeout: 5)); accessibility.tap()
-        settings.staticTexts["Motion"].tap()
-        let reduceMotion = settings.switches["Reduce Motion"]
-        XCTAssertTrue(reduceMotion.waitForExistence(timeout: 5))
-        let wasEnabled = reduceMotion.value as? String == "1"
-        defer {
-            settings.activate()
-            if !wasEnabled { reduceMotion.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap() }
-            settings.terminate()
-        }
-        // Settings exposes the whole labelled row as a switch. Tap its thumb.
-        if !wasEnabled { reduceMotion.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap() }
-        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: reduceMotion)
-        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
-        let app = try launch()
+        // The app treats this launch override like the system Reduce Motion
+        // setting (see ReduceMotion.swift). Toggling it in Apple's Settings app
+        // depended on Settings' layout and speed and timed out on loaded CI
+        // simulators.
+        let app = try launch(reduceMotion: true)
         let name = app.staticTexts.matching(identifier: longName).firstMatch
         reveal(name, in: app)
         capture("preview-thumbnails-reduce-motion")
@@ -112,7 +97,7 @@ final class WorkoutPreviewJourneyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(info.frame.width, 44)
         XCTAssertGreaterThanOrEqual(info.frame.height, 44)
         info.tap()
-        XCTAssertTrue(app.segmentedControls["exerciseInfo.tabs"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls["exerciseInfo.tabs"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["exerciseInfo.done"].tap()
         XCTAssertTrue(app.buttons["workoutDetails.start"].isHittable)
     }

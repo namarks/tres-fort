@@ -465,7 +465,7 @@ export function tagsOf(workout: Workout): string[] {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  active_workout: 'This workout is in progress in the app. Finish or discard it there first.',
+  active_workout: 'A workout is in progress in the app. Finish or discard it there first.',
   day_in_progress: 'This workout is in progress in the app. Finish or discard it there first.',
   group_conflict: 'That would split a superset or circuit. Only exercises next to each other can be grouped, and a group’s rounds and rests are set on the group.',
   unknown_exercise: 'That exercise isn’t in the catalog.',

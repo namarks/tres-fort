@@ -63,8 +63,9 @@ partner training are not web features.
       and run steps use `src/runSteps.ts`, so the web runs the same code as
       the Worker rather than a third copy of those rules. Sign out works.
   - Still to do in P1:
-    - Plan version history, a week view, and a link to delete the account
-      (the existing `DELETE /api/me`).
+    - A week view, and a link to delete the account (the existing
+      `DELETE /api/me`). Plan version history is built with P2's restore,
+      below.
     - New accounts: `/auth/apple` already creates an ordinary account for
       any new Apple identity, so a person can sign up on the web first. A
       short first-run offers the existing starter workouts and a link to the
@@ -113,6 +114,13 @@ partner training are not web features.
     date's `sessions.attempt` as the app does; past, started and
     away-without-training dates stay as they are), and away dates (add,
     edit only the changed fields, and remove, with the plan version).
+  - Then plan changes: every saved version, newest first, with who changed
+    it (the coach, the app or the web), the coach's reason and what it
+    touched. Choosing one compares it with the plan now, field by field;
+    restoring it sends the plan ID and the version it was compared with,
+    and saves it as a new version, so the replaced plan stays in the list.
+    A plan changed elsewhere since the comparison is refused and reloaded,
+    and a workout in progress in the app blocks a restore.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
     rest, and superset or circuit groups.
@@ -159,10 +167,11 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** Finish P2 with restoring a past plan version. The
-workout, slot, group, run step and calendar editing is built and waits for
+**Now (@agent):** P2's editing is built: workouts, slots, groups, run
+steps, the calendar and restoring a plan version. It waits for review and
 the owner's written go-ahead to deploy (the API Worker and `tres-fort-web`
-together). The rest of P1 (plan
+together). Race goal, training phases and deloads follow coach-free
+planning's REST. The rest of P1 (plan
 history, week view, delete-account link, first-run for web sign-ups, invite
 codes, committed browser checks) follows before the site is linked publicly
 in P5. Each later deploy needs the owner's written go-ahead.

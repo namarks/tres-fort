@@ -280,3 +280,47 @@ describe('the routine, single dates and away dates from the web', () => {
     ]));
   });
 });
+
+describe('restoring a plan version from the web', () => {
+  it('compares, restores as a new web version, and refuses a version it did not review', async () => {
+    const web = await devJwt('web');
+    const plan = await activePlan(web);
+    const workout = (await call<{ id: string }>(web, 'POST', '/api/workouts', {
+      name: 'Restore me', expected_plan_id: plan.id, expected_version: plan.version,
+    })).body.id;
+    const saved = await version(web);
+    expect((await call(web, 'PATCH', `/api/workouts/${workout}`, {
+      name: 'Renamed', expected_version: saved,
+    })).status).toBe(200);
+    const current = await version(web);
+
+    const history = await call<{ plan_id: string; current_version: number; items: { version: number; actor: string }[] }>(
+      web, 'GET', '/api/plan/history?limit=5');
+    expect(history.status).toBe(200);
+    expect(history.body.current_version).toBe(current);
+    expect(history.body.items[0]).toMatchObject({ version: current, actor: 'web' });
+    const comparison = await call<{ from_version: number; to_version: number; changes: { kind: string }[] }>(
+      web, 'GET', `/api/plan/history/${saved}/compare?to_version=${current}`);
+    expect(comparison.body).toMatchObject({ from_version: saved, to_version: current });
+    expect(comparison.body.changes.map((change) => change.kind)).toContain('day');
+
+    // A version the page didn't compare against is refused, not overwritten.
+    const stale = await call<{ conflict: boolean }>(web, 'POST', `/api/plan/history/${saved}/restore`, {
+      expected_plan_id: plan.id, expected_version: saved, reason: 'Restored from the web plan history',
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.conflict).toBe(true);
+
+    const restored = await call<{ version: number; restored_from_version: number }>(web, 'POST', `/api/plan/history/${saved}/restore`, {
+      expected_plan_id: plan.id, expected_version: current, reason: 'Restored from the web plan history',
+    });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({ restored_from_version: saved, version: current + 1 });
+    const state = await call<{ plan: { workouts: { id: string; name: string }[] } }>(web, 'GET', '/api/state');
+    expect(state.body.plan.workouts.find((w) => w.id === workout)?.name).toBe('Restore me');
+    const snapshot = await env.DB.prepare(
+      'SELECT actor, operation, reason FROM plan_snapshots WHERE plan_id=?1 AND version=?2',
+    ).bind(plan.id, current + 1).first<{ actor: string; operation: string; reason: string }>();
+    expect(snapshot).toEqual({ actor: 'web', operation: 'restore_plan', reason: 'Restored from the web plan history' });
+  });
+});

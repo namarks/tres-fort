@@ -354,6 +354,11 @@ export interface ExternalActivityRow {
   effective_load: number | null;
   effective_intensity: number | null;
   load_method: string | null;
+  // Detail-stream summaries from Apple Health (migration 0061); NULL when no
+  // dense stream was sent. Inputs to effective_load, not shown on their own.
+  stream_np_w: number | null;
+  stream_hr_rms: number | null;
+  stream_hr_sec: number | null;
 }
 
 /** A normalized completed activity as returned by the intervals.icu fetcher. */

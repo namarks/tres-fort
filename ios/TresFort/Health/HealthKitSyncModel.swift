@@ -119,6 +119,7 @@ final class HealthKitSyncModel: ObservableObject {
         let ids: [HKQuantityTypeIdentifier] = [
             .heartRate, .activeEnergyBurned,
             .distanceWalkingRunning, .distanceCycling, .distanceSwimming,
+            .cyclingPower,
         ]
         for id in ids {
             if let q = HKObjectType.quantityType(forIdentifier: id) { t.insert(q) }
@@ -205,7 +206,19 @@ final class HealthKitSyncModel: ObservableObject {
     func start() {
         guard enabled, !anchorResetPending, isAvailable, currentJWT != nil else { return }
         registerObserver()
-        Task { await sync() }
+        Task {
+            await requestAddedReadTypes()
+            await sync()
+        }
+    }
+
+    /// A member connected before a read type was added (cycling power, for
+    /// training load) is asked once for the new type; HealthKit shows the
+    /// sheet only when something is still undecided.
+    private func requestAddedReadTypes() async {
+        guard let status = try? await store.statusForAuthorizationRequest(toShare: [], read: readTypes),
+              status == .shouldRequest else { return }
+        try? await store.requestAuthorization(toShare: [], read: readTypes)
     }
 
     /// Explicitly disconnect this account's HealthKit state. Ordinary sign-out
@@ -248,6 +261,9 @@ final class HealthKitSyncModel: ObservableObject {
         }
         let hadStoredAnchor = anchor != nil
         var pushedAny = false
+        // A run or ride whose detail read failed went out without streams;
+        // the one-time detail pass must then still run.
+        var missedStreams = false
         do {
             while true {
                 guard isCurrentSync(using: jwt, generation: generation) else { return }
@@ -273,6 +289,7 @@ final class HealthKitSyncModel: ObservableObject {
                     guard isCurrentSync(using: jwt, generation: generation) else { return }
                     _ = try await api.pushHealthKitActivity(body, jwt: jwt)
                     persistedAny = true
+                    if body.missedStreams { missedStreams = true }
                 }
                 // Whole page pushed — checkpoint the anchor before the next page.
                 guard isCurrentSync(using: jwt, generation: generation) else { return }
@@ -282,6 +299,11 @@ final class HealthKitSyncModel: ObservableObject {
                 }
                 pushedAny = true
                 if workouts.count < Self.pageLimit { break } // last page
+            }
+            guard isCurrentSync(using: jwt, generation: generation) else { return }
+            if try await backfillStreamsIfNeeded(jwt: jwt, generation: generation,
+                                                 fullImport: !hadStoredAnchor && !missedStreams) {
+                persistedAny = true
             }
             guard isCurrentSync(using: jwt, generation: generation) else { return }
             lastSyncedAt = Date()
@@ -299,7 +321,89 @@ final class HealthKitSyncModel: ObservableObject {
         }
     }
 
+    /// How far back the one-time detail pass reaches.
+    static let streamsBackfillDays = 365
+
+    /// Runs and rides imported before the app sent detail streams are pushed
+    /// again, once, with their heart-rate and power samples so they get a
+    /// stream-based load. A sync that started without an anchor has just
+    /// pushed everything with streams, so it only records the pass as done.
+    /// A failed detail read leaves the pass pending, so a later sync retries
+    /// it; workouts the anchor already passed would otherwise never be read
+    /// again. Returns whether anything was pushed.
+    private func backfillStreamsIfNeeded(jwt: String, generation: UInt64,
+                                         fullImport: Bool) async throws -> Bool {
+        guard let accountID else { return false }
+        let key = AccountLocalState.healthStreamsBackfillKey(userID: accountID)
+        guard !defaults.bool(forKey: key) else { return false }
+        var pushed = false
+        var complete = true
+        if !fullImport {
+            let since = Calendar.current.date(
+                byAdding: .day, value: -Self.streamsBackfillDays, to: Date()) ?? Date()
+            for w in try await fetchWorkouts(since: since) where Self.hasDetailStreams(kind: Self.kind(for: w.workoutActivityType)) {
+                guard isCurrentSync(using: jwt, generation: generation) else { return pushed }
+                let body = await buildPush(for: w)
+                guard isCurrentSync(using: jwt, generation: generation) else { return pushed }
+                _ = try await api.pushHealthKitActivity(body, jwt: jwt)
+                pushed = true
+                if body.missedStreams { complete = false }
+            }
+        }
+        guard complete, isCurrentSync(using: jwt, generation: generation) else { return pushed }
+        defaults.set(true, forKey: key)
+        return pushed
+    }
+
     // MARK: - HealthKit queries
+
+    /// Every workout that started on or after `since`.
+    private func fetchWorkouts(since: Date) async throws -> [HKWorkout] {
+        try await withCheckedThrowingContinuation { cont in
+            let q = HKSampleQuery(
+                sampleType: HKObjectType.workoutType(),
+                predicate: HKQuery.predicateForSamples(withStart: since, end: nil, options: .strictStartDate),
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: nil
+            ) { _, samples, error in
+                if let error { cont.resume(throwing: error); return }
+                cont.resume(returning: (samples as? [HKWorkout]) ?? [])
+            }
+            store.execute(q)
+        }
+    }
+
+    /// Only runs and rides are scored from streams.
+    nonisolated static func hasDetailStreams(kind: String) -> Bool {
+        kind == "run" || kind == "ride"
+    }
+
+    /// Heart rate for runs and rides, plus cycling power for rides. Nil when
+    /// HealthKit fails, so the push omits `streams` and the Worker keeps what
+    /// it stored; an empty result tells it the workout has none.
+    private func detailStreams(for w: HKWorkout, kind: String) async -> [String: HealthStream]? {
+        guard Self.hasDetailStreams(kind: kind) else { return nil }
+        let source = w.sourceRevision.source.bundleIdentifier
+        // Readings taken while the workout was paused are not training: its
+        // moving time excludes them, so the streams must too.
+        let paused = HealthWorkoutStreams.pausedRanges(
+            HealthWorkoutStreams.pauseMarks(for: w),
+            duration: w.endDate.timeIntervalSince(w.startDate))
+        var streams: [String: HealthStream] = [:]
+        guard let heartRate = await HealthWorkoutStreams.read(
+            .heartRate, unit: HKUnit.count().unitDivided(by: .minute()),
+            from: w.startDate, to: w.endDate, store: store) else { return nil }
+        streams["heart_rate"] = HealthWorkoutStreams.compact(
+            HealthWorkoutStreams.removing(paused, from: heartRate), preferredSource: source)
+        if kind == "ride" {
+            guard let power = await HealthWorkoutStreams.read(
+                .cyclingPower, unit: .watt(),
+                from: w.startDate, to: w.endDate, store: store) else { return nil }
+            streams["power"] = HealthWorkoutStreams.compact(
+                HealthWorkoutStreams.removing(paused, from: power), preferredSource: source)
+        }
+        return streams
+    }
 
     /// One-shot anchored fetch over the workout type, up to `limit` samples.
     /// With no update handler the results handler fires exactly once with the
@@ -373,6 +477,7 @@ final class HealthKitSyncModel: ObservableObject {
         }
 
         let (avgHR, maxHR) = await heartRate(during: w)
+        let streams = await detailStreams(for: w, kind: kind)
 
         let elevationM = (w.metadata?[HKMetadataKeyElevationAscended] as? HKQuantity)?
             .doubleValue(for: .meter())
@@ -400,7 +505,8 @@ final class HealthKitSyncModel: ObservableObject {
             max_hr: maxHR,
             calories: calories,
             elevation_gain_m: elevationM,
-            raw: raw)
+            raw: raw,
+            streams: streams)
     }
 
     // MARK: - Observer / background delivery
@@ -557,6 +663,15 @@ struct HealthKitActivityPush {
     let calories: Int?
     let elevation_gain_m: Double?
     let raw: String?
+    /// Heart-rate and power samples for a run or ride (`heart_rate`, `power`).
+    /// Nil omits the key, so the Worker keeps what it stored; empty says the
+    /// workout has none.
+    var streams: [String: HealthStream]? = nil
+
+    /// A run or ride whose detail read failed, so it carries no streams.
+    var missedStreams: Bool {
+        streams == nil && HealthKitSyncModel.hasDetailStreams(kind: kind)
+    }
 
     /// JSON body for `APIClient.post`. Required keys always present; optionals
     /// omitted when nil (the endpoint maps absent → null identically).
@@ -574,6 +689,7 @@ struct HealthKitActivityPush {
         if let v = calories { b["calories"] = v }
         if let v = elevation_gain_m { b["elevation_gain_m"] = v }
         if let v = raw { b["raw"] = v }
+        if let v = streams { b["streams"] = HealthWorkoutStreams.jsonBody(v) }
         return b
     }
 }

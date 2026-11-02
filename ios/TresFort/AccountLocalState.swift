@@ -60,6 +60,10 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-reset-pending.v1.\(userID)"
     }
 
+    static func healthStreamsBackfillKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-streams-backfill.v1.\(userID)"
+    }
+
     static func appleCredentialUserKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
@@ -136,6 +140,7 @@ enum AccountLocalState {
             bodyWeightEnabledKey(userID: userID),
             healthAnchorKey(userID: userID),
             healthResetPendingKey(userID: userID),
+            healthStreamsBackfillKey(userID: userID),
         ]
         var erased = true
         do { try StationRecordingStore.deleteAccountRecordings(accountID: userID) }

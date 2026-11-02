@@ -200,9 +200,9 @@ integration or social breadth.
   app, and one Worker load engine gives every run, ride and swim a labeled
   power, heart-rate or pace load from Apple Health, the recorder, `.fit`
   uploads and later Garmin, keeping intervals.icu's figure when it has one.
-  P0's thresholds store and engine, P1's loads on imported workouts and P2's
-  thresholds screen and load display are in the repository; P3 adds detail
-  streams from Apple Health.
+  P0's thresholds store and engine, P1's loads on imported workouts, P2's
+  thresholds screen and load display and P3's Apple Health heart-rate and
+  power streams are in the repository; P4 adds `.fit` file import.
 
 ### Platform (`platform`)
 

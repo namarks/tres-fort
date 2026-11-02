@@ -89,11 +89,21 @@ enum HealthWorkoutStreams {
         return ranges
     }
 
-    /// Readings outside every paused stretch.
+    /// Readings outside every paused stretch, placed on the workout's
+    /// moving clock: later readings move back by the paused time, so even a
+    /// pause shorter than the gap the Worker bridges never counts as
+    /// training. The same rule the Worker applies to .fit timer pauses.
     static func removing(_ paused: [Range<TimeInterval>],
                          from points: [HealthStreamPoint]) -> [HealthStreamPoint] {
         guard !paused.isEmpty else { return points }
-        return points.filter { point in !paused.contains { $0.contains(point.t) } }
+        return points.compactMap { point in
+            var shift: TimeInterval = 0
+            for range in paused {
+                if range.contains(point.t) { return nil }
+                if point.t >= range.upperBound { shift += range.upperBound - range.lowerBound }
+            }
+            return HealthStreamPoint(t: point.t - shift, v: point.v, source: point.source)
+        }
     }
 
     /// The body's `streams` value: only streams with enough points.

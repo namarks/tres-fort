@@ -294,6 +294,9 @@ chat start) and a **prompt** (`coach_brief`).
   `load_method` (migration `0060`), refreshed by `refreshActivityLoads`.
   Apple Health pushes may carry heart-rate and power `streams`; the Worker
   stores only their threshold-independent summaries (migration `0061`).
+  `POST /api/activities/fit` imports a `.fit` file (`src/fitFile.ts`) as a
+  `source='fit'` activity scored the same way; dedup keeps intervals.icu over
+  `.fit` over Apple Health.
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude

@@ -81,8 +81,11 @@ final class HealthWorkoutStreamsTests: XCTestCase {
         let kept = HealthWorkoutStreams.removing(paused, from: points(150, count: 3_600))
         // 600 + 600 + 1,200 seconds of training remain.
         XCTAssertEqual(kept.count, 2_400)
-        XCTAssertFalse(kept.contains { $0.t >= 600 && $0.t < 900 })
-        XCTAssertTrue(kept.contains { $0.t == 900 })
+        // On the moving clock: one reading a second, with no gaps.
+        XCTAssertEqual(kept.map(\.t), (0..<2_400).map(Double.init))
+        // A short pause still leaves no gap the Worker would bridge.
+        let short = HealthWorkoutStreams.removing([10..<15], from: points(150, count: 30))
+        XCTAssertEqual(short.map(\.t), (0..<25).map(Double.init))
         XCTAssertEqual(HealthWorkoutStreams.removing([], from: points(150, count: 10)).count, 10)
     }
 

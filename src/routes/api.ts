@@ -9,6 +9,8 @@ import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
 import type { Sample } from '../trainingLoad';
+import { parseFit, FitParseError, type FitActivity } from '../fitFile';
+import { importFitActivity, deleteFitActivity } from '../db';
 import type { HealthKitStreams } from '../db';
 import { isGroupId } from '../exerciseGroups';
 import { isPartnerStartInput } from '../partnerTraining';
@@ -1535,6 +1537,60 @@ function parseHealthKitStreams(raw: unknown): HealthKitStreams | undefined | 'in
   }
   return out;
 }
+
+// POST /api/activities/fit — a workout file (.fit) from a bike computer,
+// watch or app such as Zwift, as multipart form data: `id` (client UUID, the
+// idempotency key), `file`, optional `name`. The Worker reads it, keeps the
+// workout and a training load computed from its power and heart rate
+// (docs/plans/endurance-training-load P4), and never stores the file. 201
+// when imported, 200 when this workout was already imported.
+const FIT_ERROR_STATUS = {
+  not_fit: 400,
+  truncated: 400,
+  not_an_activity: 422,
+  multisport: 422,
+  no_data: 422,
+} as const;
+
+apiRoutes.post('/activities/fit', async (c) => {
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const id = form.get('id');
+  if (typeof id !== 'string' || !UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400);
+  const name = form.get('name');
+  if (name !== null && (typeof name !== 'string' || name.length > 200)) {
+    return c.json({ error: 'invalid_name' }, 400);
+  }
+  const file = form.get('file') as unknown;
+  if (!(file instanceof File) || file.size === 0) return c.json({ error: 'invalid_file' }, 400);
+  if (file.size > MAX_RECORDING_BYTES) return c.json({ error: 'file_too_large' }, 413);
+  let fit: FitActivity;
+  try {
+    fit = parseFit(new Uint8Array(await file.arrayBuffer()));
+  } catch (e) {
+    if (e instanceof FitParseError) return c.json({ error: e.code }, FIT_ERROR_STATUS[e.code]);
+    // A malformed file can fail a bounds check the reader did not foresee.
+    if (e instanceof RangeError) return c.json({ error: 'truncated' }, 400);
+    throw e;
+  }
+  const result = await importFitActivity(c.env.DB, c.get('userId'), id, fit,
+    name && name.trim().length > 0 ? name.trim() : null);
+  return c.json(result, result.deduplicated ? 200 : 201);
+});
+
+// DELETE /api/activities/fit/:id — remove a workout imported from a .fit
+// file, by the client id it was uploaded with.
+apiRoutes.delete('/activities/fit/:id', async (c) => {
+  const id = c.req.param('id');
+  if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400);
+  const ok = await deleteFitActivity(c.env.DB, c.get('userId'), id);
+  if (!ok) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
+});
 
 // POST /api/activities/recordings — a run recorded in the app, as multipart
 // form data: `id` (client UUID, the idempotency key), `date` (civil start

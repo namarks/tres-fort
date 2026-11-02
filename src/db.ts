@@ -5,6 +5,7 @@ import {
 import { createOAuthGrantService } from './services/oauthGrants';
 import { refreshActivityLoads } from './services/activityLoad';
 import { heartRateStreamSummary, powerStreamSummary, type Sample } from './trainingLoad';
+import type { FitActivity } from './fitFile';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
@@ -8984,7 +8985,7 @@ function reconcileNativeHealthKitStatement(
           ABS(CASE WHEN i.start_date_utc_ms IS NOT NULL AND h.start_date_utc_ms IS NOT NULL
             THEN i.start_date_utc_ms - h.start_date_utc_ms
             ELSE i.start_date_local_ms - h.start_date_local_ms END) AS delta
-        FROM external_activities i WHERE i.user_id = h.user_id AND i.source = 'intervals'
+        FROM external_activities i WHERE i.user_id = h.user_id AND i.source IN ('intervals', 'fit')
           AND i.deleted_at IS NULL AND i.kind = h.kind
       ) WHERE delta <= 120000 ORDER BY clock_priority, delta, candidate_start, id LIMIT 1
     )) AS winner
@@ -9139,6 +9140,161 @@ export async function upsertHealthKitActivity(
   return row;
 }
 
+const FIT_KIND_NAMES: Record<string, string> = {
+  ride: 'Ride', run: 'Run', swim: 'Swim', walk: 'Walk', hike: 'Hike', row: 'Row', ski: 'Ski',
+  elliptical: 'Elliptical',
+};
+
+/** Civil date and local wall clock for a .fit workout: the device's own
+ * offset when the file records it, otherwise the member's timezone, else UTC.
+ * Returns a source zone `validActivitySourceTime` accepts. */
+export function fitLocalTime(startUtcMs: number, offsetSec: number | null, zone: string | null) {
+  const fixed = (offsetMinutes: number) => {
+    const sign = offsetMinutes < 0 ? '-' : '+';
+    const abs = Math.abs(offsetMinutes);
+    const localMs = startUtcMs + offsetMinutes * 60_000;
+    return {
+      date: new Date(localMs).toISOString().slice(0, 10),
+      localMs,
+      zone: `GMT${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`,
+    };
+  };
+  if (offsetSec !== null) return fixed(Math.round(offsetSec / 60));
+  if (zone) {
+    try {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      }).formatToParts(startUtcMs).map(p => [p.type, p.value]));
+      const date = `${parts.year}-${parts.month}-${parts.day}`;
+      const localMs = Date.parse(`${date}T${parts.hour}:${parts.minute}:${parts.second}Z`)
+        + ((startUtcMs % 1000) + 1000) % 1000;
+      if (Number.isFinite(localMs)) return { date, localMs, zone };
+    } catch {
+      // An unknown zone falls through to UTC.
+    }
+  }
+  return fixed(0);
+}
+
+export interface FitImportResult {
+  activity: ExternalActivityRow;
+  /** The same workout was already imported from a .fit file. */
+  deduplicated: boolean;
+}
+
+/**
+ * Store a workout read from an uploaded .fit file
+ * (docs/plans/endurance-training-load P4) as an external activity with
+ * source='fit'. `clientId` (a client UUID) is the idempotency key; the same
+ * workout uploaded again under another id returns the stored one. The
+ * samples are reduced to the same threshold-independent summaries Apple
+ * Health streams use (migration 0061), and the device's normalized power is
+ * kept as the source's figure. Cross-source dedup then shows the workout
+ * once: an intervals.icu copy wins, and this copy wins over Apple Health's.
+ */
+export async function importFitActivity(
+  db: D1Database,
+  userId: string,
+  clientId: string,
+  fit: FitActivity,
+  name: string | null,
+): Promise<FitImportResult> {
+  const id = `fit:activity:${userId}:${clientId}`;
+  const findStored = () => db
+    .prepare(
+      `SELECT * FROM external_activities
+        WHERE user_id = ?1 AND source = 'fit'
+          AND (id = ?2 OR ((deleted_at IS NULL OR duplicate_of IS NOT NULL)
+                           AND kind = ?3 AND start_date_utc_ms = ?4))
+        ORDER BY id = ?2 DESC LIMIT 1`,
+    )
+    .bind(userId, id, fit.kind, fit.start_utc_ms)
+    .first<ExternalActivityRow>();
+  // A first attempt can store the row and then fail before reconciling it;
+  // finishing that work here makes a retry converge. Both steps are
+  // idempotent, so a completed import is left as it is.
+  const returnStored = async (stored: ExternalActivityRow): Promise<FitImportResult> => {
+    await dedupeHealthKitAgainstIntervals(db, userId);
+    await refreshActivityLoads(db, userId, { fromDate: stored.date, toDate: stored.date });
+    const current = await db
+      .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+      .bind(stored.id, userId)
+      .first<ExternalActivityRow>();
+    return { activity: current ?? stored, deduplicated: true };
+  };
+  const existing = await findStored();
+  if (existing) return returnStored(existing);
+
+  const local = fitLocalTime(fit.start_utc_ms, fit.local_offset_sec, await getUserTimezone(db, userId));
+  const moving = fit.timer_sec === null ? null : Math.round(fit.timer_sec);
+  const hr = fit.hr.length > 0 ? heartRateStreamSummary(fit.hr, moving) : null;
+  const npW = fit.power.length > 0 ? powerStreamSummary(fit.power, moving) : null;
+  const intOrNull = (v: number | null) => (v === null ? null : Math.round(v));
+  const ts = now();
+  const inserted = await db
+    .prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
+          moving_time_sec,elapsed_time_sec,distance_m,average_watts,
+          weighted_avg_watts,average_hr,max_hr,training_load,intensity,
+          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,
+          start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec)
+       VALUES (?1,?2,'fit',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,NULL,
+               ?15,?16,?17,?18,NULL,1,NULL,?19,?20,?21,?22,?23)
+       ON CONFLICT DO NOTHING`,
+    )
+    .bind(
+      id, userId, clientId, local.date, local.localMs, fit.kind,
+      name ?? FIT_KIND_NAMES[fit.kind] ?? 'Workout',
+      moving, intOrNull(fit.elapsed_sec), fit.distance_m, fit.avg_power, fit.normalized_power,
+      fit.avg_hr, intOrNull(fit.max_hr), intOrNull(fit.calories), fit.ascent_m,
+      JSON.stringify({ source: 'fit' }), ts,
+      fit.start_utc_ms, local.zone, npW, hr?.rms_bpm ?? null, hr ? Math.round(hr.seconds) : null,
+    )
+    .run();
+  // Losing a race to the same client id or, through migration 0062's
+  // unique index, to the same workout uploaded under another id.
+  if ((inserted.meta.changes ?? 0) === 0) {
+    const winner = await findStored();
+    if (!winner) throw new Error('fit_activity_insert_failed');
+    return returnStored(winner);
+  }
+  await dedupeHealthKitAgainstIntervals(db, userId);
+  await refreshActivityLoads(db, userId, { fromDate: local.date, toDate: local.date });
+  const row = await db
+    .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(id, userId)
+    .first<ExternalActivityRow>();
+  if (!row) throw new Error('fit_activity_insert_failed');
+  return { activity: row, deduplicated: false };
+}
+
+/**
+ * Remove a workout the member imported from a .fit file. The row is
+ * tombstoned (it reaches clients through /api/state) and is no longer a
+ * dedup winner, so an Apple Health copy it had hidden comes back. Returns
+ * false when the member has no such import.
+ */
+export async function deleteFitActivity(db: D1Database, userId: string, clientId: string): Promise<boolean> {
+  const ts = now();
+  const result = await db
+    .prepare(
+      `UPDATE external_activities
+          SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+              synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+              canonical = 1,
+              duplicate_of = NULL
+        WHERE id = ?1 AND user_id = ?2 AND source = 'fit'
+          AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
+    )
+    .bind(`fit:activity:${userId}:${clientId}`, userId, ts)
+    .run();
+  if ((result.meta.changes ?? 0) === 0) return false;
+  await dedupeHealthKitAgainstIntervals(db, userId);
+  return true;
+}
+
 /** Existing cross-source matching tolerance, applied to the shared clock:
  * source instants when both are known, otherwise legacy local wall time. */
 export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
@@ -9190,6 +9346,27 @@ export async function dedupeHealthKitAgainstIntervals(
   window?: ActivityDedupeWindow,
   expectedIntervalsFence?: { generation: number; attempt: number },
 ): Promise<number> {
+  // Uploaded .fit files (P4 of docs/plans/endurance-training-load) sit
+  // between the two: intervals.icu wins over a .fit copy, and a .fit copy
+  // wins over Apple Health's. The .fit pass runs first so a .fit row retired
+  // by intervals.icu is no longer a winner for the HealthKit pass.
+  const fit = await retireSourceDuplicates(db, userId, 'fit', ['intervals'], window, expectedIntervalsFence);
+  const healthKit = await retireSourceDuplicates(db, userId, 'healthkit', ['intervals', 'fit'], window, expectedIntervalsFence);
+  return fit + healthKit;
+}
+
+/** One pass of the rule above: live `loser` rows matching a live row of any
+ * `winners` source are retired; rows this pass retired are restored when
+ * their winner is gone. */
+async function retireSourceDuplicates(
+  db: D1Database,
+  userId: string,
+  loser: 'healthkit' | 'fit',
+  winners: readonly ('intervals' | 'fit')[],
+  window?: ActivityDedupeWindow,
+  expectedIntervalsFence?: { generation: number; attempt: number },
+): Promise<number> {
+  const winnerSources = winners.map(w => `'${w}'`).join(', ');
   const dateClause = window ? ' AND date >= ?2 AND date <= ?3' : '';
   // HealthKit rows we manage: currently live (candidates to retire) OR
   // previously retired BY US as a dup (deleted_at + duplicate_of set →
@@ -9197,7 +9374,7 @@ export async function dedupeHealthKitAgainstIntervals(
   const hkStatement = db.prepare(
     `SELECT id, kind, start_date_local_ms, start_date_utc_ms, deleted_at, duplicate_of
        FROM external_activities
-      WHERE user_id = ?1 AND source = 'healthkit'
+      WHERE user_id = ?1 AND source = '${loser}'
         AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)
         AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)
         AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${dateClause}`,
@@ -9220,7 +9397,7 @@ export async function dedupeHealthKitAgainstIntervals(
   // any retired dup must be RESTORED).
   const ivStatement = db.prepare(
     `SELECT id, kind, start_date_local_ms, start_date_utc_ms FROM external_activities
-      WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
+      WHERE user_id = ?1 AND source IN (${winnerSources}) AND deleted_at IS NULL
         AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)${dateClause}`,
   );
   const iv = (

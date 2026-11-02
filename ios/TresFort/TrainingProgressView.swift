@@ -452,7 +452,7 @@ struct EnduranceHistoryView: View {
             } header: {
                 Text("This week")
             } footer: {
-                Text("Runs, rides, swims and walks from intervals.icu and Apple Health, including ones you log with + on Today. Weeks run Monday–Sunday; the average leaves out this week.")
+                Text("Runs, rides, swims and walks from intervals.icu, Apple Health and imported .fit files, including ones you log with + on Today. Weeks run Monday–Sunday; the average leaves out this week.")
             }
             if summary.unscoredCount > 0 {
                 Section {

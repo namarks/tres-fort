@@ -103,10 +103,29 @@ provider connection.
     selector order), `test/activity_load.test.ts` (scoring, rescoring,
     omitted and empty streams, validation) and
     `HealthWorkoutStreamsTests.swift`.
-- [ ] **P4 — `.fit` file import**
-  - Upload a `.fit` file (Zwift, any bike computer or watch); the Worker
-    parses power, heart rate and speed, computes load, and deduplicates
-    against the same workout from other sources.
+- [x] **P4 — `.fit` file import**
+  - Profile → Import workout files picks one or more `.fit` files (Zwift, a
+    bike computer or a watch) and uploads each to `POST /api/activities/fit`
+    (multipart: client UUID `id`, `file`, optional `name`), then says what
+    happened to each file. `DELETE /api/activities/fit/:id` removes one.
+  - `src/fitFile.ts` reads file_id, session, activity and record messages
+    (both byte orders, developer fields, compressed timestamps, chained
+    files) and refuses non-FIT, damaged, non-activity and multisport files.
+    The file is never stored: the workout lands in `external_activities` with
+    `source='fit'`, its heart-rate and power samples reduced to the P3
+    summaries and the device's normalized power kept as the source's figure.
+    Samples sit on the timer's clock, so timer pauses never count as
+    training (Apple Health pauses get the same treatment in the app). Files
+    whose CRCs fail are refused. Its civil date comes from the device's local
+    time, else the member's timezone. The same workout uploaded again, even
+    concurrently under another id, returns the stored row (migration `0062`'s
+    unique index on member, kind and start instant).
+  - Dedup (in `dedupeHealthKitAgainstIntervals`): intervals.icu's copy wins
+    over a `.fit` copy, which wins over Apple Health's; a hidden copy comes
+    back when its winner goes away, including when the import is deleted.
+    Imported workouts appear in the group feed like intervals.icu ones.
+  - Covered by `test/fit_file.test.ts`, `test/fit_import.test.ts` (with a
+    test FIT writer in `test/fitWriter.ts`) and `FitImportTests.swift`.
 - [ ] **P5 — Garmin activity files**
   - With Garmin's Starter API approval, receive activity files directly and
     run them through the same engine.
@@ -127,11 +146,14 @@ provider connection.
 
 ## Next step
 
-**Now (@agent):** P4, `.fit` file import, so Zwift rides and other bike
-computer or watch files get power load without intervals.icu. P0 to P3 are in
-the repository. Migrations `0059`, `0060` and `0061` and the Worker need the
-owner's separate go-ahead to reach production, and the app's thresholds
-screen needs that Worker before it can load.
+**Now (@owner):** P5 waits on Garmin's Starter API approval, so the next
+agent phase is P6, a labeled effort estimate for workouts with no usable data,
+or P7, starting values from intervals.icu, whichever the owner prefers. P0 to
+P4 are in the repository. Migrations `0059` and `0060` reached production on
+2026-11-02 with the Worker from main `ab21d04`, so the thresholds screen works.
+Migrations `0061` and `0062`, and a Worker that includes P3 and P4, still need
+the owner's separate go-ahead; Apple Health stream summaries and file import
+need that Worker.
 
 ## Notes / open questions
 

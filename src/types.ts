@@ -75,8 +75,17 @@ export interface Env {
 
 export type HonoEnv = {
   Bindings: Env;
-  Variables: { userId: string; appAuthTime: number; appReview: boolean };
+  Variables: {
+    userId: string;
+    appAuthTime: number;
+    appReview: boolean;
+    /** Which client signed in: the iOS app, or the web app (docs/plans/web-app). */
+    appClient: AppClient;
+  };
 };
+
+/** Actor recorded on audit rows and plan versions for a member's own REST writes. */
+export type AppClient = 'ios' | 'web';
 
 export interface User {
   id: string;

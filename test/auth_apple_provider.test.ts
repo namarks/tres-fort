@@ -829,9 +829,10 @@ describe('/auth/apple web Services ID tokens', () => {
     const verify = vi.fn<AuthRouteDependencies['verifyAppleIdentityToken']>(
       async () => ({ sub, email: null, audience: WEB_ID, nonce: 'browser-nonce' }),
     );
+    const issue = vi.fn<AuthRouteDependencies['issueAppJwt']>(async () => 'web-jwt');
     const routes = createAuthRoutes({
       verifyAppleIdentityToken: verify,
-      issueAppJwt: async () => 'web-jwt',
+      issueAppJwt: issue,
     });
 
     const response = await post(
@@ -846,6 +847,8 @@ describe('/auth/apple web Services ID tokens', () => {
     expect(payload.jwt).toBe('web-jwt');
     expect(payload.user.display_name).toBe('Web Member');
     expect(verify).toHaveBeenCalledWith('web-token', ['com.example.tresfort', WEB_ID]);
+    // The session token says it is the web's, so its edits are audited as the web.
+    expect(issue).toHaveBeenCalledWith(expect.any(String), 'route-test-jwt-secret', { client: 'web' });
   });
 
   it('rejects a web token without the matching nonce before creating an account', async () => {
@@ -890,10 +893,12 @@ describe('/auth/apple web Services ID tokens', () => {
     const verify = vi.fn<AuthRouteDependencies['verifyAppleIdentityToken']>(
       async () => ({ sub, email: null, audience: 'com.example.tresfort', nonce: null }),
     );
-    const routes = createAuthRoutes({ verifyAppleIdentityToken: verify, issueAppJwt: async () => 'native-jwt' });
+    const issue = vi.fn<AuthRouteDependencies['issueAppJwt']>(async () => 'native-jwt');
+    const routes = createAuthRoutes({ verifyAppleIdentityToken: verify, issueAppJwt: issue });
 
     const native = await post(routes, '/apple', { identityToken: 'native-token' }, webEnv());
     expect(native.status).toBe(200);
+    expect(issue).toHaveBeenLastCalledWith(expect.any(String), 'route-test-jwt-secret', undefined);
 
     const withoutWeb = await post(routes, '/apple', { identityToken: 'native-token' });
     expect(withoutWeb.status).toBe(200);

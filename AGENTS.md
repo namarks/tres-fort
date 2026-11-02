@@ -125,7 +125,8 @@ design and dictates how you mutate things:
   retain their existing inputs without requiring an expected version;
   bounded retries re-read and validate fresh state before applying only
   supplied fields. These give the iOS app direct, non-Claude
-  write access to a day's exercises (audited as `actor='ios'`), reusing the
+  write access to a day's exercises (audited as `actor='ios'`, or `'web'` for
+  a web sign-in, whose app JWT carries `client: 'web'`), reusing the
   same `db.ts` functions MCP's `update_exercise` / `delete_exercise` call.
   `template_exercises.is_warmup` (migration `0026`) marks a slot a
   prescribed warm-up, excluded from working-set rollups; `cardio` is a

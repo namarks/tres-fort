@@ -30,6 +30,7 @@ import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type Summar
 import { metricCohorts, estimatedOneRepMax, loadUnit, positiveSetTonnage, type MetricExercise } from './metrics';
 import type {
   ActivityRow,
+  AppClient,
   DayConflict,
   WorkoutRow,
   EnrichedTemplateExercise,
@@ -3089,7 +3090,8 @@ export interface PlanSnapshotRow {
 
 export interface PlanWriteAttribution {
   receiptID?: string;
-  actor: 'mcp' | 'ios' | 'system';
+  /** 'ios' and 'web' are the member's own edits from the app or the web app. */
+  actor: 'mcp' | 'ios' | 'web' | 'system';
   operation: string;
   args?: unknown;
   reason?: string | null;
@@ -3450,7 +3452,7 @@ export async function restorePlanSnapshot(
     plan_id: string;
     snapshot_version: number;
     expected_version: number;
-    actor: 'mcp' | 'ios';
+    actor: 'mcp' | 'ios' | 'web';
     reason?: string | null;
   },
 ): Promise<
@@ -3764,6 +3766,10 @@ const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
   'order_index',
   'notes',
 ]);
+
+/** True when rows, in their stored order, are numbered 0, 1, 2, … */
+const denselyOrdered = (rows: { order_index: number }[]): boolean =>
+  rows.every((row, index) => row.order_index === index);
 
 const orderDayRows = <T extends { id: string; order_index: number }>(
   rows: T[],
@@ -7123,7 +7129,7 @@ export async function updateExercise(
   const groupSiblings = await exerciseGroupDayRows(db, slot.workout_id);
   const groupMoved = groupSiblings.map((row) => row.id === slot.id ? { ...row, ...merged } : row);
   const groupHasDuplicate = new Set(groupMoved.map((row) => row.order_index)).size !== groupMoved.length;
-  const groupOrdered = patch.order_index !== undefined && groupHasDuplicate
+  const groupOrdered = patch.order_index !== undefined && (groupHasDuplicate || !denselyOrdered(groupSiblings))
     ? orderDayRows(groupMoved, slot.id).map((row, index) => ({ ...row, order_index: index })) : groupMoved;
   const groupInvalid = validateExerciseGroups(groupOrdered);
   if (groupInvalid) return groupInvalid;
@@ -7189,7 +7195,10 @@ export async function updateExercise(
     ).bind(slot.workout_id).all<{ id: string; order_index: number }>();
     const moved = siblings.results.map((row) => row.id === slot.id ? { ...row, order_index: patch.order_index! } : row);
     const hasDuplicate = new Set(moved.map((row) => row.order_index)).size !== moved.length;
-    if (hasDuplicate) {
+    // Removing a slot leaves gaps in the stored indexes. There a raw index can
+    // leave the slot where it was, so the move uses the destination position
+    // and re-numbers densely, as it does when the index collides.
+    if (hasDuplicate || !denselyOrdered(siblings.results)) {
       const ordered = orderDayRows(moved, slot.id);
       acknowledgedOrder = ordered.findIndex((row) => row.id === slot.id);
       ordered.forEach((row, index) => statements.push(
@@ -8259,7 +8268,8 @@ export interface CalendarMoveAcknowledgement {
 
 /** Two date exceptions and their retry receipt commit together. Notes and
  * fatigue remain on their original dates, as with a date assignment/removal. */
-export async function moveCalendarWorkout(db: D1Database, userId: string, input: CalendarMoveInput): Promise<
+export async function moveCalendarWorkout(db: D1Database, userId: string, input: CalendarMoveInput,
+  actor: AppClient = 'ios'): Promise<
   CalendarMoveAcknowledgement | { error: 'calendar_move_conflict' | 'invalid_move' | 'idempotency_conflict' }
 > {
   const args = JSON.stringify(input);
@@ -8338,9 +8348,10 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
     conditions.push(`COALESCE((SELECT json_array(id,attempt,status,workout_id,updated_at,notes,perceived_fatigue)
       FROM sessions WHERE user_id=?2 AND date=?${index}), 'null')=?${index + 1}`);
   }
+  const actorIndex = bindings.push(actor);
   const statements = [db.prepare(
     `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
-     SELECT ?1,?2,'ios','move_calendar_workout',?3,?4,?5
+     SELECT ?1,?2,?${actorIndex},'move_calendar_workout',?3,?4,?5
      WHERE EXISTS (SELECT 1 FROM plans WHERE id=?6 AND user_id=?2 AND status='active' AND version=?7)
        AND ${conditions.join(' AND ')}
      ON CONFLICT(id) DO NOTHING`).bind(...bindings)];

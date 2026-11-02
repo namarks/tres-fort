@@ -316,6 +316,7 @@ function ComparisonPanel(props: {
             {view.title}
             <span className={`tag ${view.status}`}>{STATUS_TEXT[view.status](from)}</span>
           </h3>
+          {view.rows.length === 0 && <p className="muted">This changed in a way the web can’t show in detail yet.</p>}
           {view.rows.length > 0 && (
             <table className="change-table">
               <thead>

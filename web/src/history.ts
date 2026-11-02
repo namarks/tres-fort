@@ -218,6 +218,10 @@ function slotRows(before: Fields | null, after: Fields | null, miles: boolean): 
   }
   const rows: ChangeRow[] = [];
   const add = (label: string, a: string, b: string) => { if (a !== b) rows.push({ label, then: a, now: b }); };
+  // A replaced exercise keeps its slot (and often its prescription).
+  if (before.exercise_id !== after.exercise_id) {
+    rows.push({ label: 'Exercise', then: exerciseText(before), now: exerciseText(after) });
+  }
   add('Sets', text(before.target_sets), text(after.target_sets));
   add('Reps', repsText(before), repsText(after));
   add('Time', clockText(before.target_duration_s), clockText(after.target_duration_s));
@@ -250,27 +254,57 @@ const META_LABELS: Record<string, string> = {
 function metaRows(before: Fields, after: Fields): ChangeRow[] {
   const rows: ChangeRow[] = [];
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    if (key === 'schedule') continue;
-    const a = metaText(key, before[key]);
-    const b = metaText(key, after[key]);
-    if (a !== b) rows.push({ label: META_LABELS[key] ?? humanize(key), then: a, now: b });
+    if (key === 'schedule' || JSON.stringify(before[key]) === JSON.stringify(after[key])) continue;
+    let a = metaText(key, before[key]);
+    let b = metaText(key, after[key]);
+    // The short form leaves something out: show every field rather than
+    // hide a difference a restore would apply.
+    if (a === b) {
+      a = text(before[key]);
+      b = text(after[key]);
+    }
+    rows.push({ label: META_LABELS[key] ?? humanize(key), then: a, now: b });
   }
   return rows;
 }
 
 function metaText(key: string, value: unknown): string {
   if (value == null || (Array.isArray(value) && value.length === 0)) return 'None';
-  if (key === 'trips' && Array.isArray(value)) {
-    return value.map((trip: Fields) => `${rangeText(trip.start, trip.end)} (${text(trip.type ?? 'other')})`).join('; ');
-  }
-  if (key === 'periodization' && Array.isArray(value)) {
-    return value.map((phase: Fields) => `${humanize(text(phase.phase))} ${rangeText(phase.start, phase.end)}`).join('; ');
-  }
+  if (key === 'trips' && Array.isArray(value)) return value.map(tripText).join('; ');
+  if (key === 'periodization' && Array.isArray(value)) return value.map(phaseText).join('; ');
   if (key === 'race' && typeof value === 'object') {
     const race = value as Fields;
-    return [race.name, race.distance, race.date && shortDate(race.date)].filter((part) => part != null && part !== '').map(text).join(', ');
+    return parts([
+      race.name, race.distance, race.discipline, race.date && shortDate(race.date),
+      race.priority && `${text(race.priority)} race`, race.location,
+    ]);
   }
   return text(value);
+}
+
+/** "Dec 20, 2026 to Dec 28, 2026 (Travel, no training) “Hotel gym”". */
+function tripText(trip: Fields): string {
+  const kind = humanize(text(trip.type ?? 'other'));
+  const training = trip.can_train_light === false ? ', no training' : '';
+  const note = typeof trip.note === 'string' && trip.note ? ` “${trip.note}”` : '';
+  return `${rangeText(trip.start, trip.end)} (${kind}${training})${note}`;
+}
+
+function phaseText(phase: Fields): string {
+  const extra = parts([
+    phase.focus,
+    typeof phase.weekly_load_target === 'number' && `weekly load ${text(phase.weekly_load_target)}`,
+    phase.strength_emphasis && `${text(phase.strength_emphasis)} strength`,
+  ]);
+  return `${humanize(text(phase.phase))} ${rangeText(phase.start, phase.end)}${extra ? ` (${extra})` : ''}`;
+}
+
+function parts(values: unknown[]): string {
+  return values.filter((part) => part != null && part !== '' && part !== false).map(text).join(', ');
+}
+
+function exerciseText(slot: Fields): string {
+  return typeof slot.exercise_name === 'string' && slot.exercise_name ? slot.exercise_name : 'An exercise no longer in the catalog';
 }
 
 // ---- values ------------------------------------------------------------------

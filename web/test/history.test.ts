@@ -127,11 +127,43 @@ describe('a comparison with the plan now', () => {
       { label: 'Status', then: 'Active', now: 'Archived' },
     ]);
     expect(views[1]).toMatchObject({ title: 'Plan settings', rows: [
-      { label: 'Away dates', then: `${shortDate('2026-12-20')} to ${shortDate('2026-12-28')} (travel)`, now: 'None' },
-      { label: 'Race goal', then: 'None', now: `Turkey Trot, 5k, ${shortDate('2026-11-26')}` },
+      { label: 'Away dates', then: `${shortDate('2026-12-20')} to ${shortDate('2026-12-28')} (Travel)`, now: 'None' },
+      { label: 'Race goal', then: 'None', now: `Turkey Trot, 5k, running, ${shortDate('2026-11-26')}` },
     ] });
     expect(shortDate('2026-12-20')).toMatch(/20/);
     expect(shortDate('soon')).toBe('soon');
+  });
+
+  it('shows a replaced exercise even when its prescription stayed the same', () => {
+    const [view] = changeViews([{
+      kind: 'exercise', path: 'Upper A · Incline Press',
+      before: slot(), after: slot({ exercise_id: 'ex_incline', exercise_name: 'Incline Press' }),
+    }], false);
+    expect(view!.rows).toEqual([{ label: 'Exercise', then: 'Bench Press', now: 'Incline Press' }]);
+  });
+
+  it('shows away-date training and notes, and every field a short form leaves out', () => {
+    const trip = { id: 't1', start: '2026-12-20', end: '2026-12-28', type: 'travel', can_train_light: true };
+    const [training] = changeViews([{
+      kind: 'plan', path: 'meta',
+      before: { trips: [trip] }, after: { trips: [{ ...trip, can_train_light: false, note: 'Hotel gym' }] },
+    }], false);
+    const range = `${shortDate('2026-12-20')} to ${shortDate('2026-12-28')}`;
+    expect(training!.rows).toEqual([{ label: 'Away dates', then: `${range} (Travel)`, now: `${range} (Travel, no training) “Hotel gym”` }]);
+
+    const phase = { phase: 'build', start: '2026-11-01', end: '2026-11-28' };
+    const [phases] = changeViews([{
+      kind: 'plan', path: 'meta',
+      before: { periodization: [{ ...phase, focus: 'Speed' }] }, after: { periodization: [{ ...phase, focus: 'Speed', weekly_load_target: 400 }] },
+    }], false);
+    expect(phases!.rows[0]!.now).toContain('weekly load 400');
+
+    const [model] = changeViews([{
+      kind: 'plan', path: 'meta',
+      before: { race: { name: 'Trot', date: '2026-11-26', discipline: 'running' } },
+      after: { race: { name: 'Trot', date: '2026-11-26', discipline: 'running', priority: 'A' } },
+    }], false);
+    expect(model!.rows[0]!.now).toContain('A race');
   });
 
   it('never shows storage IDs', () => {

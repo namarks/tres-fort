@@ -83,13 +83,16 @@ private final class FakeSpeaker: RunSplitSpeaking {
 
 private final class RecorderUploadStub: RecordingUploadAPI {
     var error: Error?
+    /// The server's `intervals.status`; nil for an older Worker.
+    var intervalsStatus: String?
     private(set) var uploaded: [RecordedRun] = []
 
     func uploadRecording(_ run: RecordedRun, jwt: String) async throws -> RecordingUploadResult {
         if let error { throw error }
         uploaded.append(run)
         return RecordingUploadResult(ok: true, deduplicated: false, recording_id: run.uploadID,
-                                     intervals_activity_id: "i1")
+                                     intervals_activity_id: "i1",
+                                     intervals: intervalsStatus.map(RecordingUploadResult.IntervalsCopy.init(status:)))
     }
 }
 
@@ -774,10 +777,39 @@ final class RunRecorderTests: XCTestCase {
         coverGround()
         await model.end()
         XCTAssertEqual(model.uploadStatus, .waiting)
-        XCTAssertEqual(model.note, "Apple Health didn’t keep the whole run. It stays on this iPhone until it uploads to intervals.icu.")
+        XCTAssertEqual(model.note, "Apple Health didn’t keep the whole run. It stays on this iPhone until it uploads.")
         let kept = try XCTUnwrap(store().pendingUploads().first)
         XCTAssertEqual(kept.savedToHealth, false)
         XCTAssertEqual(kept.points.count, 2, "The route this iPhone holds is the only copy")
+    }
+
+    func testTresFortKeepsARunWithoutAnIntervalsConnection() async throws {
+        api.intervalsStatus = "not_connected"
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        coverGround()
+        await model.end()
+        XCTAssertEqual(model.uploadStatus, .keptInTresFort)
+        XCTAssertEqual(try store().all(), [])
+        XCTAssertEqual(uploads, 1)
+    }
+
+    func testWhenOnlyTheIntervalsCopyFailsTheRunWaitsForIt() async throws {
+        api.error = APIError.http(502, #"{"error":"intervals_unavailable","stored":true}"#)
+        let model = makeModel()
+        await model.start()
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        coverGround()
+        await model.end()
+        XCTAssertEqual(model.uploadStatus, .waitingForIntervals)
+        XCTAssertEqual(try store().pendingUploads().count, 1)
+
+        api.error = nil
+        api.intervalsStatus = "uploaded"
+        await model.uploadPending()
+        XCTAssertEqual(model.uploadStatus, .uploaded)
+        XCTAssertEqual(try store().all(), [])
     }
 
     func testWithoutABearerTheRunWaits() async throws {

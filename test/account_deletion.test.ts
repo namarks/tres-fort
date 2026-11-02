@@ -148,6 +148,13 @@ async function seedTrainingGraph(userId: string, label: string) {
         `activity-upstream-${suffix}`,
         ts,
       ),
+    // A recorded run's GPS route (migration 0063) hangs off the activity.
+    env.DB
+      .prepare(
+        `INSERT INTO activity_routes (activity_id,user_id,point_count,route,created_at)
+         VALUES (?1,?2,1,'{}',?3)`,
+      )
+      .bind(externalActivityId, userId, ts),
     env.DB
       .prepare(
         `INSERT INTO activities
@@ -959,6 +966,9 @@ describe('DELETE /api/me', () => {
         targetGraph.externalActivityId,
       ),
     ).toBeNull();
+    expect(
+      await byId('activity_routes', 'activity_id', targetGraph.externalActivityId),
+    ).toBeNull();
     expect(await byId('activities', 'id', targetGraph.activityId)).toBeNull();
     expect(await byId('oauth_codes', 'code', targetGraph.oauthCode)).toBeNull();
     expect(
@@ -977,6 +987,9 @@ describe('DELETE /api/me', () => {
     expect(await byId('plans', 'id', survivorGraph.planId)).not.toBeNull();
     expect(
       await byId('activities', 'id', survivorGraph.activityId),
+    ).not.toBeNull();
+    expect(
+      await byId('activity_routes', 'activity_id', survivorGraph.externalActivityId),
     ).not.toBeNull();
 
     const shared = await byId('groups', 'id', sharedGroup);

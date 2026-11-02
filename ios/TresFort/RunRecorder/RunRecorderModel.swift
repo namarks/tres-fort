@@ -6,8 +6,9 @@ import UIKit
 /// Records one outdoor run at a time (docs/plans/run-recorder P1(b)). The
 /// workout engine saves it to Apple Health; the route, totals and heart rate
 /// are checkpointed into `RunRecordingStore` every few seconds, so a crash or
-/// a dead battery keeps the run, and a finished run uploads to intervals.icu,
-/// when the account is connected, through `RunRecordingUploader` on finish,
+/// a dead battery keeps the run, and a finished run uploads to Tres Fort,
+/// which keeps it with its route and sends a copy to intervals.icu when the
+/// account is connected (P5), through `RunRecordingUploader` on finish,
 /// launch and foreground. A run started from a planned workout logs that
 /// slot as done when saved (docs/plans/planned-runs P7). While it
 /// records, a Live Activity mirrors it on the Lock Screen with pause, resume
@@ -32,12 +33,18 @@ final class RunRecorderModel: ObservableObject {
     enum UploadStatus: Equatable {
         case idle
         case uploading
+        /// Tres Fort kept the run and intervals.icu has a copy.
         case uploaded
+        /// Tres Fort kept the run; intervals.icu isn't connected.
+        case keptInTresFort
+        /// Tres Fort kept the run, but the intervals.icu copy failed. The
+        /// file stays on this iPhone to retry it.
+        case waitingForIntervals
         /// The run stays on this iPhone and retries on the next launch or
         /// foreground.
         case waiting
-        /// intervals.icu isn't connected. Apple Health has the run with its
-        /// route, so nothing waits on this iPhone.
+        /// An older Worker without intervals.icu: Apple Health has the run
+        /// with its route, so nothing waits on this iPhone.
         case notConnected
     }
 
@@ -442,10 +449,10 @@ final class RunRecorderModel: ObservableObject {
                 apply(ended.metrics)
                 savedToHealth = ended.savedAll
                 if !ended.savedAll {
-                    note = "Apple Health didn’t keep the whole run. It stays on this iPhone until it uploads to intervals.icu."
+                    note = "Apple Health didn’t keep the whole run. It stays on this iPhone until it uploads."
                 }
             } catch {
-                note = "Apple Health didn’t save this workout. The run stays on this iPhone until it uploads to intervals.icu."
+                note = "Apple Health didn’t save this workout. The run stays on this iPhone until it uploads."
             }
         }
         guard var finished = self.run else { return }
@@ -871,9 +878,14 @@ final class RunRecorderModel: ObservableObject {
             if summary.unauthorized { onUnauthorized() }
             if !summary.uploaded.isEmpty { onUploaded() }
             if !summary.failed.isEmpty {
-                uploadStatus = .waiting
+                let onlyIntervals = Set(summary.failed).isSubset(of: summary.keptAwaitingIntervals)
+                uploadStatus = onlyIntervals ? .waitingForIntervals : .waiting
+            } else if summary.uploaded.isEmpty && !summary.notConnected.isEmpty {
+                uploadStatus = .notConnected
+            } else if !summary.uploaded.isEmpty && Set(summary.uploaded).isSubset(of: summary.keptWithoutIntervals) {
+                uploadStatus = .keptInTresFort
             } else {
-                uploadStatus = summary.uploaded.isEmpty && !summary.notConnected.isEmpty ? .notConnected : .uploaded
+                uploadStatus = .uploaded
             }
         } catch {
             uploadStatus = .waiting

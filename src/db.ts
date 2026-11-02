@@ -6,6 +6,8 @@ import { createOAuthGrantService } from './services/oauthGrants';
 import { refreshActivityLoads } from './services/activityLoad';
 import { heartRateStreamSummary, powerStreamSummary, type Sample } from './trainingLoad';
 import type { FitActivity } from './fitFile';
+import type { TcxRun } from './tcxFile';
+import { encodeRoute, parseStoredRoute, routePointCount, type EncodedRoute } from './activityRoute';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
@@ -1289,6 +1291,7 @@ export async function deleteUserAccount(
     db.prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM activity_routes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
@@ -2417,6 +2420,7 @@ export async function exportUserData(
     db.prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
     db.prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?1').bind(userId),
     db.prepare('SELECT id,sport,metric,value,effective_date,source,created_at,deleted_at FROM athlete_thresholds WHERE user_id=?1 ORDER BY created_at,id').bind(userId),
+    db.prepare('SELECT activity_id,point_count,route,created_at FROM activity_routes WHERE user_id=?1 ORDER BY created_at,activity_id').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2481,6 +2485,11 @@ export async function exportUserData(
       starter_workout_receipts: rowsAt(19),
       freestyle_workout_receipts: rowsAt(20),
       athlete_thresholds: rowsAt(21),
+      // Recorded runs' GPS routes in src/activityRoute.ts's encoding.
+      activity_routes: rowsAt(22).map((row) => ({
+        ...row,
+        route: typeof row.route === 'string' ? parseStoredRoute(row.route) : null,
+      })),
     },
     group_memberships: memberships,
     group_safety: {
@@ -8998,7 +9007,7 @@ function reconcileNativeHealthKitStatement(
           ABS(CASE WHEN i.start_date_utc_ms IS NOT NULL AND h.start_date_utc_ms IS NOT NULL
             THEN i.start_date_utc_ms - h.start_date_utc_ms
             ELSE i.start_date_local_ms - h.start_date_local_ms END) AS delta
-        FROM external_activities i WHERE i.user_id = h.user_id AND i.source IN ('intervals', 'fit')
+        FROM external_activities i WHERE i.user_id = h.user_id AND i.source IN ('intervals', 'fit', 'recording')
           AND i.deleted_at IS NULL AND i.kind = h.kind
       ) WHERE delta <= 120000 ORDER BY clock_priority, delta, candidate_start, id LIMIT 1
     )) AS winner
@@ -9308,6 +9317,163 @@ export async function deleteFitActivity(db: D1Database, userId: string, clientId
   return true;
 }
 
+export interface RecordedRunStoreResult {
+  activity: ExternalActivityRow;
+  /** This recording was already stored. */
+  deduplicated: boolean;
+  /** The member deleted this recording; nothing was stored again. */
+  deleted: boolean;
+}
+
+/**
+ * Keep a run recorded in the app (docs/plans/run-recorder P5): its totals as
+ * an external activity with source='recording', scored from its heart rate
+ * like a .fit import, and its GPS route in activity_routes (migration 0063).
+ * `recordingId` (the client UUID) is the idempotency key. A recording the
+ * member deleted is not stored again. Cross-source dedup then shows the run
+ * once: an intervals.icu copy wins, and this copy wins over Apple Health's.
+ */
+export async function storeRecordedRun(
+  db: D1Database,
+  userId: string,
+  input: { recording_id: string; date: string; name: string | null; run: TcxRun },
+): Promise<RecordedRunStoreResult> {
+  const recordingId = input.recording_id.toLowerCase();
+  const id = `recording:activity:${userId}:${recordingId}`;
+  const read = () => db
+    .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(id, userId)
+    .first<ExternalActivityRow>();
+  const memberDeleted = (row: ExternalActivityRow) => row.deleted_at !== null && row.duplicate_of === null;
+  // A first attempt can store the run and then fail before reconciling it;
+  // finishing that work here makes a retry converge.
+  const returnStored = async (stored: ExternalActivityRow): Promise<RecordedRunStoreResult> => {
+    if (memberDeleted(stored)) return { activity: stored, deduplicated: true, deleted: true };
+    await dedupeHealthKitAgainstIntervals(db, userId);
+    await refreshActivityLoads(db, userId, { fromDate: stored.date, toDate: stored.date });
+    return { activity: (await read()) ?? stored, deduplicated: true, deleted: false };
+  };
+  const existing = await read();
+  if (existing) return returnStored(existing);
+
+  const { run } = input;
+  // The member's timezone follows the device (X-Device-TZ on every request).
+  const local = fitLocalTime(run.start_utc_ms, null, await getUserTimezone(db, userId));
+  const moving = run.moving_sec === null ? null : Math.round(run.moving_sec);
+  const hr = run.hr.length > 0 ? heartRateStreamSummary(run.hr, moving) : null;
+  const route = encodeRoute(run.segments);
+  const ts = now();
+  const statements = [
+    db
+      .prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
+            moving_time_sec,elapsed_time_sec,distance_m,average_watts,
+            weighted_avg_watts,average_hr,max_hr,training_load,intensity,
+            calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,
+            start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec)
+         VALUES (?1,?2,'recording',?3,?4,?5,'run',?6,?7,?8,?9,NULL,NULL,?10,?11,NULL,NULL,
+                 ?12,NULL,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18)
+         ON CONFLICT DO NOTHING`,
+      )
+      .bind(
+        id, userId, recordingId, input.date, local.localMs, input.name ?? 'Run',
+        moving, run.elapsed_sec === null ? null : Math.round(run.elapsed_sec), run.distance_m,
+        run.avg_hr, run.max_hr === null ? null : Math.round(run.max_hr),
+        run.calories === null ? null : Math.round(run.calories),
+        JSON.stringify({ source: 'recording' }), ts,
+        run.start_utc_ms, local.zone, hr?.rms_bpm ?? null, hr ? Math.round(hr.seconds) : null,
+      ),
+  ];
+  if (route) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO activity_routes (activity_id,user_id,point_count,route,created_at)
+           SELECT ?1,?2,?3,?4,?5 WHERE changes() > 0
+           ON CONFLICT DO NOTHING`,
+        )
+        .bind(id, userId, routePointCount(route), JSON.stringify(route), ts),
+    );
+  }
+  const [inserted] = await db.batch(statements);
+  // Losing a race to the same recording id.
+  if ((inserted!.meta.changes ?? 0) === 0) {
+    const winner = await read();
+    if (!winner) throw new Error('recorded_run_insert_failed');
+    return returnStored(winner);
+  }
+  await dedupeHealthKitAgainstIntervals(db, userId);
+  await refreshActivityLoads(db, userId, { fromDate: input.date, toDate: input.date });
+  const row = await read();
+  if (!row) throw new Error('recorded_run_insert_failed');
+  return { activity: row, deduplicated: false, deleted: false };
+}
+
+export interface StoredActivityRoute {
+  /** The recording that carries the route. */
+  activity_id: string;
+  recording_id: string;
+  route: EncodedRoute;
+}
+
+/**
+ * The GPS route behind one of the member's activities: the recording's own,
+ * or the recording that dedup hid behind this activity (an intervals.icu
+ * copy of the same run). Null when there is none. Only the member's own
+ * routes are ever read.
+ */
+export async function getActivityRoute(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+): Promise<StoredActivityRoute | null> {
+  const row = await db
+    .prepare(
+      `SELECT r.activity_id, r.route, rec.external_id AS recording_id
+         FROM activity_routes r
+         JOIN external_activities rec ON rec.id = r.activity_id AND rec.user_id = r.user_id
+        WHERE r.user_id = ?1 AND rec.source = 'recording'
+          AND (rec.id = ?2 OR rec.duplicate_of = ?2)
+          AND (rec.deleted_at IS NULL OR rec.duplicate_of IS NOT NULL)
+        ORDER BY rec.id = ?2 DESC, rec.id
+        LIMIT 1`,
+    )
+    .bind(userId, activityId)
+    .first<{ activity_id: string; route: string; recording_id: string }>();
+  if (!row) return null;
+  const route = parseStoredRoute(row.route);
+  return route ? { activity_id: row.activity_id, recording_id: row.recording_id, route } : null;
+}
+
+/**
+ * Remove a run recorded in the app from Tres Fort, by its recording id: the
+ * activity is tombstoned (it reaches clients through /api/state) and its
+ * route is deleted outright. A copy already on intervals.icu stays there.
+ * Returns false when the member has no such recording.
+ */
+export async function deleteRecordedRun(db: D1Database, userId: string, recordingId: string): Promise<boolean> {
+  const id = `recording:activity:${userId}:${recordingId.toLowerCase()}`;
+  const ts = now();
+  const [updated] = await db.batch([
+    db
+      .prepare(
+        `UPDATE external_activities
+            SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                canonical = 1,
+                duplicate_of = NULL
+          WHERE id = ?1 AND user_id = ?2 AND source = 'recording'
+            AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
+      )
+      .bind(id, userId, ts),
+    db.prepare('DELETE FROM activity_routes WHERE activity_id = ?1 AND user_id = ?2').bind(id, userId),
+  ]);
+  if ((updated!.meta.changes ?? 0) === 0) return false;
+  await dedupeHealthKitAgainstIntervals(db, userId);
+  return true;
+}
+
 /** Existing cross-source matching tolerance, applied to the shared clock:
  * source instants when both are known, otherwise legacy local wall time. */
 export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
@@ -9359,13 +9525,16 @@ export async function dedupeHealthKitAgainstIntervals(
   window?: ActivityDedupeWindow,
   expectedIntervalsFence?: { generation: number; attempt: number },
 ): Promise<number> {
-  // Uploaded .fit files (P4 of docs/plans/endurance-training-load) sit
-  // between the two: intervals.icu wins over a .fit copy, and a .fit copy
-  // wins over Apple Health's. The .fit pass runs first so a .fit row retired
-  // by intervals.icu is no longer a winner for the HealthKit pass.
+  // Uploaded .fit files (P4 of docs/plans/endurance-training-load) and runs
+  // recorded in the app (docs/plans/run-recorder P5) sit between the two:
+  // intervals.icu wins over their copy, and their copy wins over Apple
+  // Health's. Those passes run first so a row retired by intervals.icu is no
+  // longer a winner for the HealthKit pass.
   const fit = await retireSourceDuplicates(db, userId, 'fit', ['intervals'], window, expectedIntervalsFence);
-  const healthKit = await retireSourceDuplicates(db, userId, 'healthkit', ['intervals', 'fit'], window, expectedIntervalsFence);
-  return fit + healthKit;
+  const recording = await retireSourceDuplicates(db, userId, 'recording', ['intervals'], window, expectedIntervalsFence);
+  const healthKit = await retireSourceDuplicates(
+    db, userId, 'healthkit', ['intervals', 'fit', 'recording'], window, expectedIntervalsFence);
+  return fit + recording + healthKit;
 }
 
 /** One pass of the rule above: live `loser` rows matching a live row of any
@@ -9374,8 +9543,8 @@ export async function dedupeHealthKitAgainstIntervals(
 async function retireSourceDuplicates(
   db: D1Database,
   userId: string,
-  loser: 'healthkit' | 'fit',
-  winners: readonly ('intervals' | 'fit')[],
+  loser: 'healthkit' | 'fit' | 'recording',
+  winners: readonly ('intervals' | 'fit' | 'recording')[],
   window?: ActivityDedupeWindow,
   expectedIntervalsFence?: { generation: number; attempt: number },
 ): Promise<number> {

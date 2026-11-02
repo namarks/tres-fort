@@ -2,9 +2,10 @@ import Foundation
 
 /// One run recorded in the app (docs/plans/run-recorder). The recorder fills
 /// it while the run is in progress and the store keeps it on the device until
-/// `POST /api/activities/recordings` acknowledges the upload. The GPS route
-/// never goes to Tres Fort's database: Apple Health keeps it, and
-/// intervals.icu receives it as a TCX file when the account is connected.
+/// `POST /api/activities/recordings` acknowledges the upload. Tres Fort keeps
+/// the run and its GPS route, private to the member (P5); Apple Health keeps
+/// its own copy, and intervals.icu receives the TCX file when the account is
+/// connected.
 struct RecordedRun: Codable, Equatable, Identifiable {
     static let currentSchemaVersion = 1
 
@@ -55,9 +56,9 @@ struct RecordedRun: Codable, Equatable, Identifiable {
     /// for a run started without one, and in runs saved before this.
     var plannedSlotID: String? = nil
     /// True once Apple Health saved the workout with its route and any strap
-    /// readings. Without an intervals.icu connection, only such a run leaves
-    /// this iPhone's upload queue; any other run is its only copy. Nil in runs
-    /// saved before this was recorded.
+    /// readings. With an older Worker and no intervals.icu connection, only
+    /// such a run leaves this iPhone's upload queue; any other run is its only
+    /// copy. Nil in runs saved before this was recorded.
     var savedToHealth: Bool? = nil
 
     /// The server compares UUIDs case-insensitively; send one stable spelling.

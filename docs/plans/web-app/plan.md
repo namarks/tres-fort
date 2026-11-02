@@ -95,11 +95,14 @@ partner training are not web features.
     version on screen; a 409 reloads the plan, closes any open form and says
     the plan changed elsewhere. Moving a slot after another was removed now
     works for the app too: a gap in stored indexes made the move a no-op.
+  - Built next: supersets and circuits (tick two or more neighboring
+    exercises, then set rounds, rest between exercises and rest after each
+    round; edit, ungroup, move the whole group, and reorder exercises within
+    it) through `PUT /api/workouts/:id/groups`, and moving workouts up and
+    down the list.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
-    rest, and superset or circuit groups. Still to do here: creating,
-    editing, moving and ungrouping supersets and circuits, and reordering
-    workouts.
+    rest, and superset or circuit groups.
   - Planned run step editor with pace or heart rate targets.
   - Weekly schedule by dragging a workout onto a weekday (with a keyboard
     alternative); assign, move and skip single dates; add, edit and remove
@@ -143,10 +146,10 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** Continue P2 with supersets and circuits and the planned
-run step editor, then the weekly routine, single dates and away dates. The
-workout and slot editor is built and waits for the owner's written go-ahead to
-deploy (the API Worker and `tres-fort-web` together). The rest of P1 (plan
+**Now (@agent):** Continue P2 with the planned run step editor, then the
+weekly routine, single dates and away dates. The workout, slot and group
+editor is built and waits for the owner's written go-ahead to deploy (the API
+Worker and `tres-fort-web` together). The rest of P1 (plan
 history, week view, delete-account link, first-run for web sign-ups, invite
 codes, committed browser checks) follows before the site is linked publicly
 in P5. Each later deploy needs the owner's written go-ahead.

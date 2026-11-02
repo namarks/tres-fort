@@ -173,7 +173,8 @@ p { margin: 0 0 0.75rem; }
 }
 .tag { font-size: 0.72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 0.45rem; font-weight: 400; }
 .steps { margin: 0.25rem 0 0; padding-left: 1.1rem; color: var(--muted); }
-.group-head { display: flex; flex-direction: column; margin-bottom: 0.4rem; }
+.group-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 0.4rem; }
+.group-head > div:first-child { display: flex; flex-direction: column; }
 .group-head strong { color: var(--accent); font-weight: 650; }
 .group-block > .slots { border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); padding-left: 0.75rem; }
 
@@ -195,11 +196,11 @@ p { margin: 0 0 0.75rem; }
 .notice.conflict { border-color: var(--accent); }
 
 button:disabled { cursor: not-allowed; opacity: 0.5; }
-button[type='submit'], .add-actions > button:first-child, .centered > button, .danger-fill {
+button[type='submit'], button.primary, .add-actions > button:first-child, .centered > button, .danger-fill {
   background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent);
   border-radius: 8px; padding: 0.45rem 0.9rem; font-weight: 600;
 }
-button[type='submit']:hover:not(:disabled), .add-actions > button:first-child:hover:not(:disabled), .centered > button:hover { background: var(--accent-hover); }
+button[type='submit']:hover:not(:disabled), button.primary:hover:not(:disabled), .add-actions > button:first-child:hover:not(:disabled), .centered > button:hover { background: var(--accent-hover); }
 .danger-fill { background: var(--danger); border-color: var(--danger); color: var(--surface); }
 .ghost.danger { color: var(--danger); }
 .ghost.small, .ghost.icon, button.icon { padding: 0.2rem 0.55rem; font-size: 0.8125rem; }
@@ -216,7 +217,7 @@ textarea { width: 100%; resize: vertical; }
 label { font-size: 0.8125rem; color: var(--muted); }
 .field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.75rem; }
 .field input { width: 100%; }
-.field-row { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.field-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
 .small-field { width: 11rem; }
 .inline-fields { display: flex; gap: 0.5rem; }
 .inline-fields input { flex: 1; }
@@ -235,6 +236,9 @@ ul.problem { margin: 0.5rem 0; padding-left: 1.1rem; }
 }
 .workout-list h1 { margin-bottom: 1rem; }
 .workout-list ul { list-style: none; margin: 1rem 0; padding: 0; display: grid; gap: 0.25rem; }
+.workout-list li { display: flex; align-items: center; gap: 0.35rem; }
+.workout-list li .workout-link { flex: 1; min-width: 0; }
+.order-actions { display: flex; gap: 0.25rem; }
 .workout-link {
   width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px;
   padding: 0.55rem 0.7rem; display: flex; flex-direction: column; gap: 0.1rem;
@@ -260,7 +264,10 @@ ul.problem { margin: 0.5rem 0; padding-left: 1.1rem; }
 .confirm p { margin-bottom: 0.5rem; }
 .slots.editable > li { padding: 0.65rem 0; }
 .slot-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
-.slot-text { min-width: 0; }
+.slot-text { min-width: 0; flex: 1; }
+.slot-row > .choose { margin-top: 0.25rem; width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
+.member-order { margin: 0 0 0.75rem; padding-left: 1.25rem; }
+.group-form > small { display: block; margin: -0.25rem 0 0.9rem; font-size: 0.8125rem; }
 .row-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
 .add-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
 .picker label { display: block; margin-bottom: 0.25rem; }
@@ -284,6 +291,8 @@ ul.problem { margin: 0.5rem 0; padding-left: 1.1rem; }
 @media (max-width: 640px) {
   .topbar { padding: 0.75rem 16px; flex-wrap: wrap; }
   .slot-row { flex-direction: column; }
+  .slot-row:has(> .choose) { flex-direction: row; justify-content: flex-start; }
+  .group-head { flex-direction: column; }
   .row-actions { justify-content: flex-start; }
   .notice { margin-inline: 16px; }
   .workout-editor { padding: 1rem; }

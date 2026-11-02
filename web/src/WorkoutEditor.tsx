@@ -6,21 +6,31 @@ import {
   factsOfCatalog,
   factsOfSlot,
   fixedMeasure,
+  groupDraft,
+  groupKind,
+  groupMoveDestination,
+  groupValues,
   isRun,
   moveDestination,
   newDraft,
   parseTags,
   prescriptionFields,
+  reorderedMembers,
   searchCatalog,
+  selectedMembers,
   showsLoad,
+  storedGroupValues,
   switchUnit,
   tagsOf,
+  workoutMoveDestination,
   type CatalogExercise,
   type ExerciseFacts,
+  type GroupDraft,
+  type GroupValues,
   type SlotDraft,
   type WeightUnit,
 } from './editing';
-import { describeGroup, describeRunSteps, describeSlot, slotBlocks, type Slot, type Workout } from './model';
+import { describeGroup, describeRunSteps, describeSlot, slotBlocks, type Slot, type SlotBlock, type Workout } from './model';
 
 /** Runs one plan write against the version on screen; true when it saved. */
 export type Write = (action: (at: Reviewed) => Promise<unknown>) => Promise<boolean>;
@@ -68,6 +78,8 @@ export function WorkoutsPage(props: {
   const archived = workouts.filter((workout) => workout.archived_at);
   const listed = showArchived ? archived : active;
   const selected = workouts.find((workout) => workout.id === selectedId) ?? null;
+  const move = (workout: Workout, to: number) =>
+    write((at) => planWrites.updateWorkout(workout.id, { order_index: to }, at));
 
   return (
     <main className="workouts">
@@ -75,19 +87,29 @@ export function WorkoutsPage(props: {
         <h1 id="workouts-title">Workouts</h1>
         <NewWorkoutForm write={write} busy={busy} onCreated={onSelect} />
         <ul>
-          {listed.map((workout) => (
-            <li key={workout.id}>
-              <button
-                type="button"
-                className="workout-link"
-                aria-current={workout.id === selectedId ? 'page' : undefined}
-                onClick={() => onSelect(workout.id)}
-              >
-                <span>{workout.name}</span>
-                <span className="muted">{exerciseCount(workout)}</span>
-              </button>
-            </li>
-          ))}
+          {listed.map((workout) => {
+            const up = showArchived ? null : workoutMoveDestination(workouts, workout.id, -1);
+            const down = showArchived ? null : workoutMoveDestination(workouts, workout.id, 1);
+            return (
+              <li key={workout.id}>
+                <button
+                  type="button"
+                  className="workout-link"
+                  aria-current={workout.id === selectedId ? 'page' : undefined}
+                  onClick={() => onSelect(workout.id)}
+                >
+                  <span>{workout.name}</span>
+                  <span className="muted">{exerciseCount(workout)}</span>
+                </button>
+                {!showArchived && active.length > 1 && (
+                  <span className="order-actions">
+                    <button type="button" className="icon" disabled={busy || up === null} onClick={() => up !== null && move(workout, up)} aria-label={`Move ${workout.name} up`}>↑</button>
+                    <button type="button" className="icon" disabled={busy || down === null} onClick={() => down !== null && move(workout, down)} aria-label={`Move ${workout.name} down`}>↓</button>
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
         {listed.length === 0 && (
           <p className="muted">{showArchived ? 'No archived workouts.' : 'No workouts yet. Name one above to start.'}</p>
@@ -152,7 +174,9 @@ type Panel =
   | { kind: 'add'; warmup: boolean; exercise: CatalogExercise | null }
   | { kind: 'edit'; slotId: string }
   | { kind: 'replace'; slotId: string }
-  | { kind: 'remove'; slotId: string };
+  | { kind: 'remove'; slotId: string }
+  /** A new group (from selected exercises) or an existing one. */
+  | { kind: 'group'; groupId: string; members: Slot[]; existing: boolean };
 
 function WorkoutEditor(props: {
   workout: Workout;
@@ -165,14 +189,38 @@ function WorkoutEditor(props: {
 }) {
   const { workout, version, write, busy, catalog, miles, onRemoved } = props;
   const [panel, setPanel] = useState<Panel | null>(null);
+  // Choosing exercises to group: the ids ticked so far, or null when not choosing.
+  const [choosing, setChoosing] = useState<ReadonlySet<string> | null>(null);
   // When the plan changes (here, in the app or by the coach), an open form
   // was filled in against the old plan. Close it rather than resend it, so a
   // stale form can never undo a newer change.
-  useEffect(() => setPanel(null), [version]);
+  useEffect(() => {
+    setPanel(null);
+    setChoosing(null);
+  }, [version]);
   const blocks = useMemo(() => slotBlocks(workout), [workout]);
   const archived = !!workout.archived_at;
   const tags = tagsOf(workout);
   const close = () => setPanel(null);
+  const chosen = choosing ? selectedMembers(workout, choosing) : null;
+  // Two single exercises next to each other can start a superset.
+  const canGroup = blocks.some((block, index) => !block.group && blocks[index + 1] && !blocks[index + 1]!.group);
+  const listRef = useRef<HTMLOListElement>(null);
+  const isChoosing = choosing !== null;
+  // Keyboard users start choosing at the first exercise that can be grouped.
+  useEffect(() => {
+    if (isChoosing) listRef.current?.querySelector<HTMLInputElement>('input[type=checkbox]')?.focus();
+  }, [isChoosing]);
+  const startChoosing = () => {
+    setPanel(null);
+    setChoosing(new Set());
+  };
+  const toggle = (slotId: string, on: boolean) => setChoosing((current) => {
+    const next = new Set(current ?? []);
+    if (on) next.add(slotId);
+    else next.delete(slotId);
+    return next;
+  });
 
   async function run(action: (at: Reviewed) => Promise<unknown>, after?: () => void) {
     if (await write(action)) {
@@ -216,24 +264,90 @@ function WorkoutEditor(props: {
         onConfirm={() => run((at) => planWrites.removeSlot(workout.id, slot.id, at))}
       >
         Remove {slot.exercise_name} from this workout? Sets you already logged stay in your history.
+        {slot.group_id ? ' If one exercise is left in its group, it becomes a single exercise again.' : ''}
       </Confirm>
     );
   };
 
-  const row = (slot: Slot, movable: boolean) => (
+  const single = (slot: Slot) => (
     <SlotRow
       key={slot.id}
       slot={slot}
       miles={miles}
       busy={busy}
       archived={archived}
-      up={movable ? moveDestination(workout, slot.id, -1) : null}
-      down={movable ? moveDestination(workout, slot.id, 1) : null}
-      onMove={(to) => run((at) => planWrites.updateSlot(workout.id, slot.id, { order_index: to }, at))}
+      move={(direction) => {
+        const to = moveDestination(workout, slot.id, direction);
+        return to === null ? null : () => run((at) => planWrites.updateSlot(workout.id, slot.id, { order_index: to }, at));
+      }}
+      onOpen={(kind) => setPanel({ kind, slotId: slot.id })}
+      choose={choosing ? { checked: choosing.has(slot.id), onChange: (on) => toggle(slot.id, on) } : undefined}
+      panel={slotPanel(slot)}
+    />
+  );
+
+  // A group member moves within its group; the group's rounds and rests stay.
+  const member = (slot: Slot, block: SlotBlock) => (
+    <SlotRow
+      key={slot.id}
+      slot={slot}
+      miles={miles}
+      busy={busy || !!choosing}
+      archived={archived}
+      moveLabel="within its group"
+      move={(direction) => {
+        const members = reorderedMembers(block.members, slot.id, direction);
+        return members === null ? null : () => run((at) => planWrites.setGroup(
+          workout.id, slot.group_id!, members, storedGroupValues(block.members), at,
+        ));
+      }}
       onOpen={(kind) => setPanel({ kind, slotId: slot.id })}
       panel={slotPanel(slot)}
     />
   );
+
+  const groupBlock = (block: SlotBlock) => {
+    const group = block.group!;
+    const groupId = block.members[0]!.group_id!;
+    const memberIds = block.members.map((slot) => slot.id);
+    const up = groupMoveDestination(workout, groupId, -1);
+    const down = groupMoveDestination(workout, groupId, 1);
+    const moveGroup = (to: number) => run((at) => planWrites.setGroup(
+      workout.id, groupId, memberIds, { ...storedGroupValues(block.members), order_index: to }, at,
+    ));
+    const editing = panel?.kind === 'group' && panel.existing && panel.groupId === groupId;
+    return (
+      <li key={groupId} className="group-block">
+        <div className="group-head">
+          <div>
+            <strong>{group.title}</strong>
+            <span className="muted">{describeGroup(group)}</span>
+          </div>
+          {!archived && (
+            <div className="row-actions">
+              <button type="button" className="icon" disabled={busy || !!choosing || up === null} onClick={() => up !== null && moveGroup(up)} aria-label={`Move ${group.title} up`}>↑</button>
+              <button type="button" className="icon" disabled={busy || !!choosing || down === null} onClick={() => down !== null && moveGroup(down)} aria-label={`Move ${group.title} down`}>↓</button>
+              <button type="button" className="ghost small" disabled={busy || !!choosing}
+                onClick={() => setPanel({ kind: 'group', groupId, members: block.members, existing: true })}
+                aria-label={`Edit ${group.title}`}>Edit group</button>
+            </div>
+          )}
+        </div>
+        {editing && (
+          <GroupForm
+            title={`Edit ${group.title}`}
+            members={block.members}
+            existing
+            busy={busy}
+            onCancel={close}
+            onSubmit={(values) => run((at) => planWrites.setGroup(workout.id, groupId, memberIds, values, at))}
+            onUngroup={() => run((at) => planWrites.clearGroup(workout.id, groupId, at))}
+          />
+        )}
+        <ol className="slots">{block.members.map((slot) => member(slot, block))}</ol>
+      </li>
+    );
+  };
 
   return (
     <article className="workout-editor" aria-labelledby="workout-title">
@@ -276,21 +390,44 @@ function WorkoutEditor(props: {
       {blocks.length === 0 ? (
         <p className="muted">No exercises yet. Add one below.</p>
       ) : (
-        <ol className="slots editable">
-          {blocks.map((block) => block.group ? (
-            <li key={block.members[0]!.id} className="group-block">
-              <div className="group-head">
-                <strong>{block.group.title}</strong>
-                <span className="muted">{describeGroup(block.group)}</span>
-              </div>
-              <ol className="slots">{block.members.map((slot) => row(slot, false))}</ol>
-              <p className="fine">Change a superset’s rounds, rests or order in the iPhone app for now.</p>
-            </li>
-          ) : row(block.members[0]!, true))}
+        <ol ref={listRef} className="slots editable">
+          {blocks.map((block) => (block.group ? groupBlock(block) : single(block.members[0]!)))}
         </ol>
       )}
 
-      {!archived && (
+      {!archived && choosing && (
+        <div className="panel" role="group" aria-label="Group exercises">
+          <p>
+            {chosen
+              ? `${chosen.map((slot) => slot.exercise_name).join(', ')}: one set of each per round.`
+              : 'Tick two or more exercises next to each other that aren’t already in a superset or circuit.'}
+          </p>
+          <div className="form-actions">
+            <button type="button" className="primary" disabled={busy || !chosen}
+              onClick={() => {
+                if (!chosen) return;
+                setChoosing(null);
+                setPanel({ kind: 'group', groupId: crypto.randomUUID(), members: chosen, existing: false });
+              }}>
+              {chosen ? `Make a ${groupKind(chosen.length)}` : 'Make a superset'}
+            </button>
+            <button type="button" className="ghost" onClick={() => setChoosing(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {!archived && panel?.kind === 'group' && !panel.existing && (
+        <GroupForm
+          title={`New ${groupKind(panel.members.length)}`}
+          members={panel.members}
+          existing={false}
+          busy={busy}
+          onCancel={close}
+          onSubmit={(values) => run((at) => planWrites.setGroup(workout.id, panel.groupId, panel.members.map((slot) => slot.id), values, at))}
+        />
+      )}
+
+      {!archived && !choosing && !(panel?.kind === 'group' && !panel.existing) && (
         panel?.kind === 'add' ? (
           panel.exercise ? (
             <div className="panel">
@@ -320,6 +457,7 @@ function WorkoutEditor(props: {
           <div className="add-actions">
             <button type="button" disabled={busy} onClick={() => setPanel({ kind: 'add', warmup: false, exercise: null })}>Add exercise</button>
             <button type="button" className="ghost" disabled={busy} onClick={() => setPanel({ kind: 'add', warmup: true, exercise: null })}>Add warm-up</button>
+            {canGroup && <button type="button" className="ghost" disabled={busy} onClick={startChoosing}>Make a superset or circuit</button>}
           </div>
         )
       )}
@@ -332,19 +470,29 @@ function SlotRow(props: {
   miles: boolean;
   busy: boolean;
   archived: boolean;
-  up: number | null;
-  down: number | null;
-  onMove: (to: number) => void;
+  /** The move one place up (-1) or down (+1), or null where it can't go. */
+  move: (direction: -1 | 1) => (() => void) | null;
+  /** Said after "Move <name> up" for a screen reader, e.g. "within its group". */
+  moveLabel?: string;
   onOpen: (kind: 'edit' | 'replace' | 'remove') => void;
+  /** While choosing exercises to group, a tick box replaces the actions. */
+  choose?: { checked: boolean; onChange: (on: boolean) => void };
   panel: ReactNode;
 }) {
-  const { slot, miles, busy, archived, up, down, onMove, onOpen, panel } = props;
+  const { slot, miles, busy, archived, move, moveLabel, onOpen, choose, panel } = props;
+  const up = move(-1);
+  const down = move(1);
   const run = isRun(factsOfSlot(slot));
   const steps = describeRunSteps(slot.run_steps, miles);
   const name = slot.exercise_name;
+  const within = moveLabel ? ` ${moveLabel}` : '';
   return (
     <li className={slot.is_warmup ? 'warmup' : ''}>
       <div className="slot-row">
+        {choose && (
+          <input type="checkbox" className="choose" checked={choose.checked}
+            onChange={(e) => choose.onChange(e.target.checked)} aria-label={`Choose ${name}`} />
+        )}
         <div className="slot-text">
           <div className="slot-name">
             {slot.group_label ? <span className="group">{slot.group_label}</span> : null}
@@ -358,10 +506,10 @@ function SlotRow(props: {
           )}
           {run && <div className="fine">Plan this run’s steps in the iPhone app for now.</div>}
         </div>
-        {!archived && (
+        {!archived && !choose && (
           <div className="row-actions">
-            <button type="button" className="icon" disabled={busy || up === null} onClick={() => up !== null && onMove(up)} aria-label={`Move ${name} up`}>↑</button>
-            <button type="button" className="icon" disabled={busy || down === null} onClick={() => down !== null && onMove(down)} aria-label={`Move ${name} down`}>↓</button>
+            <button type="button" className="icon" disabled={busy || !up} onClick={() => up?.()} aria-label={`Move ${name} up${within}`}>↑</button>
+            <button type="button" className="icon" disabled={busy || !down} onClick={() => down?.()} aria-label={`Move ${name} down${within}`}>↓</button>
             {!run && <button type="button" className="ghost small" disabled={busy} onClick={() => onOpen('edit')} aria-label={`Edit ${name}`}>Edit</button>}
             {!slot.run_steps && <button type="button" className="ghost small" disabled={busy} onClick={() => onOpen('replace')} aria-label={`Replace ${name}`}>Replace</button>}
             <button type="button" className="ghost small danger" disabled={busy} onClick={() => onOpen('remove')} aria-label={`Remove ${name}`}>Remove</button>
@@ -385,6 +533,67 @@ function Confirm(props: { children: ReactNode; action: string; busy: boolean; on
         <button ref={cancelRef} type="button" className="ghost" onClick={props.onCancel}>Cancel</button>
       </div>
     </div>
+  );
+}
+
+/** Rounds and rests of a superset or circuit; also where an existing one is ungrouped. */
+function GroupForm(props: {
+  title: string;
+  members: Slot[];
+  existing: boolean;
+  busy: boolean;
+  onSubmit: (values: GroupValues) => void;
+  onUngroup?: () => void;
+  onCancel: () => void;
+}) {
+  const { title, members, existing, busy, onSubmit, onUngroup, onCancel } = props;
+  const [draft, setDraft] = useState<GroupDraft>(() => groupDraft(members));
+  const [errors, setErrors] = useState<string[]>([]);
+  const id = useId();
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => formRef.current?.querySelector<HTMLInputElement>('input')?.focus(), []);
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const result = groupValues(draft);
+    if (!result.ok) return setErrors(result.errors);
+    setErrors([]);
+    const stored = groupValues(groupDraft(members));
+    const unchanged = stored.ok && JSON.stringify(stored.values) === JSON.stringify(result.values);
+    if (existing && unchanged) return onCancel();
+    onSubmit(result.values);
+  }
+
+  const field = (key: keyof GroupDraft, label: string) => (
+    <div className="field small-field">
+      <label htmlFor={`${id}-${key}`}>{label}</label>
+      <input id={`${id}-${key}`} inputMode="numeric" value={draft[key]}
+        onChange={(e) => setDraft((current) => ({ ...current, [key]: e.target.value }))} />
+    </div>
+  );
+
+  return (
+    <form ref={formRef} className="panel group-form" onSubmit={submit} noValidate aria-label={title}>
+      <h3>{title}</h3>
+      <ol className="member-order">{members.map((slot) => <li key={slot.id}>{slot.exercise_name}</li>)}</ol>
+      <div className="field-row">
+        {field('rounds', 'Rounds')}
+        {field('transitionRest', 'Rest between exercises, seconds')}
+        {field('roundRest', 'Rest after each round, seconds')}
+      </div>
+      <small className="muted">
+        Do one set of each exercise per round, resting between exercises and again after the last.
+        Each exercise’s own rest is kept in case you ungroup.
+      </small>
+      {errors.length > 0 && (
+        <ul role="alert" className="problem">{errors.map((error) => <li key={error}>{error}</li>)}</ul>
+      )}
+      <div className="form-actions">
+        <button type="submit" disabled={busy}>{busy ? 'Saving…' : existing ? 'Save group' : `Make ${groupKind(members.length)}`}</button>
+        {onUngroup && <button type="button" className="ghost" disabled={busy} onClick={onUngroup}>Ungroup</button>}
+        <button type="button" className="ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 

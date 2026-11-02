@@ -108,6 +108,26 @@ export const planWrites = {
     request('POST', `/api/workouts/${id(workoutId)}/exercises/${id(slotId)}/swap`, {
       to_exercise: exerciseId, expected_version: at.version,
     }),
+  /**
+   * Creates or rewrites a superset or circuit: its members in order, rounds
+   * and rests, and optionally where the whole block lands (the number of other
+   * exercises before it). A retry keeps the same group id.
+   */
+  setGroup: (
+    workoutId: string,
+    groupId: string,
+    members: string[],
+    values: { target_sets: number; round_rest: number; transition_rest: number; order_index?: number },
+    at: Reviewed,
+  ) =>
+    request('PUT', `/api/workouts/${id(workoutId)}/groups`, {
+      group_id: groupId, exercises: members, ...values, expected_version: at.version,
+    }),
+  /** Ungroups; each exercise keeps the sets and rest it had before grouping. */
+  clearGroup: (workoutId: string, groupId: string, at: Reviewed) =>
+    request('PUT', `/api/workouts/${id(workoutId)}/groups`, {
+      group_id: groupId, exercises: [], expected_version: at.version,
+    }),
 };
 
 export async function signOut(): Promise<void> {

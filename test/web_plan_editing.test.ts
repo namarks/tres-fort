@@ -153,3 +153,78 @@ describe('moving a slot after another was removed', () => {
     ]);
   });
 });
+
+describe('supersets and circuits from the web', () => {
+  type GroupSlot = Slot & { group_id: string | null; target_sets: number; group_rest_seconds: number | null; group_transition_seconds: number | null };
+  const slotsOf = async (workout: string) => (await env.DB.prepare(
+    `SELECT id, order_index, group_id, target_sets, group_rest_seconds, group_transition_seconds
+       FROM template_exercises WHERE workout_id=?1 ORDER BY order_index`,
+  ).bind(workout).all<GroupSlot>()).results;
+
+  it('groups, reorders members, moves the block past a gap and ungroups, all as the web', async () => {
+    const web = await devJwt('web');
+    const plan = await activePlan(web);
+    const workout = (await call<{ id: string }>(web, 'POST', '/api/workouts', {
+      name: 'Circuits', expected_plan_id: plan.id, expected_version: plan.version,
+    })).body.id;
+    const ids: string[] = [];
+    for (const exercise of ['Bench Press', 'Back Squat', 'Deadlift', 'Overhead Press', 'Pull-Up']) {
+      const slot = await call<Slot>(web, 'POST', `/api/workouts/${workout}/exercises`, {
+        exercise, target_sets: 3, target_reps: 5, rest_seconds: 120, expected_version: await version(web),
+      });
+      expect(slot.status).toBe(201);
+      ids.push(slot.body.id);
+    }
+    const group = crypto.randomUUID();
+    const put = (body: Record<string, unknown>) => call<{ ok?: boolean; conflict?: boolean }>(
+      web, 'PUT', `/api/workouts/${workout}/groups`, { group_id: group, ...body },
+    );
+
+    // A superset of the third and fourth exercises.
+    const made = await put({
+      exercises: [ids[2], ids[3]], target_sets: 4, round_rest: 90, transition_rest: 15,
+      expected_version: await version(web),
+    });
+    expect(made.status).toBe(200);
+    // Swap its members; rounds and rests are resent unchanged.
+    expect((await put({
+      exercises: [ids[3], ids[2]], target_sets: 4, round_rest: 90, transition_rest: 15,
+      expected_version: await version(web),
+    })).status).toBe(200);
+    expect((await slotsOf(workout)).map((slot) => slot.id)).toEqual([ids[0], ids[1], ids[3], ids[2], ids[4]]);
+
+    // Removing the first exercise leaves a gap; the group then moves up past
+    // the second one: no other exercise before it.
+    expect((await call(web, 'DELETE',
+      `/api/workouts/${workout}/exercises/${ids[0]}?expected_version=${await version(web)}`)).status).toBe(200);
+    expect((await put({
+      exercises: [ids[3], ids[2]], target_sets: 4, round_rest: 90, transition_rest: 15, order_index: 0,
+      expected_version: await version(web),
+    })).status).toBe(200);
+    expect(await slotsOf(workout)).toEqual([
+      { id: ids[3], order_index: 0, group_id: group, target_sets: 4, group_rest_seconds: 90, group_transition_seconds: 15 },
+      { id: ids[2], order_index: 1, group_id: group, target_sets: 4, group_rest_seconds: 90, group_transition_seconds: 15 },
+      { id: ids[1], order_index: 2, group_id: null, target_sets: 3, group_rest_seconds: null, group_transition_seconds: null },
+      { id: ids[4], order_index: 3, group_id: null, target_sets: 3, group_rest_seconds: null, group_transition_seconds: null },
+    ]);
+
+    // A stale version changes nothing.
+    const stale = await put({ exercises: [], expected_version: plan.version });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toEqual({ conflict: true, current_version: await version(web) });
+
+    expect((await put({ exercises: [], expected_version: await version(web) })).status).toBe(200);
+    expect((await slotsOf(workout)).every((slot) => slot.group_id === null)).toBe(true);
+
+    const audits = await env.DB.prepare(
+      `SELECT tool, actor FROM audit_log WHERE tool IN ('group_exercises','ungroup_exercises')
+        AND json_extract(args,'$.group_id')=?1 ORDER BY created_at, rowid`,
+    ).bind(group).all<{ tool: string; actor: string }>();
+    expect(audits.results).toEqual([
+      { tool: 'group_exercises', actor: 'web' },
+      { tool: 'group_exercises', actor: 'web' },
+      { tool: 'group_exercises', actor: 'web' },
+      { tool: 'ungroup_exercises', actor: 'web' },
+    ]);
+  });
+});

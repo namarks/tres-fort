@@ -205,6 +205,7 @@ describe('API forwarding', () => {
     expect(isAllowedWrite('PATCH', '/api/workouts/w1/exercises/s1')).toBe(true);
     expect(isAllowedWrite('DELETE', '/api/workouts/w1/exercises/s1')).toBe(true);
     expect(isAllowedWrite('POST', '/api/workouts/w1/exercises/s1/swap')).toBe(true);
+    expect(isAllowedWrite('PUT', '/api/workouts/w1/groups')).toBe(true);
 
     const { env, apiFetch } = makeEnv();
     for (const [method, path] of [
@@ -214,6 +215,9 @@ describe('API forwarding', () => {
       ['POST', '/api/sessions/s1/sets'],
       ['PATCH', '/api/me/profile'],
       ['POST', '/api/groups/join'],
+      ['POST', '/api/groups'],
+      ['PUT', '/api/workouts/w1/groups/g1'],
+      ['DELETE', '/api/workouts/w1/groups'],
       ['POST', '/api/workouts/w1/exercises/s1'],
       ['PATCH', '/api/workouts/w1/extra/segment'],
     ] as const) {

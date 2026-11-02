@@ -128,6 +128,36 @@ export const planWrites = {
     request('PUT', `/api/workouts/${id(workoutId)}/groups`, {
       group_id: groupId, exercises: [], expected_version: at.version,
     }),
+  /** The whole weekly routine; a day left out would become rest. */
+  setRoutine: (week: Record<string, string | null>, at: Reviewed) =>
+    request('PUT', '/api/plan/schedule', { week, expected_plan_id: at.planId, expected_version: at.version }),
+  addAwayDates: (fields: Record<string, unknown>, at: Reviewed) =>
+    request('POST', '/api/plan/trips', { ...fields, expected_version: at.version }),
+  updateAwayDates: (tripId: string, fields: Record<string, unknown>, at: Reviewed) =>
+    request('PATCH', `/api/plan/trips/${id(tripId)}`, { ...fields, expected_version: at.version }),
+  removeAwayDates: (tripId: string, at: Reviewed) =>
+    request('DELETE', `/api/plan/trips/${id(tripId)}?expected_version=${at.version}`),
+};
+
+/**
+ * One date only, outside the versioned plan: each date's sessions row has an
+ * attempt counter instead, and a write names the attempt the page saw (0 for
+ * none), so two devices can't both change the same date unseen.
+ */
+export const dateWrites = {
+  /** A workout on this date, or rest (null). */
+  setDate: (date: string, workoutId: string | null, expectedAttempt: number) =>
+    request('PUT', `/api/calendar/${id(date)}`, { workout_id: workoutId, expected_attempt: expectedAttempt }),
+  /** Moves a date's workout to another date; the first date becomes rest. */
+  moveDate: (move: {
+    from: string; to: string; today: string; workoutId: string;
+    fromAttempt: number; toAttempt: number;
+  }, at: Reviewed) =>
+    request('POST', `/api/calendar/${id(move.from)}/move`, {
+      id: crypto.randomUUID(), to_date: move.to, today: move.today, workout_id: move.workoutId,
+      expected_plan_id: at.planId, expected_version: at.version,
+      expected_from_attempt: move.fromAttempt, expected_to_attempt: move.toAttempt,
+    }),
 };
 
 export async function signOut(): Promise<void> {

@@ -473,6 +473,16 @@ const ERROR_MESSAGES: Record<string, string> = {
   not_found: 'That workout or exercise is no longer in your plan.',
   day_not_found: 'That workout is no longer in your plan, or it is archived.',
   incompatible_measure: 'That exercise is measured differently, so it can’t replace this one.',
+  session_already_started: 'A workout was started on that date, so it can’t be changed.',
+  session_attempt_conflict: 'That date changed in the app since this page loaded, so the calendar has been reloaded. Check it, then try again.',
+  session_attempt_missing: 'That date changed in the app since this page loaded, so the calendar has been reloaded. Check it, then try again.',
+  session_state_conflict: 'That date changed in the app since this page loaded, so the calendar has been reloaded. Check it, then try again.',
+  calendar_move_conflict: 'One of those dates changed since this page loaded, so the calendar has been reloaded. Check both dates, then try again.',
+  invalid_move: 'That workout can’t move to that date. Choose today or a later date without a workout.',
+  unknown_day_ref: 'That workout is no longer in your plan.',
+  invalid_range: 'The last day can’t be before the first day.',
+  invalid_date: 'Choose a valid date.',
+  trip_not_found: 'Those away dates were already removed.',
 };
 
 /** A sentence for a refused write; field names are shown as the API names them. */

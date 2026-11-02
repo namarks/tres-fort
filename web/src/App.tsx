@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   fetchExercises,
   fetchMe,
@@ -14,6 +14,7 @@ import {
 } from './api';
 import { describeWriteError } from './editing';
 import { WorkoutsPage, type Catalog, type Write } from './WorkoutEditor';
+import { AwayDates, DateActions, RoutineEditor } from './CalendarEditing';
 import {
   activityLoads,
   calendarInputs,
@@ -181,6 +182,11 @@ function Planner({ me, state, reload, onSignedOut }: {
       } else if (isVersionConflict(error)) {
         setNotice({ kind: 'conflict', text: CONFLICT_TEXT });
         await reload().catch(() => undefined);
+      } else if (error instanceof ApiError && error.status === 409) {
+        // A date or workout changed elsewhere (a session started, another
+        // device chose a different workout): show the latest before retrying.
+        setNotice({ kind: 'conflict', text: describeWriteError(error.body) });
+        await reload().catch(() => undefined);
       } else {
         setNotice({ kind: 'error', text: error instanceof ApiError ? describeWriteError(error.body) : 'That change didn’t save. Check your connection and try again.' });
       }
@@ -227,13 +233,18 @@ function Planner({ me, state, reload, onSignedOut }: {
           miles={prefersMiles()}
         />
       ) : (
-        <CalendarView state={state} onEditWorkout={(workoutId) => go({ kind: 'workouts', workoutId })} />
+        <CalendarView state={state} write={write} busy={busy} onEditWorkout={(workoutId) => go({ kind: 'workouts', workoutId })} />
       )}
     </div>
   );
 }
 
-function CalendarView({ state, onEditWorkout }: { state: StateResponse; onEditWorkout: (id: string | null) => void }) {
+function CalendarView({ state, write, busy, onEditWorkout }: {
+  state: StateResponse;
+  write: Write;
+  busy: boolean;
+  onEditWorkout: (id: string | null) => void;
+}) {
   const today = useMemo(() => localToday(), []);
   const [month, setMonth] = useState(monthOf(today));
   const [selected, setSelected] = useState(today);
@@ -245,10 +256,11 @@ function CalendarView({ state, onEditWorkout }: { state: StateResponse; onEditWo
     if (!inputs) return new Map<string, CalendarCell>();
     return projectRange(inputs, weeks[0]![0]!, weeks[weeks.length - 1]![6]!, today);
   }, [inputs, weeks, today]);
-  const selectedCell = useMemo(
-    () => cells.get(selected) ?? (inputs ? projectRange(inputs, selected, selected, today).get(selected) : undefined),
-    [cells, inputs, selected, today],
+  const cellFor = useCallback(
+    (date: string) => cells.get(date) ?? (inputs ? projectRange(inputs, date, date, today).get(date) : undefined),
+    [cells, inputs, today],
   );
+  const selectedCell = useMemo(() => cellFor(selected), [cellFor, selected]);
   const workouts = useMemo(() => new Map((plan?.workouts ?? []).map((w) => [w.id, w])), [plan]);
   const loads = useMemo(() => activityLoads(state), [state]);
 
@@ -292,7 +304,8 @@ function CalendarView({ state, onEditWorkout }: { state: StateResponse; onEditWo
                 </div>
               ))}
             </div>
-            <WeeklyRoutine schedule={plan.schedule} workouts={workouts} />
+            <RoutineEditor schedule={plan.schedule} workouts={plan.workouts} write={write} busy={busy} />
+            <AwayDates trips={plan.trips ?? []} today={today} version={plan.version} write={write} busy={busy} />
           </section>
 
           <DayDetail
@@ -303,6 +316,10 @@ function CalendarView({ state, onEditWorkout }: { state: StateResponse; onEditWo
             miles={miles}
             loads={loads}
             onEditWorkout={onEditWorkout}
+            actions={(
+              <DateActions date={selected} today={today} cell={selectedCell} workout={workoutFor(selectedCell, workouts)}
+                state={state} cellFor={cellFor} write={write} busy={busy} />
+            )}
           />
         </main>
       )}
@@ -342,26 +359,6 @@ function DayCell(props: {
   );
 }
 
-function WeeklyRoutine({ schedule, workouts }: { schedule: WeeklySchedule; workouts: Map<string, Workout> }) {
-  return (
-    <section className="routine" aria-labelledby="routine-title">
-      <h2 id="routine-title">Weekly routine</h2>
-      <ol>
-        {WEEKDAYS.map((day) => {
-          const workoutId = schedule.week[day];
-          const workout = workoutId ? workouts.get(workoutId) : undefined;
-          return (
-            <li key={day}>
-              <span className="muted">{WEEKDAY_LABELS[day]}</span>
-              <span>{workout ? workout.name : 'Rest'}</span>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
-  );
-}
-
 function DayDetail(props: {
   date: string;
   cell: CalendarCell | undefined;
@@ -370,12 +367,14 @@ function DayDetail(props: {
   miles: boolean;
   loads: Map<string, ShownLoad | null>;
   onEditWorkout: (id: string) => void;
+  actions: ReactNode;
 }) {
-  const { date, cell, workout, trip, miles, loads, onEditWorkout } = props;
+  const { date, cell, workout, trip, miles, loads, onEditWorkout, actions } = props;
   return (
     <aside className="detail" aria-labelledby="detail-title">
       <h2 id="detail-title">{formatLongDate(date)}</h2>
       <p className="status-line">{cell ? STATUS_LABELS[cell.status] : 'Nothing recorded'}</p>
+      {actions}
       {trip && (
         <div className="note">
           <strong>Away</strong> {trip.start} to {trip.end}
@@ -429,7 +428,6 @@ function DayDetail(props: {
         </section>
       ) : null}
       {!workout && !cell?.items.length && !trip ? <p className="muted">A rest day.</p> : null}
-      <p className="fine">Changing the weekly routine and single dates on the web is coming next. For now, do that in the iPhone app.</p>
     </aside>
   );
 }

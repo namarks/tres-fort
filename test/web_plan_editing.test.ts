@@ -228,3 +228,55 @@ describe('supersets and circuits from the web', () => {
     ]);
   });
 });
+
+describe('the routine, single dates and away dates from the web', () => {
+  it('records the web as the actor on schedule, date and away-date writes', async () => {
+    const web = await devJwt('web');
+    const plan = await activePlan(web);
+    const workout = (await call<{ id: string }>(web, 'POST', '/api/workouts', {
+      name: 'Routine', expected_plan_id: plan.id, expected_version: plan.version,
+    })).body.id;
+    const week = { mon: workout, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
+    const schedule = await call(web, 'PUT', '/api/plan/schedule', {
+      week, expected_plan_id: plan.id, expected_version: await version(web),
+    });
+    expect(schedule.status).toBe(200);
+
+    const trip = await call<{ ok: boolean }>(web, 'POST', '/api/plan/trips', {
+      start: '2031-03-01', end: '2031-03-05', type: 'travel', can_train_light: true, expected_version: await version(web),
+    });
+    expect(trip.status).toBe(200);
+    const trips = (await call<{ plan: { trips: { id: string }[] } }>(web, 'GET', '/api/state')).body.plan.trips;
+    const tripId = trips[trips.length - 1]!.id;
+    expect((await call(web, 'PATCH', `/api/plan/trips/${tripId}`, {
+      can_train_light: false, expected_version: await version(web),
+    })).status).toBe(200);
+    expect((await call(web, 'DELETE', `/api/plan/trips/${tripId}?expected_version=${await version(web)}`)).status).toBe(200);
+
+    const assigned = await call<{ session: { attempt: number } }>(web, 'PUT', '/api/calendar/2031-04-02', {
+      workout_id: workout, expected_attempt: 0,
+    });
+    expect(assigned.status).toBe(200);
+    const moved = await call(web, 'POST', '/api/calendar/2031-04-02/move', {
+      id: crypto.randomUUID(), to_date: '2031-04-04', today: '2031-04-01', workout_id: workout,
+      expected_plan_id: plan.id, expected_version: await version(web),
+      expected_from_attempt: assigned.body.session.attempt, expected_to_attempt: 0,
+    });
+    expect(moved.status).toBe(200);
+    // The page's view of a date is stale once another device changed it.
+    const stale = await call<{ error: string }>(web, 'PUT', '/api/calendar/2031-04-04', { workout_id: null, expected_attempt: 0 });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toBe('session_attempt_conflict');
+
+    const audits = await env.DB.prepare(
+      `SELECT tool, actor FROM audit_log
+        WHERE tool IN ('set_schedule','add_trip','update_trip','remove_trip','set_planned_session','move_calendar_workout')
+          AND user_id = (SELECT user_id FROM plans WHERE id=?1)
+        ORDER BY created_at, rowid`,
+    ).bind(plan.id).all<{ tool: string; actor: string }>();
+    expect(audits.results.map((row) => row.actor)).toEqual(audits.results.map(() => 'web'));
+    expect(audits.results.map((row) => row.tool)).toEqual(expect.arrayContaining([
+      'set_schedule', 'add_trip', 'update_trip', 'remove_trip', 'set_planned_session', 'move_calendar_workout',
+    ]));
+  });
+});

@@ -60,6 +60,12 @@ const WRITE_ROUTES: { method: string; path: RegExp }[] = [
   { method: 'DELETE', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}$`) },
   { method: 'POST', path: new RegExp(`^/api/workouts/${SEGMENT}/exercises/${SEGMENT}/swap$`) },
   { method: 'PUT', path: new RegExp(`^/api/workouts/${SEGMENT}/groups$`) },
+  { method: 'PUT', path: /^\/api\/plan\/schedule$/ },
+  { method: 'POST', path: /^\/api\/plan\/trips$/ },
+  { method: 'PATCH', path: new RegExp(`^/api/plan/trips/${SEGMENT}$`) },
+  { method: 'DELETE', path: new RegExp(`^/api/plan/trips/${SEGMENT}$`) },
+  { method: 'PUT', path: new RegExp(`^/api/calendar/${SEGMENT}$`) },
+  { method: 'POST', path: new RegExp(`^/api/calendar/${SEGMENT}/move$`) },
 ];
 
 export function isAllowedWrite(method: string, path: string): boolean {

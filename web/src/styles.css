@@ -154,6 +154,24 @@ p { margin: 0 0 0.75rem; }
   padding: 0.6rem; display: flex; flex-direction: column; gap: 0.2rem; min-width: 0;
 }
 .routine li span:last-child { overflow-wrap: anywhere; }
+.routine li select { width: 100%; }
+.routine li.drop { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.hint { font-size: 0.8125rem; margin: -0.25rem 0 0.75rem; }
+.palette { list-style: none; margin: 0 0 0.75rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.palette li {
+  cursor: grab; border: 1px solid var(--line); border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.8125rem;
+  background: var(--surface);
+}
+.palette li.rest { color: var(--muted); }
+.away { margin-top: 24px; }
+.away-list { list-style: none; margin: 0.5rem 0; padding: 0; display: grid; gap: 0.5rem; }
+.away-list > li { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.75rem; }
+.away-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.away-form .field { margin-bottom: 0.5rem; }
+.away-form > small { display: block; margin: -0.4rem 0 0.75rem; font-size: 0.8125rem; }
+.date-actions { margin: 0.75rem 0; }
+.date-actions .panel label { display: block; margin-bottom: 0.25rem; }
+.date-actions .panel small { display: block; margin-top: 0.4rem; }
 
 /* ---- day detail ------------------------------------------------------- */
 .detail {

@@ -106,6 +106,13 @@ partner training are not web features.
     `parseRunSteps` and saved as the slot's `run_steps`. Stored distances and
     paces are kept exactly until their text changes; steps in a format the
     web can't read can only be removed.
+  - Then the calendar: the weekly routine (a menu per weekday, or dragging a
+    workout or Rest onto a weekday; each change sends the whole week with
+    the plan version), single dates (choose another workout, move it to a
+    later empty date, or make it a rest day, each checked against the
+    date's `sessions.attempt` as the app does; past, started and
+    away-without-training dates stay as they are), and away dates (add,
+    edit only the changed fields, and remove, with the plan version).
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
     rest, and superset or circuit groups.
@@ -152,10 +159,10 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** Continue P2 with the weekly routine, single dates, away
-dates and restoring a plan version. The workout, slot, group and run step
-editor is built and waits for the owner's written go-ahead to deploy (the API
-Worker and `tres-fort-web` together). The rest of P1 (plan
+**Now (@agent):** Finish P2 with restoring a past plan version. The
+workout, slot, group, run step and calendar editing is built and waits for
+the owner's written go-ahead to deploy (the API Worker and `tres-fort-web`
+together). The rest of P1 (plan
 history, week view, delete-account link, first-run for web sign-ups, invite
 codes, committed browser checks) follows before the site is linked publicly
 in P5. Each later deploy needs the owner's written go-ahead.

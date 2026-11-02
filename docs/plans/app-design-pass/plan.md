@@ -1,6 +1,6 @@
 # App design pass
 
-Slug: app-design-pass · Status: gated · Updated: 2026-11-01 · Theme: member-experience
+Slug: app-design-pass · Status: active · Updated: 2026-11-02 · Theme: member-experience
 
 ## Goal
 
@@ -9,6 +9,8 @@ taps and fewer stacked screens, unplanned training is as easy to start as
 planned training, every feature works without an AI coach, and screens share
 one visual system. The owner asked for the whole ranked list from the
 2026-11-01 design review to be built, plus easier unplanned activities.
+On 2026-11-02 the owner found the Plan tab unclear on landing, above all its
+Active/Archived toggle, which P6 addresses.
 
 ## Phases
 
@@ -59,6 +61,28 @@ one visual system. The owner asked for the whole ranked list from the
     finish screen, the Plan tab, logging a run with distance and time, the
     Endurance card and the new type and buttons.
 
+- [ ] **P6 — A Plan tab with a clear first action**
+  - The owner found the tab unclear on landing, then found that it mixed
+    planning the week with making workouts. After three rounds of mocks on
+    2026-11-02, the tab has two sides behind a Schedule | Workouts switch.
+  - Schedule (the default) is when you train: "Your week" lists each weekday
+    with its workout or Rest, a day with a workout opens it, and one primary
+    button, Edit weekly schedule (Choose your training days when nothing is
+    scheduled), sits under it. Calendar and Away dates follow as rows. With
+    no workouts it points to the Workouts side instead.
+  - Workouts is what you do: the saved workouts, Add workout, the tag filter
+    and reordering. Plan changes move to a toolbar button.
+  - The Active/Archived toggle is gone. An Archived workouts row with a
+    count, shown only when something is archived, opens its own screen to
+    restore or delete them. The tag filter lists tags of active workouts.
+  - Unit test for the week rows; UI journeys for both sides and the archive
+    screen. Needs the owner's look on a TestFlight build like P5.
+
+## Execution frontier
+
+- P5
+- P6
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
@@ -67,10 +91,12 @@ one visual system. The owner asked for the whole ranked list from the
 
 ## Next step
 
-**Now (@owner):** Approve a Worker deploy of main (no migration) and a
-TestFlight build from main, then try P1 to P4 on the iPhone. Until the Worker
-is deployed, saving a run, ride or swim with distance fails with an error and
-nothing is saved.
+**Now (@agent):** Land P6 (Plan tab) with green CI and a clean Codex review.
+
+**Then (@owner):** The Worker is deployed and TestFlight build 61 (main
+1b273fa, uploaded 2026-11-02) carries P0 to P4. Try them on the iPhone. P6
+reaches the phone with the next TestFlight build, which needs its own
+go-ahead.
 
 ## Notes / open questions
 

@@ -30,4 +30,22 @@ final class WorkoutMetadataTests: XCTestCase {
         XCTAssertEqual(WorkoutLibraryPolicy.choices(plan: plan, date: "2026-09-21").map(\.id), ["hotel", "gym"])
         XCTAssertEqual(WorkoutLibraryPolicy.choices(plan: plan, date: "2026-09-23").map(\.id), ["hotel", "gym"])
     }
+
+    func testPlanWeekShowsEachWeekdayAndTreatsMissingOrArchivedWorkoutsAsRest() {
+        let gym = Workout(id: "gym", name: "Gym", day_label: nil, order_index: 0, exercises: [])
+        let retired = Workout(archived_at: 123, id: "retired", name: "Retired", day_label: nil, order_index: 1, exercises: [])
+        let plan = PlanTree(id: "p", name: "Library", version: 2, workouts: [gym, retired],
+            meta: #"{"schedule":{"version":1,"week":{"mon":"gym","wed":"retired","fri":"gone","sat":"gym"}}}"#)
+        let rows = WorkoutLibraryPolicy.weekRows(plan: plan)
+        XCTAssertEqual(rows.map(\.weekdayKey), ["mon", "tue", "wed", "thu", "fri", "sat", "sun"])
+        XCTAssertEqual(rows.map(\.workoutName), ["Gym", nil, nil, nil, nil, "Gym", nil])
+        XCTAssertEqual(rows.map(\.workoutID), ["gym", nil, nil, nil, nil, "gym", nil])
+        XCTAssertTrue(WorkoutLibraryPolicy.hasScheduledDay(plan: plan))
+
+        let unscheduled = PlanTree(id: "p", name: "Library", version: 2, workouts: [gym], meta: nil)
+        XCTAssertEqual(WorkoutLibraryPolicy.weekRows(plan: unscheduled).compactMap(\.workoutName), [])
+        XCTAssertFalse(WorkoutLibraryPolicy.hasScheduledDay(plan: unscheduled))
+        XCTAssertEqual(WorkoutLibraryPolicy.weekRows(plan: nil).count, 7)
+        XCTAssertFalse(WorkoutLibraryPolicy.hasScheduledDay(plan: nil))
+    }
 }

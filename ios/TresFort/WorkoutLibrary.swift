@@ -21,6 +21,28 @@ enum WorkoutLibraryPolicy {
         return days.isEmpty ? "On demand" : days.map { $0.capitalized }.joined(separator: " · ")
     }
 
+    struct WeekRow: Equatable {
+        let weekdayKey: String
+        /// nil is a rest day.
+        let workoutID: String?
+        let workoutName: String?
+    }
+
+    /// The repeating week as the Plan tab shows it, Monday first. A weekday
+    /// whose workout is missing or archived reads as rest, as the calendar
+    /// projection treats it.
+    static func weekRows(plan: PlanTree?) -> [WeekRow] {
+        let available = Dictionary(uniqueKeysWithValues: (plan?.availableWorkouts ?? []).map { ($0.id, $0.name) })
+        return PlanSchedule.weekdayKeys.map { key in
+            let id = plan?.schedule?.templateID(forWeekdayKey: key).flatMap { id -> String? in available[id] == nil ? nil : id }
+            return WeekRow(weekdayKey: key, workoutID: id, workoutName: id.flatMap { available[$0] })
+        }
+    }
+
+    static func hasScheduledDay(plan: PlanTree?) -> Bool {
+        weekRows(plan: plan).contains { $0.workoutName != nil }
+    }
+
     /// Use the persisted mapping. An unsaved picker draft must not accidentally
     /// schedule other workouts when the member chooses Unschedule on one card.
     static func unscheduling(workoutID: String, plan: PlanTree) -> [String: String] {
@@ -28,6 +50,159 @@ enum WorkoutLibraryPolicy {
             let id = plan.schedule?.templateID(forWeekdayKey: key) ?? ""
             return (key, id == workoutID ? "" : id)
         })
+    }
+}
+
+/// The repeating week at the top of the Plan tab: what each weekday holds.
+/// A day with a workout opens that workout.
+struct PlanWeekSummary: View {
+    @ObservedObject var sync: SyncModel
+    var onOpen: (String) -> Void
+    private static let names = ["mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+                                "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(WorkoutLibraryPolicy.weekRows(plan: sync.plan), id: \.weekdayKey) { row in
+                if let id = row.workoutID {
+                    Button { onOpen(id) } label: { line(row, opens: true) }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): \(row.workoutName ?? "")")
+                        .accessibilityHint("Opens workout details")
+                        .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
+                } else {
+                    line(row, opens: false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): Rest")
+                        .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func line(_ row: WorkoutLibraryPolicy.WeekRow, opens: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(row.weekdayKey.uppercased())
+                .font(Theme.mono(11, .bold)).foregroundStyle(Theme.muted)
+                .frame(width: 40, alignment: .leading)
+            Text(row.workoutName ?? "Rest")
+                .font(Theme.mono(15, opens ? .bold : .medium))
+                .foregroundStyle(opens ? Theme.text : Theme.muted)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if opens {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 36)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Archived workouts get their own screen instead of a toggle that swaps the
+/// whole library. Restoring one puts it back in the library; deleting asks first.
+struct ArchivedWorkoutsView: View {
+    @ObservedObject var sync: SyncModel
+    @State private var detailTarget: IdentifiedString?
+    @State private var deletingDay: Workout?
+
+    private var archived: [Workout] { sync.plan?.workouts.filter(\.isArchived) ?? [] }
+
+    var body: some View {
+        List {
+            Section {
+                if archived.isEmpty {
+                    Text("No archived workouts.")
+                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                        .accessibilityIdentifier("archived.empty")
+                }
+                ForEach(archived) { day in
+                    HStack(spacing: 0) {
+                        Button { detailTarget = IdentifiedString(id: day.id) } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(day.name)
+                                        .font(Theme.mono(15, .bold)).foregroundStyle(Theme.text)
+                                    if !day.workoutTags.isEmpty {
+                                        Text(day.workoutTags.joined(separator: " · "))
+                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                    }
+                                    Text(day.exercises.isEmpty
+                                         ? "No exercises"
+                                         : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
+                                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
+                                    .accessibilityHidden(true)
+                            }
+                            .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("library.workout.\(day.id)")
+                        .accessibilityHint("Opens workout details")
+                        .disabled(sync.isRoutineMutationInFlight)
+                        Menu {
+                            Button("Restore workout", systemImage: "arrow.uturn.backward") { restore(day) }
+                            Button("Delete workout", role: .destructive) { deletingDay = day }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 18)).foregroundStyle(Theme.muted)
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
+                        .padding(.trailing, 4)
+                        .disabled(sync.isRoutineMutationInFlight)
+                        .accessibilityLabel("Actions for \(day.name)")
+                    }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Theme.surface)
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        Button { restore(day) } label: {
+                            Label("Restore", systemImage: "arrow.uturn.backward")
+                        }
+                        .tint(Theme.accent)
+                        .disabled(sync.isRoutineMutationInFlight)
+                    }
+                }
+            } footer: {
+                Text("Restore a workout to use it again. Completed workouts and logged sets stay in your history either way.")
+            }
+            if let error = sync.loadError {
+                Section { Text(error).foregroundStyle(Theme.danger) }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Theme.background)
+        .navigationTitle("Archived workouts")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $detailTarget) { target in
+            WorkoutDetailsView(sync: sync, workoutID: target.id, date: nil, onStart: nil, isPushed: true)
+        }
+        .alert(
+            "Delete \(deletingDay?.name ?? "this workout")?",
+            isPresented: Binding(get: { deletingDay != nil }, set: { if !$0 { deletingDay = nil } })
+        ) {
+            Button("Delete workout", role: .destructive) {
+                guard let day = deletingDay, !sync.isRoutineMutationInFlight else { return }
+                deletingDay = nil
+                Task { await sync.deleteWorkoutDay(dayID: day.id) }
+            }
+            .disabled(sync.isRoutineMutationInFlight)
+            Button("Cancel", role: .cancel) { deletingDay = nil }
+        } message: {
+            Text("Past sessions and logged sets stay in your history.")
+        }
+    }
+
+    private func restore(_ day: Workout) {
+        guard !sync.isRoutineMutationInFlight else { return }
+        Task { await sync.setWorkoutArchived(dayID: day.id, archived: false) }
     }
 }
 

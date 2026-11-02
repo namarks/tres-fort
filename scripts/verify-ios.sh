@@ -197,6 +197,8 @@ build_args=(-project "$scratch/ios/TresFort.xcodeproj" -scheme TresFort -configu
 echo 'Building app and test bundles while the simulator starts...'
 if ! xcodebuild build-for-testing "${build_args[@]}" \
     -resultBundlePath "$recording_root/Build.xcresult" >"$recording_root/build.log" 2>&1; then
+  # Compiler errors scroll far above the tail; print them first.
+  awk '/error:/ && !seen[$0]++' "$recording_root/build.log" | head -n 60 >&2
   tail -n 100 "$recording_root/build.log" >&2
   exit 1
 fi

@@ -1,6 +1,6 @@
 # Plan on the web
 
-Slug: web-app · Status: active · Updated: 2026-11-01 · Theme: platform
+Slug: web-app · Status: active · Updated: 2026-11-02 · Theme: platform
 
 ## Goal
 
@@ -72,10 +72,14 @@ partner training are not web features.
       as it does in the app.
     - Playwright checks against a local Worker and D1 at 1280 and 800 px
       widths, and a keyboard-only pass, kept in the repository.
-    - Real Sign in with Apple only works on `app.tresfort.app`, so it is
-      checked end to end after the first deploy.
   - Writes from the gateway are audited as `actor='web'`, not `'ios'`; this
     lands in P2 with the first write.
+  - Released 2026-11-02 with the owner's written go-ahead: migrations 0059
+    and 0060 were applied in production, then the API Worker (version
+    89bfec82, rollback target af46e7a3) and `tres-fort-web` on
+    `app.tresfort.app` (version d9cd2ddb) were deployed from main ab21d04.
+    The owner signed in with Apple there and saw their plan, which checks
+    the shared Apple `sub` end to end.
 - [ ] **P2 — Edit the plan**
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
@@ -117,17 +121,18 @@ partner training are not web features.
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | gated_by | external:owner-apple-web-services-id | Met 2026-11-01: the owner created the Services ID with its domain and return URL in Apple's developer account. |
-| P1 | gated_by | external:owner-web-deploy-approval | Real Sign in with Apple works only on `app.tresfort.app`, so the end-to-end check needs the first `tres-fort-web` deploy and the API Worker's web audience, with the owner's written go-ahead. |
+| P1 | gated_by | external:owner-web-deploy-approval | Met 2026-11-02: the owner approved the first deploy in writing and signed in with Apple on `app.tresfort.app`. |
 | P2 | coordinates_with | plan:coach-free-planning | Both add member-facing planning over the same REST endpoints; new endpoints land once and both clients use them. |
 | P5 | gated_by | external:owner-web-deploy-approval | A new public site and an API Worker change need the owner's written go-ahead. |
 | P5 | coordinates_with | plan:positioning-and-open-source#P4 | Deployer-specific settings (Services ID, domains, Worker names) must follow the same per-deployer pattern as the public snapshot. |
 
 ## Next step
 
-**Now (@agent):** Land the first P1 pull request (gateway, sign-in and the
-read-only calendar), then the rest of P1. The first deploy of
-`tres-fort-web` and of the API Worker with `APPLE_WEB_SERVICES_ID` waits
-for the owner's written go-ahead.
+**Now (@agent):** Plan editing (P2), starting with workouts and exercise
+slots, since editing is the reason for the web app. The rest of P1 (plan
+history, week view, delete-account link, first-run for web sign-ups, invite
+codes, committed browser checks) follows before the site is linked publicly
+in P5. Each later deploy needs the owner's written go-ahead.
 
 ## Notes / open questions
 

@@ -171,7 +171,8 @@ intervals.icu, which stays the store of completed runs.
     set is logged in the runner. Inside a started workout the runner moves
     on; a workout that is only that run starts and finishes, so Today shows
     "RUN COMPLETE" with the run's distance, time and heart rate. The
-    recorder says the workout is marked done.
+    recorder says the workout is marked done. The run's checkpoint keeps
+    the slot, so a run recovered after the app was stopped still marks it.
   - A finished run workout's record shows the run instead of set counts:
     distance, moving time, pace, heart rate and load, each against the plan
     where it has one (planned distance or time, and a pace or heart rate
@@ -182,8 +183,9 @@ intervals.icu, which stays the store of completed runs.
     with starting targets".
   - intervals.icu is optional for recorded runs. Without a connection the
     Worker answers 409 `intervals_not_connected`; a run Apple Health saved
-    with its route then leaves this iPhone's queue and the recorder says so.
-    A run Apple Health didn't save stays queued, since it is the only copy.
+    with its route and any strap readings then leaves this iPhone's queue
+    and the recorder says so. A run Apple Health didn't save in full stays
+    queued, since this iPhone holds the only full copy.
 
 ## Dependencies
 
@@ -238,8 +240,8 @@ migration, since P5 saves through the existing slot route.
   `SetOutboxTests` covers a recorded run logging its slot and finishing a
   run-only workout, and refusing another day, a workout not started and a
   run with no time. `RunRecorderTests` covers marking the workout done,
-  a plain or refused run marking nothing, and both intervals.icu
-  not-connected cases. `RunRecordingTests` covers the uploader letting go
+  including after recovery, a plain or refused run marking nothing, and
+  the intervals.icu not-connected cases, including a route Health dropped. `RunRecordingTests` covers the uploader letting go
   only of runs Apple Health saved.
 - P5: `RunPlanEditingTests` covers saving steps in the plan's format and
   reading them back, the draft's add, move, edit and remove operations,

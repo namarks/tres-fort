@@ -50,10 +50,14 @@ struct RecordedRun: Codable, Equatable, Identifiable {
     /// The planned run it follows and the step it's on. Nil for a run
     /// started without a plan, and in runs saved before planned runs.
     var plan: RunPlanFollowing? = nil
-    /// True once Apple Health saved the workout with its route. Without an
-    /// intervals.icu connection, only such a run leaves this iPhone's upload
-    /// queue; any other run is its only copy. Nil in runs saved before this
-    /// was recorded.
+    /// The plan slot the run was started for, so saving it marks that slot
+    /// done even when the run was recovered after the app was stopped. Nil
+    /// for a run started without one, and in runs saved before this.
+    var plannedSlotID: String? = nil
+    /// True once Apple Health saved the workout with its route and any strap
+    /// readings. Without an intervals.icu connection, only such a run leaves
+    /// this iPhone's upload queue; any other run is its only copy. Nil in runs
+    /// saved before this was recorded.
     var savedToHealth: Bool? = nil
 
     /// The server compares UUIDs case-insensitively; send one stable spelling.

@@ -330,6 +330,7 @@ final class RunRecorderModel: ObservableObject {
         var run = RecordedRun(startedAt: startedAt)
         // The uploaded run carries the planned workout's name.
         run.name = plannedRun?.workoutName ?? "Run"
+        run.plannedSlotID = plannedRun?.id
         if let steps = plannedRun?.runSteps, RunPlan(json: steps) != nil {
             run.plan = RunPlanFollowing(runSteps: steps)
         }
@@ -437,8 +438,12 @@ final class RunRecorderModel: ObservableObject {
         var savedToHealth = false
         if let engine {
             do {
-                apply(try await engine.end(at: endedAt))
-                savedToHealth = true
+                let ended = try await engine.end(at: endedAt)
+                apply(ended.metrics)
+                savedToHealth = ended.savedAll
+                if !ended.savedAll {
+                    note = "Apple Health didn’t keep the whole run. It stays on this iPhone until it uploads to intervals.icu."
+                }
             } catch {
                 note = "Apple Health didn’t save this workout. The run stays on this iPhone until it uploads to intervals.icu."
             }
@@ -460,9 +465,11 @@ final class RunRecorderModel: ObservableObject {
         }
         checkpoint(force: true)
         phase = .finished
-        if let planned = plannedRun,
-           await onPlannedRunSaved(planned.id, finished.date, Int(finished.movingSeconds.rounded())) {
-            completedWorkoutName = planned.workoutName
+        // The checkpoint carries the slot, so a run recovered after the app
+        // was stopped still marks its workout done.
+        if let slotID = finished.plannedSlotID,
+           await onPlannedRunSaved(slotID, finished.date, Int(finished.movingSeconds.rounded())) {
+            completedWorkoutName = finished.name ?? plannedRun?.workoutName
         }
         await uploadPending()
     }

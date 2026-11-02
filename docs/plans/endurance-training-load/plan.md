@@ -1,6 +1,6 @@
 # Real training load for endurance workouts
 
-Slug: endurance-training-load · Status: active · Updated: 2026-11-01 · Theme: connected-training
+Slug: endurance-training-load · Status: active · Updated: 2026-11-02 · Theme: connected-training
 
 ## Goal
 
@@ -132,10 +132,22 @@ provider connection.
 - [ ] **P6 — Effort fallback**
   - A one-tap "How hard was it?" (1 to 10) on imported workouts with no usable
     data gives a session-RPE load, labeled as an estimate.
-- [ ] **P7 — Starting values from intervals.icu**
-  - When intervals.icu is connected, offer its sport settings (FTP, threshold
-    heart rate, threshold pace) as suggestions on the thresholds screen; the
-    member confirms each one, and the saved row records `source='intervals'`.
+- [x] **P7 — Starting values from intervals.icu**
+  - Every activity intervals.icu sends carries the sport settings it was
+    scored with (`icu_ftp` in watts, `lthr` in bpm, `threshold_pace` in metres
+    per second), and the synced row keeps that JSON. `GET
+    /api/me/thresholds/suggestions` reads the newest synced run and ride for
+    each metric, so it needs no extra request and no new OAuth scope.
+  - A value is suggested only when it is newer than every value the member
+    entered for that metric and differs from the one in effect on its date.
+    A value the member set later is never second-guessed, and a used
+    suggestion goes away.
+  - Training thresholds shows them under "From intervals.icu" with a Use
+    button. Use saves the value from that workout's date through `POST
+    /api/me/thresholds` with `source='intervals'`; nothing is saved without
+    the tap. History rows say "from intervals.icu".
+  - Covered by `test/athlete_thresholds.test.ts` and
+    `AthleteThresholdsTests.swift`.
 
 ## Dependencies
 
@@ -146,14 +158,12 @@ provider connection.
 
 ## Next step
 
-**Now (@owner):** P5 waits on Garmin's Starter API approval, so the next
-agent phase is P6, a labeled effort estimate for workouts with no usable data,
-or P7, starting values from intervals.icu, whichever the owner prefers. P0 to
-P4 are in the repository. Migrations `0059` and `0060` reached production on
-2026-11-02 with the Worker from main `ab21d04`, so the thresholds screen works.
-Migrations `0061` and `0062`, and a Worker that includes P3 and P4, still need
-the owner's separate go-ahead; Apple Health stream summaries and file import
-need that Worker.
+**Now (@agent):** P6, a labeled effort estimate for workouts with no usable data, is
+the remaining agent phase; P5 waits on Garmin's Starter API approval. P0 to P4
+and P7 are in the repository. Migrations `0059` to `0062` are in production:
+`0061` and `0062` were applied on 2026-11-02 with the Worker from main
+`cf2f3fa` (version `1e8a4319`). P7's suggestions need a later Worker deploy
+and app build, each with the owner's separate go-ahead.
 
 ## Notes / open questions
 

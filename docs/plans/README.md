@@ -202,8 +202,8 @@ integration or social breadth.
   uploads and later Garmin, keeping intervals.icu's figure when it has one.
   P0's thresholds store and engine, P1's loads on imported workouts, P2's
   thresholds screen and load display, P3's Apple Health heart-rate and
-  power streams and P4's `.fit` file import are in the repository; P5 waits
-  on Garmin.
+  power streams, P4's `.fit` file import and P7's suggestions from
+  intervals.icu are in the repository; P6 is next and P5 waits on Garmin.
 
 ### Platform (`platform`)
 

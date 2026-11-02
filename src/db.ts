@@ -8917,7 +8917,7 @@ export { refreshActivityLoads } from './services/activityLoad';
  * an already stored threshold recomputes too, so a refresh that failed after
  * the insert committed is completed by the client's retry. */
 export async function saveAthleteThreshold(db: D1Database, userId: string, input: ThresholdInput) {
-  const result = await addAthleteThreshold(db, userId, input, 'member');
+  const result = await addAthleteThreshold(db, userId, input, input.source ?? 'member');
   if (result.ok) await refreshActivityLoads(db, userId);
   return result;
 }
@@ -8933,10 +8933,12 @@ export {
   addAthleteThreshold,
   deleteAthleteThreshold,
   getAthleteThresholds,
+  getThresholdSuggestions,
   parseThresholdInput,
   isCivilDate,
   type AthleteThreshold,
   type ThresholdsView,
+  type ThresholdSuggestion,
 } from './services/athleteThresholds';
 export const { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun } = createIntervalsActivityWriteService({
   resolveIntervalsCredential, syncExternalActivities,

@@ -296,7 +296,9 @@ chat start) and a **prompt** (`coach_brief`).
   stores only their threshold-independent summaries (migration `0061`).
   `POST /api/activities/fit` imports a `.fit` file (`src/fitFile.ts`) as a
   `source='fit'` activity scored the same way; dedup keeps intervals.icu over
-  `.fit` over Apple Health.
+  `.fit` over Apple Health. `GET /api/me/thresholds/suggestions` offers the
+  thresholds intervals.icu scored the member's latest synced workouts with;
+  only the member's tap saves one (`source='intervals'`).
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude

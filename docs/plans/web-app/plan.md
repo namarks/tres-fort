@@ -1,6 +1,6 @@
 # Plan on the web
 
-Slug: web-app · Status: active · Updated: 2026-11-02 · Theme: platform
+Slug: web-app · Status: active · Updated: 2026-11-03 · Theme: platform
 
 ## Goal
 
@@ -122,9 +122,13 @@ partner training are not web features.
     field-by-field comparison with the plan now, and restore as a new
     version). On 2026-11-03 the owner decided the detailed change log
     confuses members and belongs in the back end, as the iPhone app had
-    already done (#327), so the web view and its gateway route are removed.
-    Plan versions are still saved on the server, and the coach can still
-    compare and restore them.
+    already done (#327), so the web view and its gateway route are removed
+    (#329). Plan versions are still saved on the server, and the coach can
+    still compare and restore them. Released 2026-11-03 with the owner's
+    written go-ahead: `tres-fort-web` (version b3223134, rollback 29534bb1)
+    was deployed from main e788a20; the API Worker was not redeployed, since
+    its code had not changed since 21f0f3f. The live bundle no longer has
+    the view, and the gateway answers the restore route with 405.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
     rest, and superset or circuit groups.

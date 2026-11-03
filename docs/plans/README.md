@@ -213,6 +213,11 @@ integration or social breadth.
   heart-rate or effort load and swim detail (pool, lengths, strokes). Hand
   entries live in Tres Fort with intervals.icu as an optional copy (owner,
   2026-11-03). P0, naming every sport, is next.
+- [WHOOP data in Tres Fort](whoop/plan.md) — **planned**; WHOOP-tracked
+  workouts arrive once with a load, first through Apple Health and later
+  through a direct WHOOP connection, with daily recovery, HRV and sleep as a
+  separate owner decision. Parked by the owner on 2026-11-03 until a member
+  wears a WHOOP.
 
 ### Platform (`platform`)
 

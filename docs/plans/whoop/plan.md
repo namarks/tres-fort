@@ -96,8 +96,8 @@ intervals.icu (`src/routes/intervalsAuth.ts`), with credentials on the
   - Record the findings here and decide whether P1 is enough or P2 is
     needed. No code.
 - [ ] **P1 — WHOOP workouts through Apple Health**
-  - Name WHOOP as the source of these rows, name the sport (with
-    sport-activities P0 if that plan has merged), and read heart-rate
+  - Name WHOOP as the source of these rows, name the sport (from
+    sport-activities P0), and read heart-rate
     samples for WHOOP workouts so they get a load.
   - Dedup a WHOOP workout against a watch, recorder, `.fit` or
     intervals.icu copy of the same session by overlapping time, not only
@@ -138,6 +138,7 @@ intervals.icu (`src/routes/intervalsAuth.ts`), with credentials on the
 |---|---|---|---|
 | P0 | gated_by | external:owner-whoop-wearer | Needs a member who wears a WHOOP to share an export or try the import. |
 | P1 | coordinates_with | plan:activity-integration-integrity | Changes cross-source dedup, which that plan owns. |
+| P1 | coordinates_with | plan:sport-activities#P1 | Reuses that plan's sport names and heart-rate load for every sport. |
 | P2 | gated_by | external:owner-whoop-developer-app | The app is registered under a WHOOP membership in WHOOP's developer dashboard, with its secret set by `wrangler secret put`. |
 | P2 | coordinates_with | plan:endurance-training-load | WHOOP workouts are scored by the same load engine. |
 | P3 | gated_by | external:owner-whoop-recovery-decision | Daily recovery and sleep is a new product area, not just an import. |
@@ -165,8 +166,8 @@ and HRV, which Apple Health does not carry.
 - WHOOP's heart-rate zones are its own (percent of max heart rate), not the
   member's threshold zones, so they are shown as WHOOP's zones and not used
   for load.
-- Related plans: the sport-activities plan (PR #331, not yet merged) names
-  sports and scores heart rate for every sport, which P1 reuses; Garmin's
+- Related plans: the sport-activities plan names sports and scores heart
+  rate for every sport, which P1 reuses; Garmin's
   Starter request (endurance-training-load P5) would be a second direct
   connector, so P2's credentials table should not be WHOOP-specific.
 - Production migration, Worker deployment, new secrets, new Apple Health

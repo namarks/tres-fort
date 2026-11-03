@@ -207,6 +207,12 @@ integration or social breadth.
   thresholds screen and load display, P3's Apple Health heart-rate and
   power streams, P4's `.fit` file import and P7's suggestions from
   intervals.icu are in the repository; P6 is next and P5 waits on Garmin.
+- [Capture every sport properly](sport-activities/plan.md) — **active**;
+  soccer, tennis, climbing, swims and every other sport land as that sport
+  from Apple Health, intervals.icu, `.fit` files or hand entry, with
+  heart-rate or effort load and swim detail (pool, lengths, strokes). Hand
+  entries live in Tres Fort with intervals.icu as an optional copy (owner,
+  2026-11-03). P0, naming every sport, is next.
 - [WHOOP data in Tres Fort](whoop/plan.md) — **planned**; WHOOP-tracked
   workouts arrive once with a load, first through Apple Health and later
   through a direct WHOOP connection, with daily recovery, HRV and sleep as a

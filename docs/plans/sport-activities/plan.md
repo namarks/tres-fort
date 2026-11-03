@@ -62,23 +62,28 @@ What the sources can give (to confirm against real rows in each phase):
 
 ## Phases
 
-- [ ] **P0 — Name every sport**
-  - A shared sport vocabulary (`src/sports.ts`, mirrored by `Sports.swift`
-    with a fixture test that keeps them identical, like the calendar
-    contract): each sport's id, label, icon, the coarse `kind` it belongs to,
-    which threshold set it uses (on foot, cycling, swimming or none) and its
-    hand-entry fields.
-  - A new migration adds `external_activities.sport` (nullable) beside
-    `kind`, which stays coarse so dedup and older app builds are unchanged.
-    The intervals.icu, `.fit` and Apple Health importers set it, and existing
-    rows are backfilled from their stored provider JSON. The local
-    `activities.type` uses the same ids.
-  - Apple Health imports are named after their sport instead of "Workout".
-    The Activity tab, day view, group feed and Today show the sport's name and
-    icon. A planned activity counts as done when a workout of its sport was
-    recorded that day, as well as by name.
-  - `get_recent_activities`, the coach brief and the web app's activity
-    views report `sport`.
+- [x] **P0 — Name every sport**
+  - `src/sports.ts` holds the sport list (id and label) and the maps from
+    Apple Health activity types, intervals.icu `type` and FIT sport and
+    sub-sport. `ios/TresFort/Sports.swift` mirrors it with icons; both are
+    pinned to `ios/TresFortTests/Fixtures/Sports.json`
+    (`test/sports.test.ts`, `SportsTests.swift`).
+  - Migration `0064` adds `external_activities.sport` beside `kind`, which
+    stays coarse so dedup and older app builds are unchanged. The
+    intervals.icu sync, Apple Health push, `.fit` import and run recorder set
+    it. The Worker derives an Apple Health workout's sport from the activity
+    type the app keeps in `raw`, so older builds get named sports too, and an
+    Apple Health workout an older app called "Workout" takes its sport's
+    name. The migration backfills existing rows the same way (its lookup
+    tables are tested against `src/sports.ts`) and moves live rows' cursor so
+    installed apps receive the sport.
+  - The app names and draws each activity by its sport in the Activity tab,
+    day view, Today and the group feed; the log sheet offers every sport
+    (local `activities.type` uses the same ids); a planned activity named for
+    a sport ("Soccer") counts as done when a workout of that sport was
+    recorded that day, whatever the watch called it.
+  - `get_recent_activities`, the coach brief, the group feed and the web
+    calendar report or show the sport.
 - [ ] **P1 — Heart-rate load for any sport**
   - The Apple Health import reads heart-rate samples for every sport, and
     `refreshActivityLoads` scores any sport whose vocabulary entry names a
@@ -131,9 +136,10 @@ What the sources can give (to confirm against real rows in each phase):
 
 ## Next step
 
-**Now (@agent):** P0, naming every sport across the importers, the app and
-the coach tools. The owner decided on 2026-11-03 that hand-entered sessions
-live in Tres Fort with intervals.icu as an optional copy (P3).
+**Now (@agent):** P1, heart-rate load for any sport. P0 is in the
+repository; migration `0064`, the Worker deploy and an app build need the
+owner's separate go-ahead. The owner decided on 2026-11-03 that hand-entered
+sessions live in Tres Fort with intervals.icu as an optional copy (P3).
 
 ## Notes / open questions
 

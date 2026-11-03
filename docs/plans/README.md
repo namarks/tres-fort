@@ -212,7 +212,8 @@ integration or social breadth.
   from Apple Health, intervals.icu, `.fit` files or hand entry, with
   heart-rate or effort load and swim detail (pool, lengths, strokes). Hand
   entries live in Tres Fort with intervals.icu as an optional copy (owner,
-  2026-11-03). P0, naming every sport, is next.
+  2026-11-03). P0, naming every sport (migration 0064), is in the
+  repository; P1, heart-rate load for any sport, is next.
 
 ### Platform (`platform`)
 

@@ -19,11 +19,13 @@ import { RouteMap } from './RouteMapView';
 import { routableActivityIds } from './routeMap';
 import {
   activityLoads,
+  activitySports,
+  itemTitle,
+  itemType,
   calendarInputs,
   describeGroup,
   describeRunSteps,
   describeSlot,
-  ENDURANCE_LABELS,
   formatClock,
   formatLongDate,
   formatMonth,
@@ -265,6 +267,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
   const selectedCell = useMemo(() => cellFor(selected), [cellFor, selected]);
   const workouts = useMemo(() => new Map((plan?.workouts ?? []).map((w) => [w.id, w])), [plan]);
   const loads = useMemo(() => activityLoads(state), [state]);
+  const sports = useMemo(() => activitySports(state), [state]);
   const routable = useMemo(() => routableActivityIds(state), [state]);
 
   return (
@@ -301,6 +304,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
                       inMonth={monthOf(date) === month}
                       isToday={date === today}
                       isSelected={date === selected}
+                      sports={sports}
                       onSelect={() => setSelected(date)}
                     />
                   ))}
@@ -318,6 +322,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
             trip={tripOn(selected, plan.trips ?? [])}
             miles={miles}
             loads={loads}
+            sports={sports}
             routable={routable}
             onEditWorkout={onEditWorkout}
             actions={(
@@ -342,9 +347,10 @@ function DayCell(props: {
   inMonth: boolean;
   isToday: boolean;
   isSelected: boolean;
+  sports: Map<string, string>;
   onSelect: () => void;
 }) {
-  const { date, cell, workout, inMonth, isToday, isSelected, onSelect } = props;
+  const { date, cell, workout, inMonth, isToday, isSelected, sports, onSelect } = props;
   const status = cell?.status;
   const classes = ['day', inMonth ? '' : 'outside', isToday ? 'today' : '', isSelected ? 'selected' : '', status ? `status-${status}` : '']
     .filter(Boolean).join(' ');
@@ -356,7 +362,7 @@ function DayCell(props: {
       {workout && status !== 'rest' ? <span className={`chip lift ${status ?? ''}`}>{workout.name}</span> : null}
       {cell?.items.map((item) => (
         <span key={item.id} className={`chip endurance ${item.completed ? 'completed' : ''}`}>
-          {item.title ?? ENDURANCE_LABELS[item.kind] ?? 'Activity'}
+          {itemTitle(item, sports)}
         </span>
       ))}
     </button>
@@ -370,12 +376,13 @@ function DayDetail(props: {
   trip: ReturnType<typeof tripOn>;
   miles: boolean;
   loads: Map<string, ShownLoad | null>;
+  sports: Map<string, string>;
   /** Completed activities that may have a recorded route. */
   routable: Set<string>;
   onEditWorkout: (id: string) => void;
   actions: ReactNode;
 }) {
-  const { date, cell, workout, trip, miles, loads, routable, onEditWorkout, actions } = props;
+  const { date, cell, workout, trip, miles, loads, sports, routable, onEditWorkout, actions } = props;
   return (
     <aside className="detail" aria-labelledby="detail-title">
       <h2 id="detail-title">{formatLongDate(date)}</h2>
@@ -419,12 +426,12 @@ function DayDetail(props: {
             {cell.items.map((item) => {
               const load = itemLoad(item, loads);
               const method = load?.method ? LOAD_METHOD_LABELS[load.method] : undefined;
-              const title = item.title ?? ENDURANCE_LABELS[item.kind] ?? 'Activity';
+              const title = itemTitle(item, sports);
               return (
                 <li key={item.id}>
                   <div className="slot-name">{title}</div>
                   <div className="muted">
-                    {ENDURANCE_LABELS[item.kind] ?? 'Activity'} · {item.completed ? 'Done' : 'Planned'}
+                    {itemType(item, sports)} · {item.completed ? 'Done' : 'Planned'}
                     {item.planned_duration_sec ? ` · ${formatClock(item.planned_duration_sec)}` : ''}
                     {load ? ` · load ${Math.round(load.load)}${method ? ` (${method})` : ''}` : ''}
                   </div>

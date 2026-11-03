@@ -3,6 +3,9 @@ import type { StateActivity, StateResponse } from '../src/api';
 import {
   activityLoad,
   activityLoads,
+  activitySports,
+  itemTitle,
+  itemType,
   calendarInputs,
   describeDistance,
   describeGroup,
@@ -223,5 +226,39 @@ describe('activity load', () => {
     const loads = activityLoads(s);
     expect(itemLoad(cells.get('2026-10-30')!.items[0]!, loads)).toEqual({ load: 42, method: 'pace' });
     expect(itemLoad(cells.get('2026-11-03')!.items[0]!, loads)).toEqual({ load: 50, method: null });
+  });
+});
+
+describe('activity sports', () => {
+  function activity(overrides: Partial<StateActivity>): StateActivity {
+    return {
+      id: 'intervals:a1', user_id: 'u1', source: 'intervals', external_id: 'a1', date: '2026-10-30', kind: 'run',
+      name: 'Easy run', moving_time_sec: 2400, elapsed_time_sec: 2500, distance_m: 7000, average_watts: null,
+      weighted_avg_watts: null, average_hr: 140, max_hr: 160, training_load: null, intensity: null, calories: null,
+      elevation_gain_m: null, raw: null, synced_at: 0, deleted_at: null, canonical: 1, duplicate_of: null,
+      ...overrides,
+    } as StateActivity;
+  }
+
+  it('names a completed activity by its sport and keeps planned events their own', () => {
+    const s = state({
+      external_activities: [
+        activity({ id: 'healthkit:a1', kind: 'other', name: 'Workout', sport: 'soccer' }),
+        activity({ id: 'intervals:a2', date: '2026-10-31', kind: 'other', name: 'Club tennis', sport: 'tennis' }),
+        activity({ id: 'healthkit:a3', date: '2026-10-29', kind: 'other', name: 'Workout', sport: 'other' }),
+      ],
+      external_events: [{
+        id: 'intervals:e1', user_id: 'u1', source: 'intervals', external_id: 'e1', date: '2026-11-03', kind: 'ride',
+        title: null, description: null, planned_duration_sec: 3600, training_load: 50, intensity: null,
+        raw: null, synced_at: 0, deleted_at: null,
+      }],
+    });
+    const cells = projectRange(calendarInputs(s)!, '2026-10-29', '2026-11-03', '2026-11-01');
+    const sports = activitySports(s);
+    const first = (date: string) => cells.get(date)!.items[0]!;
+    expect([itemTitle(first('2026-10-30'), sports), itemType(first('2026-10-30'), sports)]).toEqual(['Soccer', 'Soccer']);
+    expect([itemTitle(first('2026-10-31'), sports), itemType(first('2026-10-31'), sports)]).toEqual(['Club tennis', 'Tennis']);
+    expect([itemTitle(first('2026-10-29'), sports), itemType(first('2026-10-29'), sports)]).toEqual(['Workout', 'Activity']);
+    expect([itemTitle(first('2026-11-03'), sports), itemType(first('2026-11-03'), sports)]).toEqual(['Ride', 'Ride']);
   });
 });

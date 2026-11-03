@@ -666,15 +666,15 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
     var effective_intensity: Double? = nil
     /// provider / power / power_summary / heart_rate / heart_rate_average / pace.
     var load_method: String? = nil
+    /// What it was: soccer, tennis, swim, … (migration 0064, `Sports`).
+    /// Older Workers omit it.
+    var sport: String? = nil
 
     /// A tombstoned activity must never be shown.
     var isDeleted: Bool { deleted_at != nil }
 
-    /// Display title, falling back to a humanised kind when absent.
-    var displayTitle: String {
-        if let n = name, !n.isEmpty { return n }
-        return kind.capitalized
-    }
+    /// Display title: its own name, else its sport, else a humanised kind.
+    var displayTitle: String { Sports.title(name: name, sport: sport, kind: kind) }
 
     /// SF Symbol per activity kind (calendar glyph, agenda header, and the
     /// group feed's ride rows). Mirrors the kinds emitted by `kindOf` in the
@@ -695,7 +695,7 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
         }
     }
 
-    var glyph: String { ExternalActivity.glyph(forKind: kind) }
+    var glyph: String { Sports.named(sport)?.glyph ?? ExternalActivity.glyph(forKind: kind) }
 
     /// "1h 30m" / "45m" from `moving_time_sec` (nil → nil).
     var durationLabel: String? {

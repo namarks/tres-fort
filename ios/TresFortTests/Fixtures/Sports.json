@@ -1,0 +1,260 @@
+{
+  "_comment": "Shared contract for src/sports.ts and ios/TresFort/Sports.swift: the sport list (order, ids, labels) and HKWorkoutActivityType raw value to sport. Types not listed are 'other'.",
+  "sports": [
+    {
+      "id": "run",
+      "label": "Run"
+    },
+    {
+      "id": "ride",
+      "label": "Ride"
+    },
+    {
+      "id": "swim",
+      "label": "Swim"
+    },
+    {
+      "id": "walk",
+      "label": "Walk"
+    },
+    {
+      "id": "hike",
+      "label": "Hike"
+    },
+    {
+      "id": "row",
+      "label": "Row"
+    },
+    {
+      "id": "elliptical",
+      "label": "Elliptical"
+    },
+    {
+      "id": "stairs",
+      "label": "Stair stepper"
+    },
+    {
+      "id": "cardio",
+      "label": "Cardio"
+    },
+    {
+      "id": "hiit",
+      "label": "HIIT"
+    },
+    {
+      "id": "cross_training",
+      "label": "Cross training"
+    },
+    {
+      "id": "strength",
+      "label": "Strength"
+    },
+    {
+      "id": "core",
+      "label": "Core"
+    },
+    {
+      "id": "yoga",
+      "label": "Yoga"
+    },
+    {
+      "id": "pilates",
+      "label": "Pilates"
+    },
+    {
+      "id": "barre",
+      "label": "Barre"
+    },
+    {
+      "id": "flexibility",
+      "label": "Stretching"
+    },
+    {
+      "id": "dance",
+      "label": "Dance"
+    },
+    {
+      "id": "boxing",
+      "label": "Boxing"
+    },
+    {
+      "id": "martial_arts",
+      "label": "Martial arts"
+    },
+    {
+      "id": "climbing",
+      "label": "Climbing"
+    },
+    {
+      "id": "soccer",
+      "label": "Soccer"
+    },
+    {
+      "id": "basketball",
+      "label": "Basketball"
+    },
+    {
+      "id": "volleyball",
+      "label": "Volleyball"
+    },
+    {
+      "id": "american_football",
+      "label": "Football"
+    },
+    {
+      "id": "rugby",
+      "label": "Rugby"
+    },
+    {
+      "id": "hockey",
+      "label": "Hockey"
+    },
+    {
+      "id": "lacrosse",
+      "label": "Lacrosse"
+    },
+    {
+      "id": "handball",
+      "label": "Handball"
+    },
+    {
+      "id": "baseball",
+      "label": "Baseball"
+    },
+    {
+      "id": "softball",
+      "label": "Softball"
+    },
+    {
+      "id": "cricket",
+      "label": "Cricket"
+    },
+    {
+      "id": "disc_sports",
+      "label": "Ultimate"
+    },
+    {
+      "id": "tennis",
+      "label": "Tennis"
+    },
+    {
+      "id": "pickleball",
+      "label": "Pickleball"
+    },
+    {
+      "id": "padel",
+      "label": "Padel"
+    },
+    {
+      "id": "squash",
+      "label": "Squash"
+    },
+    {
+      "id": "racquetball",
+      "label": "Racquetball"
+    },
+    {
+      "id": "badminton",
+      "label": "Badminton"
+    },
+    {
+      "id": "table_tennis",
+      "label": "Table tennis"
+    },
+    {
+      "id": "golf",
+      "label": "Golf"
+    },
+    {
+      "id": "skating",
+      "label": "Skating"
+    },
+    {
+      "id": "downhill_ski",
+      "label": "Skiing"
+    },
+    {
+      "id": "cross_country_ski",
+      "label": "Cross-country ski"
+    },
+    {
+      "id": "snowboard",
+      "label": "Snowboard"
+    },
+    {
+      "id": "paddling",
+      "label": "Paddling"
+    },
+    {
+      "id": "surfing",
+      "label": "Surfing"
+    },
+    {
+      "id": "sailing",
+      "label": "Sailing"
+    },
+    {
+      "id": "jump_rope",
+      "label": "Jump rope"
+    },
+    {
+      "id": "other",
+      "label": "Other"
+    }
+  ],
+  "healthkit": {
+    "1": "american_football",
+    "4": "badminton",
+    "5": "baseball",
+    "6": "basketball",
+    "8": "boxing",
+    "9": "climbing",
+    "10": "cricket",
+    "11": "cross_training",
+    "13": "ride",
+    "14": "dance",
+    "16": "elliptical",
+    "20": "strength",
+    "21": "golf",
+    "23": "handball",
+    "24": "hike",
+    "25": "hockey",
+    "27": "lacrosse",
+    "28": "martial_arts",
+    "31": "paddling",
+    "34": "racquetball",
+    "35": "row",
+    "36": "rugby",
+    "37": "run",
+    "38": "sailing",
+    "39": "skating",
+    "41": "soccer",
+    "42": "softball",
+    "43": "squash",
+    "44": "stairs",
+    "45": "surfing",
+    "46": "swim",
+    "47": "table_tennis",
+    "48": "tennis",
+    "50": "strength",
+    "51": "volleyball",
+    "52": "walk",
+    "57": "yoga",
+    "58": "barre",
+    "59": "core",
+    "60": "cross_country_ski",
+    "61": "downhill_ski",
+    "62": "flexibility",
+    "63": "hiit",
+    "64": "jump_rope",
+    "65": "boxing",
+    "66": "pilates",
+    "67": "snowboard",
+    "68": "stairs",
+    "73": "cardio",
+    "75": "disc_sports",
+    "77": "dance",
+    "78": "dance",
+    "79": "pickleball"
+  }
+}

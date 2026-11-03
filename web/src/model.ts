@@ -12,6 +12,7 @@ import {
 } from '../../src/calendarProjection';
 import { coachGroupSlots } from '../../src/exerciseGroupViews';
 import { parseRunSteps, type RunPlanItem, type RunStep, type RunStepTarget } from '../../src/runSteps';
+import { sportLabel } from '../../src/sports';
 import { WEEKDAYS, type EnrichedTemplateExercise, type Trip, type Weekday } from '../../src/types';
 import type { StateActivity, StatePlan, StateResponse } from './api';
 
@@ -289,3 +290,26 @@ export function describeRunSteps(raw: string | null | undefined, miles: boolean)
 export const ENDURANCE_LABELS: Record<string, string> = {
   ride: 'Ride', run: 'Run', swim: 'Swim', walk: 'Walk', other: 'Activity',
 };
+
+/** Named sports (soccer, tennis, …; migration 0064) of completed activities by id. */
+export function activitySports(state: StateResponse): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const a of state.external_activities) {
+    const label = a.sport && a.sport !== 'other' ? sportLabel(a.sport) : null;
+    if (label) out.set(a.id, label);
+  }
+  return out;
+}
+
+/** What a calendar item is: its sport when known, else its kind. */
+export function itemType(item: CalendarCell['items'][number], sports: Map<string, string>): string {
+  return (item.completed ? sports.get(item.id) : undefined) ?? ENDURANCE_LABELS[item.kind] ?? 'Activity';
+}
+
+/** A calendar item's title: its own name, else what it is. "Workout" is the
+ * name older apps gave every Apple Health sport, so a known sport replaces it. */
+export function itemTitle(item: CalendarCell['items'][number], sports: Map<string, string>): string {
+  const sport = item.completed ? sports.get(item.id) : undefined;
+  if (item.title && !(item.title === 'Workout' && sport)) return item.title;
+  return itemType(item, sports);
+}

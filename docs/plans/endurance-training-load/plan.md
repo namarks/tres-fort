@@ -132,6 +132,8 @@ provider connection.
 - [ ] **P6 — Effort fallback**
   - A one-tap "How hard was it?" (1 to 10) on imported workouts with no usable
     data gives a session-RPE load, labeled as an estimate.
+  - Proposed to be delivered for every sport, not only runs, rides and swims,
+    by [sport-activities P2](../sport-activities/plan.md).
 - [x] **P7 — Starting values from intervals.icu**
   - Every activity intervals.icu sends carries the sport settings it was
     scored with (`icu_ftp` in watts, `lthr` in bpm, `threshold_pace` in metres

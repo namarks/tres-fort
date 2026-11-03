@@ -270,6 +270,8 @@ struct FeedRideItem: Codable, Identifiable, Equatable {
     struct Inner: Codable, Equatable {
         var source_attribution: String? = nil
         let kind: String
+        /// What it was (soccer, swim, …; `Sports`). Older Workers omit it.
+        var sport: String? = nil
         let name: String?
         let distance_m: Double?
         let moving_time_sec: Int?
@@ -404,10 +406,15 @@ struct PendingActivity: Codable, Identifiable, Equatable {
     /// "I lifted somewhere else and want to log it without firing up the
     /// runner" — backend treats it as a generic activity, NOT a strength
     /// session.
-    static let kinds: [String] = [
-        "pilates", "cardio", "yoga", "walk", "hike",
-        "run", "ride", "swim", "lift", "other",
-    ]
+    /// The everyday kinds come first, then every other sport in `Sports`
+    /// (soccer, tennis, climbing, …) so a match is logged as what it was.
+    static let kinds: [String] = {
+        let common = ["pilates", "cardio", "yoga", "walk", "hike", "run", "ride", "swim", "lift"]
+        // "lift" already covers strength done elsewhere.
+        let more = Sports.all.map(\.id)
+            .filter { !common.contains($0) && $0 != "strength" && $0 != "other" }
+        return common + more + ["other"]
+    }()
 
     /// Human label for the picker (e.g. "Pilates", "Lift (other)").
     static func label(for kind: String) -> String {
@@ -422,7 +429,7 @@ struct PendingActivity: Codable, Identifiable, Equatable {
         case "swim":     return "Swim"
         case "lift":     return "Lift (other)"
         case "other":    return "Other"
-        default:         return kind.capitalized
+        default:         return Sports.sport(id: kind)?.label ?? kind.capitalized
         }
     }
 
@@ -437,7 +444,7 @@ struct PendingActivity: Codable, Identifiable, Equatable {
         case "lift":            return "dumbbell.fill"
         case "walk":            return "figure.walk"
         case "cardio":          return "figure.mixed.cardio"
-        default:                return "figure.mixed.cardio"
+        default:                return Sports.sport(id: kind)?.glyph ?? "figure.mixed.cardio"
         }
     }
 }

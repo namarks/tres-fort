@@ -1817,7 +1817,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_recent_activities: {
     description:
-      'Get COMPLETED endurance activities recorded in intervals.icu (rides, runs, swims) with their actuals: duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `training_load` is the figure from the provider; `load` (with `load_intensity` and `load_method`: provider, power, power_summary, heart_rate, heart_rate_average or pace) is the load Tres Fort shows, computed from the member thresholds when the provider has none, and null when there is no usable data. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
+      'Get COMPLETED activities (rides, runs, swims and other sports from intervals.icu, Apple Health, .fit files and the run recorder) with their actuals. `sport` names what it was (soccer, tennis, swim, …; `kind` is the coarse family): duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `training_load` is the figure from the provider; `load` (with `load_intensity` and `load_method`: provider, power, power_summary, heart_rate, heart_rate_average or pace) is the load Tres Fort shows, computed from the member thresholds when the provider has none, and null when there is no usable data. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
     inputSchema: obj(
       {
         range: { type: 'integer', minimum: 1, maximum: 365, description: 'days back (default 30)' },
@@ -1839,6 +1839,7 @@ const TOOLS: Record<string, Tool> = {
           id: x.id,
           date: x.date,
           kind: x.kind,
+          sport: x.sport ?? null,
           name: x.name,
           moving_time_sec: x.moving_time_sec,
           distance_m: x.distance_m,
@@ -2002,6 +2003,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
       source: a.source,
       date: a.date,
       kind: a.kind,
+      sport: a.sport ?? null,
       name: a.name,
       moving_time_sec: a.moving_time_sec,
       distance_m: a.distance_m,

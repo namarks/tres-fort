@@ -338,6 +338,8 @@ export interface ExternalActivityRow {
   source_timezone?: string | null;
   date: string; // YYYY-MM-DD from start_date_local, verbatim
   kind: string; // ride|run|swim|other
+  /** What the workout was (soccer, tennis, …; migration 0064, src/sports.ts). */
+  sport?: string | null;
   name: string | null;
   moving_time_sec: number | null;
   elapsed_time_sec: number | null;
@@ -379,6 +381,8 @@ export interface CompletedActivity {
   /** Actual source instant, only when the provider supplies an explicit zone. */
   start_date_utc_ms?: number | null;
   kind: string; // ride|run|swim|other
+  /** What the workout was (soccer, tennis, …); see src/sports.ts. */
+  sport?: string;
   name: string | null;
   moving_time_sec: number | null;
   elapsed_time_sec: number | null;

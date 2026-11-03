@@ -11,6 +11,7 @@
 // files may be chained one after another.
 
 import type { Sample } from './trainingLoad';
+import { sportForFit } from './sports';
 
 export class FitParseError extends Error {
   constructor(readonly code: 'not_fit' | 'truncated' | 'not_an_activity' | 'multisport' | 'no_data') {
@@ -21,6 +22,8 @@ export class FitParseError extends Error {
 export interface FitActivity {
   /** Tres Fort activity kind (ride, run, swim, …), as kindOf and HealthKit use. */
   kind: string;
+  /** What the workout was (soccer, tennis, …); see src/sports.ts. */
+  sport: string;
   start_utc_ms: number;
   /** Device clock offset from UTC in seconds, when the file records it. */
   local_offset_sec: number | null;
@@ -355,6 +358,7 @@ export function parseFit(bytes: Uint8Array): FitActivity {
 
   return {
     kind: fitKind(first(5), first(6)),
+    sport: sportForFit(first(5), first(6), fitKind(first(5), first(6))),
     start_utc_ms: (startFit + FIT_EPOCH_SEC) * 1000,
     // A real zone offset is within ±14 h; anything else is a bad clock.
     local_offset_sec: offset !== null && Math.abs(offset) <= 14 * 3600 ? offset : null,

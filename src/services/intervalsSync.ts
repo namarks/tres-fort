@@ -3,6 +3,7 @@ import { deviceNameSQL, withActivityAttribution } from '../dataAttribution';
 import { thresholdSettingsSQL } from './athleteThresholds';
 
 import { addDays } from '../calendarProjection';
+import { sportForIntervalsType } from '../sports';
 import { diagnosticErrorType } from '../errors';
 import { fetchCompletedActivities, fetchPlannedEvents, type ActivityFetchDeps, type FetchDeps, type Fetcher } from '../intervals';
 import type { User, Env, ExternalActivityRow, ExternalEventRow } from '../types';
@@ -1399,7 +1400,7 @@ export function createIntervalsSyncService({
                 moving_time_sec,elapsed_time_sec,distance_m,average_watts,
                 weighted_avg_watts,average_hr,max_hr,training_load,intensity,
                 calories,elevation_gain_m,raw,synced_at,deleted_at,start_date_utc_ms,
-                effective_load,effective_intensity,load_method)
+                effective_load,effective_intensity,load_method,sport)
              SELECT ?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
                     ?15,?16,?17,?18,?19,?20,NULL,?23,
                     -- A provider load is the effective load as it stands
@@ -1407,7 +1408,8 @@ export function createIntervalsSyncService({
                     -- refreshActivityLoads after this batch.
                     CASE WHEN ?15 >= 0 THEN ROUND(?15) END,
                     CASE WHEN ?15 >= 0 AND ?16 > 0 THEN ROUND(?16, 1) END,
-                    CASE WHEN ?15 >= 0 THEN 'provider' END
+                    CASE WHEN ?15 >= 0 THEN 'provider' END,
+                    ?24
               WHERE EXISTS (
                     SELECT 1 FROM users
                      WHERE id = ?2 AND intervals_credential_generation = ?21
@@ -1423,6 +1425,7 @@ export function createIntervalsSyncService({
                  ELSE NULL
                END,
                kind=excluded.kind,
+               sport=excluded.sport,
                name=excluded.name,
                moving_time_sec=excluded.moving_time_sec,
                elapsed_time_sec=excluded.elapsed_time_sec,
@@ -1455,6 +1458,7 @@ export function createIntervalsSyncService({
                  external_activities.date IS NOT excluded.date OR
                  external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
                  external_activities.kind IS NOT excluded.kind OR
+                 external_activities.sport IS NOT excluded.sport OR
                  external_activities.name IS NOT excluded.name OR
                  external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
                  external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
@@ -1486,6 +1490,7 @@ export function createIntervalsSyncService({
                  external_activities.date IS NOT excluded.date OR
                  external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
                  external_activities.kind IS NOT excluded.kind OR
+                 external_activities.sport IS NOT excluded.sport OR
                  external_activities.name IS NOT excluded.name OR
                  external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
                  external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
@@ -1526,6 +1531,7 @@ export function createIntervalsSyncService({
             effectiveCredential.generation,
             attempts.activitiesAttempt,
             a.start_date_utc_ms ?? null,
+            a.sport ?? sportForIntervalsType(undefined, a.kind),
           ),
       );
     }

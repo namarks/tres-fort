@@ -307,6 +307,12 @@ chat start) and a **prompt** (`coach_brief`).
   only the member's tap saves one (`source='intervals'`).
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
+- `external_activities.sport` (migration `0064`) names what a workout was
+  (soccer, tennis, swim) from `src/sports.ts`, mirrored by
+  `ios/TresFort/Sports.swift` and pinned to
+  `ios/TresFortTests/Fixtures/Sports.json`. `kind` stays coarse because
+  cross-source dedup matches on kind and start time; never make it finer.
+  See [the plan](docs/plans/sport-activities/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude
   editing `target_*` / the per-exercise `progression` JSON and writing a
   note. `progression.type` (linear|double|rpe|manual) is interpreted by

@@ -26,6 +26,7 @@ import { parseTrainingProfile, starterWorkouts, type TrainingProfile } from './t
 import { sharedText, type GroupReportReason } from './groupSafety';
 import { APP_REVIEW_SUB } from './appReview';
 import { validActivitySourceTime } from './activityTime';
+import { healthKitTypeOf, sportForHealthKitType, sportLabel } from './sports';
 // Public service facade: REST and MCP share the same domain operations.
 // Cohesive internal services live in services/; they never import this facade. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
@@ -9065,6 +9066,13 @@ export async function upsertHealthKitActivity(
   const streamsSent = input.streams !== undefined;
   const npW = input.streams?.power ? powerStreamSummary(input.streams.power, input.moving_time_sec) : null;
   const hr = input.streams?.heart_rate ? heartRateStreamSummary(input.streams.heart_rate, input.moving_time_sec) : null;
+  // The sport comes from the HealthKit type the app keeps in `raw`, so older
+  // builds that only send a coarse kind still get named sports. Apple Health
+  // workouts carry no name of their own; an older app called every other
+  // sport "Workout", which gives way to the sport's name.
+  const sport = sportForHealthKitType(healthKitTypeOf(input.raw), input.kind);
+  const name = (input.name === null || input.name === 'Workout') && sport !== 'other'
+    ? sportLabel(sport) : input.name;
   await db.batch([
     db
     .prepare(
@@ -9073,15 +9081,16 @@ export async function upsertHealthKitActivity(
           moving_time_sec,elapsed_time_sec,distance_m,average_watts,
           weighted_avg_watts,average_hr,max_hr,training_load,intensity,
           calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,start_date_utc_ms,source_timezone,
-          stream_np_w,stream_hr_rms,stream_hr_sec)
+          stream_np_w,stream_hr_rms,stream_hr_sec,sport)
        VALUES (?1,?2,'healthkit',?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,NULL,NULL,
-               ?14,?15,?16,?17,NULL,1,NULL,?18,?19,?20,?21,?22)
+               ?14,?15,?16,?17,NULL,1,NULL,?18,?19,?20,?21,?22,?24)
        ON CONFLICT(id) DO UPDATE SET
          start_date_utc_ms=COALESCE(external_activities.start_date_utc_ms, excluded.start_date_utc_ms),
          source_timezone=CASE WHEN external_activities.start_date_utc_ms IS NULL
            AND external_activities.start_date_local_ms IS excluded.start_date_local_ms
            THEN excluded.source_timezone ELSE external_activities.source_timezone END,
          kind=excluded.kind,
+         sport=excluded.sport,
          name=excluded.name,
          moving_time_sec=excluded.moving_time_sec,
          elapsed_time_sec=excluded.elapsed_time_sec,
@@ -9107,6 +9116,7 @@ export async function upsertHealthKitActivity(
        WHERE NOT (external_activities.deleted_at IS NOT NULL AND external_activities.duplicate_of IS NULL) AND (
          (external_activities.start_date_utc_ms IS NULL AND excluded.start_date_utc_ms IS NOT NULL) OR
          external_activities.kind IS NOT excluded.kind OR
+         external_activities.sport IS NOT excluded.sport OR
          external_activities.name IS NOT excluded.name OR
          external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
          external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
@@ -9127,7 +9137,7 @@ export async function upsertHealthKitActivity(
       input.date,
       input.start_date_local_ms,
       input.kind,
-      input.name,
+      name,
       input.moving_time_sec,
       input.elapsed_time_sec,
       input.distance_m,
@@ -9144,6 +9154,7 @@ export async function upsertHealthKitActivity(
       hr?.rms_bpm ?? null,
       hr ? Math.round(hr.seconds) : null,
       streamsSent ? 1 : 0,
+      sport,
     ),
     reconcileNativeHealthKitStatement(db, userId, ts),
   ]);
@@ -9267,18 +9278,19 @@ export async function importFitActivity(
           moving_time_sec,elapsed_time_sec,distance_m,average_watts,
           weighted_avg_watts,average_hr,max_hr,training_load,intensity,
           calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,
-          start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec)
+          start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec,sport)
        VALUES (?1,?2,'fit',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,NULL,
-               ?15,?16,?17,?18,NULL,1,NULL,?19,?20,?21,?22,?23)
+               ?15,?16,?17,?18,NULL,1,NULL,?19,?20,?21,?22,?23,?24)
        ON CONFLICT DO NOTHING`,
     )
     .bind(
       id, userId, clientId, local.date, local.localMs, fit.kind,
-      name ?? FIT_KIND_NAMES[fit.kind] ?? 'Workout',
+      name ?? (fit.sport !== 'other' ? sportLabel(fit.sport) : null) ?? FIT_KIND_NAMES[fit.kind] ?? 'Workout',
       moving, intOrNull(fit.elapsed_sec), fit.distance_m, fit.avg_power, fit.normalized_power,
       fit.avg_hr, intOrNull(fit.max_hr), intOrNull(fit.calories), fit.ascent_m,
       JSON.stringify({ source: 'fit' }), ts,
       fit.start_utc_ms, local.zone, npW, hr?.rms_bpm ?? null, hr ? Math.round(hr.seconds) : null,
+      fit.sport,
     )
     .run();
   // Losing a race to the same client id or, through migration 0062's
@@ -9377,9 +9389,9 @@ export async function storeRecordedRun(
             moving_time_sec,elapsed_time_sec,distance_m,average_watts,
             weighted_avg_watts,average_hr,max_hr,training_load,intensity,
             calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,
-            start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec)
+            start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec,sport)
          VALUES (?1,?2,'recording',?3,?4,?5,'run',?6,?7,?8,?9,NULL,NULL,?10,?11,NULL,NULL,
-                 ?12,NULL,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18)
+                 ?12,NULL,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18,'run')
          ON CONFLICT DO NOTHING`,
       )
       .bind(
@@ -9945,6 +9957,8 @@ export interface FeedRideItem {
   ride: {
     source_attribution?: string;
     kind: string;
+    /** What it was (soccer, swim, …; src/sports.ts); null before migration 0064 ran. */
+    sport: string | null;
     name: string | null;
     distance_m: number | null;
     moving_time_sec: number | null;
@@ -10266,7 +10280,7 @@ export async function getGroupFeed(
   //     happen on a freshly-migrated DB).
   const rideRows = await db
     .prepare(
-      `SELECT id, user_id, source, raw, date, kind, name, moving_time_sec, distance_m,
+      `SELECT id, user_id, source, raw, date, kind, sport, name, moving_time_sec, distance_m,
               average_watts, training_load, elevation_gain_m,
               COALESCE(start_date_local_ms, synced_at) AS occurred_at
          FROM external_activities
@@ -10296,6 +10310,7 @@ export async function getGroupFeed(
       user_id: string;
       date: string;
       kind: string;
+      sport: string | null;
       name: string | null;
       moving_time_sec: number | null;
       distance_m: number | null;
@@ -10316,6 +10331,7 @@ export async function getGroupFeed(
     ride: {
       ...(activitySourceAttribution(r) ? { source_attribution: sharedText(activitySourceAttribution(r), 'Garmin')! } : {}),
       kind: sharedText(r.kind)!,
+      sport: r.sport,
       name: sharedText(r.name),
       distance_m: r.distance_m,
       moving_time_sec: r.moving_time_sec,

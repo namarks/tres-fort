@@ -86,12 +86,17 @@ enum PlannedActivity {
         } ?? "other"
     }
 
-    /// Logged when an activity or synced workout on that date carries its name.
+    /// Logged when an activity or synced workout on that date carries its
+    /// name, or, for a name that is a sport ("Soccer"), is that sport: a
+    /// watch calls the match "Evening Soccer" or nothing at all.
     static func isLogged(_ name: String, manual: [ActivityRow], synced: [ExternalActivity]) -> Bool {
         let key = normalized(name)
         guard !key.isEmpty else { return false }
-        return manual.contains { normalized($0.title ?? "") == key }
-            || synced.contains { normalized($0.name ?? "") == key }
+        let sport = Sports.matching(name: name)?.id
+        return manual.contains { normalized($0.title ?? "") == key || (sport != nil && $0.type == sport) }
+            || synced.contains {
+                normalized($0.name ?? "") == key || (sport != nil && $0.sport == sport)
+            }
     }
 
     /// An existing workout already called this, so a second isn't made.

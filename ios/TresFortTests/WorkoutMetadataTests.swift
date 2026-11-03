@@ -75,7 +75,8 @@ final class WorkoutMetadataTests: XCTestCase {
         XCTAssertTrue(PlannedActivity.isActivity(soccer))
         XCTAssertFalse(PlannedActivity.isActivity(lift))
 
-        XCTAssertEqual(PlannedActivity.kind(for: "Soccer"), "other")
+        XCTAssertEqual(PlannedActivity.kind(for: "Soccer"), "soccer")
+        XCTAssertEqual(PlannedActivity.kind(for: "Board games"), "other")
         XCTAssertEqual(PlannedActivity.kind(for: " yoga "), "yoga")
         XCTAssertEqual(PlannedActivity.kind(for: "Hike"), "hike")
 

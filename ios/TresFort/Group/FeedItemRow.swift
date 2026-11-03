@@ -50,7 +50,7 @@ struct FeedItemRow: View {
     private var glyph: String {
         switch item {
         case .session:           return "dumbbell.fill"
-        case .ride(let r):       return ExternalActivity.glyph(forKind: r.ride.kind)
+        case .ride(let r):       return Sports.named(r.ride.sport)?.glyph ?? ExternalActivity.glyph(forKind: r.ride.kind)
         case .activity(let a):   return PendingActivity.glyph(for: a.activity.kind)
         case .unknown:           return "figure.mixed.cardio"
         }
@@ -74,7 +74,7 @@ struct FeedItemRow: View {
             let time = FeedFormat.duration(seconds: s.session.duration_sec)
             return "\(label)\(dayName) · \(sets) · \(time)"
         case .ride(let r):
-            let name = r.ride.name ?? r.ride.kind.capitalized
+            let name = Sports.title(name: r.ride.name, sport: r.ride.sport, kind: r.ride.kind)
             let dist = FeedFormat.distance(meters: r.ride.distance_m) ?? ""
             let time = FeedFormat.duration(seconds: r.ride.moving_time_sec)
             return [name, dist, time].filter { !$0.isEmpty }

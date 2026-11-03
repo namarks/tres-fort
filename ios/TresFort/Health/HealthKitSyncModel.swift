@@ -600,6 +600,7 @@ final class HealthKitSyncModel: ObservableObject {
     /// A friendly default title (the backend keeps it verbatim; nil → it falls
     /// back to the capitalized kind).
     private static func displayName(for t: HKWorkoutActivityType, source: String) -> String {
+        if let sport = Sports.named(Sports.sport(for: t)) { return sport.label }
         switch kind(for: t) {
         case "ride": return "Ride"
         case "run": return "Run"

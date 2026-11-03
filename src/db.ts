@@ -9417,17 +9417,19 @@ export async function storeRecordedRun(
 }
 
 export interface StoredActivityRoute {
-  /** The recording that carries the route. */
+  /** The recording behind the activity. */
   activity_id: string;
   recording_id: string;
-  route: EncodedRoute;
+  /** Null for a run recorded without GPS fixes. */
+  route: EncodedRoute | null;
 }
 
 /**
- * The GPS route behind one of the member's activities: the recording's own,
- * or the recording that dedup hid behind this activity (an intervals.icu
- * copy of the same run). Null when there is none. Only the member's own
- * routes are ever read.
+ * The run recorded in the app behind one of the member's activities, with
+ * its GPS route when it has one: the recording itself, or the recording
+ * that dedup hid behind this activity (an intervals.icu copy of the same
+ * run). Null when there is no recording. Only the member's own recordings
+ * and routes are ever read.
  */
 export async function getActivityRoute(
   db: D1Database,
@@ -9436,20 +9438,23 @@ export async function getActivityRoute(
 ): Promise<StoredActivityRoute | null> {
   const row = await db
     .prepare(
-      `SELECT r.activity_id, r.route, rec.external_id AS recording_id
-         FROM activity_routes r
-         JOIN external_activities rec ON rec.id = r.activity_id AND rec.user_id = r.user_id
-        WHERE r.user_id = ?1 AND rec.source = 'recording'
+      `SELECT rec.id AS activity_id, r.route, rec.external_id AS recording_id
+         FROM external_activities rec
+         LEFT JOIN activity_routes r ON r.activity_id = rec.id AND r.user_id = rec.user_id
+        WHERE rec.user_id = ?1 AND rec.source = 'recording'
           AND (rec.id = ?2 OR rec.duplicate_of = ?2)
           AND (rec.deleted_at IS NULL OR rec.duplicate_of IS NOT NULL)
-        ORDER BY rec.id = ?2 DESC, rec.id
+        ORDER BY rec.id = ?2 DESC, r.route IS NOT NULL DESC, rec.id
         LIMIT 1`,
     )
     .bind(userId, activityId)
-    .first<{ activity_id: string; route: string; recording_id: string }>();
+    .first<{ activity_id: string; route: string | null; recording_id: string }>();
   if (!row) return null;
-  const route = parseStoredRoute(row.route);
-  return route ? { activity_id: row.activity_id, recording_id: row.recording_id, route } : null;
+  return {
+    activity_id: row.activity_id,
+    recording_id: row.recording_id,
+    route: row.route === null ? null : parseStoredRoute(row.route),
+  };
 }
 
 /** A run recorded in the app that the member can still delete: shown, or

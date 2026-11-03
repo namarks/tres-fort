@@ -37,7 +37,8 @@ extension APIClient {
 /// The Apple Health workouts the recorder saved for a recording, found by the
 /// external UUID it tags them with (`RunRecordingHealthTag`).
 struct RecordedRunHealthCopies {
-    var find: (_ recordingID: UUID) async -> [UUID]
+    /// Nil when Health couldn't be searched.
+    var find: (_ recordingID: UUID) async -> [UUID]?
     /// Deletes the workouts with their route and the strap's heart rate.
     /// False when Health kept any of them. A workout whose samples Health
     /// won't delete (sharing turned off since) is kept too, so trying again
@@ -49,11 +50,11 @@ struct RecordedRunHealthCopies {
         return RecordedRunHealthCopies(
             find: { recordingID in
                 guard HKHealthStore.isHealthDataAvailable() else { return [] }
-                return await workouts(taggedFor: recordingID, in: store).map(\.uuid)
+                return await workouts(taggedFor: recordingID, in: store)?.map(\.uuid)
             },
             delete: { ids in
                 guard HKHealthStore.isHealthDataAvailable(), !ids.isEmpty else { return true }
-                let workouts = await workouts(withIDs: ids, in: store)
+                let workouts = await workouts(withIDs: ids, in: store) ?? []
                 var kept = workouts.count < ids.count
                 for workout in workouts {
                     // Samples the app saved with the workout go first, and
@@ -81,11 +82,11 @@ struct RecordedRunHealthCopies {
             })
     }
 
-    private static func workouts(taggedFor recordingID: UUID, in store: HKHealthStore) async -> [HKWorkout] {
+    private static func workouts(taggedFor recordingID: UUID, in store: HKHealthStore) async -> [HKWorkout]? {
         let predicate = HKQuery.predicateForObjects(
             withMetadataKey: HKMetadataKeyExternalUUID,
             allowedValues: [RunRecordingHealthTag.externalID(for: recordingID)])
-        return (await samples(of: HKObjectType.workoutType(), matching: predicate, limit: 10, in: store) ?? [])
+        return await samples(of: HKObjectType.workoutType(), matching: predicate, limit: 10, in: store)?
             .compactMap { $0 as? HKWorkout }
     }
 
@@ -141,7 +142,12 @@ enum RecordedRunDeletion {
         guard let uuid = UUID(uuidString: recordingID) else {
             return .failed("This run can’t be deleted from the app.")
         }
-        let healthIDs = await health.find(uuid)
+        // Without knowing the Health workouts, deleting the run would leave
+        // them behind with nothing in the app to delete them from.
+        guard let healthIDs = await health.find(uuid) else {
+            return .failed("Apple Health couldn’t be checked for this run’s workout, so nothing was deleted. "
+                + "Try again in a moment.")
+        }
         let intervals: String?
         do {
             intervals = try await server(recordingID, healthIDs).intervals.status

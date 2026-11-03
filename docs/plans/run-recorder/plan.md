@@ -201,11 +201,13 @@ coach sees it in the same place as Garmin runs.
       upload and the Apple Health workout the recorder saved.
     - A run recorded in the app shows "Delete run" on its card in the day
       view and on a planned run's record, for the recording itself or the
-      intervals.icu copy it was matched to (known from its route's
-      `recording_id`). It asks first; the answer says where the run was
+      intervals.icu copy it was matched to (known from the route answer's
+      `recording_id`, which `GET /api/activities/:id/route` gives with
+      `route: null` for a run recorded without GPS). It asks first; the answer says where the run was
       deleted from, or why nothing was.
     - The app finds the recorder's Health workouts by their
-      `tresfort:recording:<id>` external UUID and names them in
+      `tresfort:recording:<id>` external UUID (deleting nothing when Health
+      can't be searched) and names them in
       `DELETE /api/activities/recordings/:id?health_workout_id=`. The
       server deletes the intervals.icu upload first (external_id
       `tresfort:recording:<id>`, from the activity cache or a day either
@@ -329,17 +331,20 @@ the scene delegate is left to P3's force-quit check.
   destroying the map. MapKit JS itself can't be reached from the build
   environment, so the real map is first seen on `app.tresfort.app`.
 - P5(d): `test/run_recording.test.ts` covers deleting a recording with its
-  route and the Health copy the app names (never taken again), a named Health
-  workout pushed late or revised after the delete staying deleted, a Health
-  copy the app doesn't name coming back, deleting the intervals.icu upload first
-  from the cache or from intervals.icu, a run never uploaded, and nothing
-  deleted when intervals.icu fails (502) or refuses (409).
-  `RecordedRunDeletionTests` covers the order (server, then Health), no
-  Health change when the server refuses, deleting the Health workout when the
-  server already deleted the run, the messages for each outcome, which
-  activities can be deleted, forgetting the deleted route, and the request
-  naming the Health workouts. The HealthKit calls are compiled only; deleting
-  the Health workout is first seen on a device.
+  route and the Health copy the app names (never taken again), the recording
+  named behind a run recorded without GPS and behind its intervals.icu copy,
+  a named Health workout pushed late or revised after the delete staying
+  deleted, a Health copy the app doesn't name coming back, deleting the
+  intervals.icu upload first from the cache or from intervals.icu, a run
+  never uploaded, and nothing deleted when intervals.icu fails (502) or
+  refuses (409). `RecordedRunDeletionTests` covers the order (server, then
+  Health), no Health change when the server refuses, deleting the Health
+  workout when the server already deleted the run, deleting nothing when
+  Health can't be searched, the messages for each outcome, which activities
+  can be deleted, forgetting the deleted route, and the request naming the
+  Health workouts; `ActivityRouteTests` covers a route answer without a
+  route. The HealthKit calls are compiled only; deleting the Health workout
+  is first seen on a device.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

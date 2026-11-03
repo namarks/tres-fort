@@ -14,6 +14,7 @@ export interface ActivityRouteResponse {
    * activity asked for when that is the intervals.icu copy of the run. */
   activity_id: string;
   recording_id: string;
+  /** Null for a run recorded without GPS fixes. */
   route: unknown;
 }
 

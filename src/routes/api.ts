@@ -1691,10 +1691,11 @@ apiRoutes.post('/activities/recordings', async (c) => {
   }, deduplicated ? 200 : 201);
 });
 
-// GET /api/activities/:id/route — the GPS route behind one of the member's
-// activities: a run recorded in the app, or the intervals.icu copy of one.
-// Encoded as src/activityRoute.ts describes. 404 when there is none. Only
-// the member's own routes are ever served.
+// GET /api/activities/:id/route — the run recorded in the app behind one of
+// the member's activities (the recording, or the intervals.icu copy of one),
+// with its GPS route encoded as src/activityRoute.ts describes, or null for
+// a run recorded without GPS. 404 when there is no recording. Only the
+// member's own routes are ever served.
 apiRoutes.get('/activities/:id/route', async (c) => {
   c.header('Cache-Control', 'no-store');
   const found = await getActivityRoute(c.env.DB, c.get('userId'), c.req.param('id'));

@@ -47,15 +47,17 @@ struct EncodedActivityRoute: Decodable, Equatable {
 }
 
 struct ActivityRouteResponse: Decodable, Equatable {
-    /// The recording that carries the route, which can differ from the
-    /// activity asked for when that is the intervals.icu copy of the run.
+    /// The recording behind the activity, which can differ from the activity
+    /// asked for when that is the intervals.icu copy of the run.
     let activity_id: String
     let recording_id: String
-    let route: EncodedActivityRoute
+    /// Nil for a run recorded without GPS fixes.
+    let route: EncodedActivityRoute?
 }
 
 extension APIClient {
-    /// `GET /api/activities/:id/route`. Nil when the activity has no route.
+    /// `GET /api/activities/:id/route`. Nil when no run recorded in the app
+    /// is behind the activity.
     func activityRoute(activityID: String, jwt: String) async throws -> ActivityRouteResponse? {
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let id = activityID.addingPercentEncoding(withAllowedCharacters: allowed) ?? activityID
@@ -244,7 +246,7 @@ struct WithActivityRoute<Content: View>: View {
                 let route = await ActivityRouteStore.shared.route(for: activity.id, access: access)
                 guard !Task.isCancelled else { return }
                 loaded = LoadedRoute(activityID: activity.id, recordingID: route?.recording_id,
-                                     segments: route?.route.drawableSegments ?? [])
+                                     segments: route?.route?.drawableSegments ?? [])
             }
     }
 }

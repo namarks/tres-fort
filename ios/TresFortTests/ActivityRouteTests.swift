@@ -21,7 +21,7 @@ final class ActivityRouteTests: XCTestCase {
     func testDecodesTheServersRouteIntoSegments() throws {
         let response = try decode()
         XCTAssertEqual(response.recording_id, "r1")
-        let segments = response.route.segments
+        let segments = try XCTUnwrap(response.route).segments
         XCTAssertEqual(segments.map(\.count), [3, 2])
         XCTAssertEqual(segments[0][0].latitude, 45.519, accuracy: 1e-9)
         XCTAssertEqual(segments[0][0].longitude, -122.6793, accuracy: 1e-9)
@@ -30,19 +30,25 @@ final class ActivityRouteTests: XCTestCase {
         XCTAssertEqual(segments[1][0].longitude, -122.679622, accuracy: 1e-9)
     }
 
+    func testARunRecordedWithoutGPSStillNamesItsRecording() throws {
+        let response = try decode(#"{"activity_id":"recording:activity:u:r2","recording_id":"r2","route":null}"#)
+        XCTAssertEqual(response.recording_id, "r2")
+        XCTAssertNil(response.route)
+    }
+
     func testOnlyLinesWithTwoPointsAreDrawnAndMismatchedArraysDrawNothing() throws {
         let lone = try decode(Self.json.replacingOccurrences(of: "\"breaks\":[3]", with: "\"breaks\":[2,4]"))
-        XCTAssertEqual(lone.route.segments.map(\.count), [2, 2, 1])
-        XCTAssertEqual(lone.route.drawableSegments.map(\.count), [2, 2])
+        XCTAssertEqual(lone.route?.segments.map(\.count), [2, 2, 1])
+        XCTAssertEqual(lone.route?.drawableSegments.map(\.count), [2, 2])
         let broken = try decode(Self.json.replacingOccurrences(of: "\"dlon\":[-122679300,-11,-11,-300,-11]",
                                                                with: "\"dlon\":[-122679300]"))
-        XCTAssertTrue(broken.route.segments.isEmpty)
+        XCTAssertEqual(broken.route?.segments.isEmpty, true)
         let future = try decode(Self.json.replacingOccurrences(of: "\"v\":1", with: "\"v\":2"))
-        XCTAssertTrue(future.route.drawableSegments.isEmpty)
+        XCTAssertEqual(future.route?.drawableSegments.isEmpty, true)
     }
 
     func testTheMapFramesEveryPointWithAMargin() throws {
-        let segments = try decode().route.segments
+        let segments = try XCTUnwrap(decode().route).segments
         let region = try XCTUnwrap(ActivityRouteMap.region(for: segments))
         for point in segments.flatMap({ $0 }) {
             XCTAssertLessThanOrEqual(abs(point.latitude - region.center.latitude), region.span.latitudeDelta / 2)
@@ -121,7 +127,7 @@ final class ActivityRouteTests: XCTestCase {
         XCTAssertEqual(RouteRequestProtocol.recorded()?.httpMethod, "GET")
         RouteRequestProtocol.respond(status: 200, body: Self.json)
         let found = try await api.activityRoute(activityID: "recording:activity:u:r1", jwt: "synthetic")
-        XCTAssertEqual(found?.route.segments.count, 2)
+        XCTAssertEqual(found?.route?.segments.count, 2)
         RouteRequestProtocol.respond(status: 500, body: "{}")
         do {
             _ = try await api.activityRoute(activityID: "a", jwt: "synthetic")

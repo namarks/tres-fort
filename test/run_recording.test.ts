@@ -361,6 +361,25 @@ describe('a recorded run among other copies of the same run', () => {
     expect((await route(stranger.jwt, recording)).status).toBe(404);
   });
 
+  it('names the recording behind a run recorded without GPS, so the app can still delete it', async () => {
+    const member = await memberJwt();
+    const id = crypto.randomUUID();
+    const noGps = tcxRun().replace(/<Position>.*?<\/Position>/g, '');
+    expect((await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id, noGps)))).status).toBe(201);
+    const recording = `recording:activity:${member.id}:${id}`;
+    expect(await route(member.jwt, recording)).toEqual({
+      status: 200, body: { activity_id: recording, recording_id: id, route: null },
+    });
+    const intervals = await insertActivity(member.id, 'intervals', 'i991', START_MS - 2_000);
+    await dedupeHealthKitAgainstIntervals(env.DB, member.id);
+    expect(await state(recording)).toMatchObject({ duplicate_of: intervals });
+    expect(await route(member.jwt, intervals)).toEqual({
+      status: 200, body: { activity_id: recording, recording_id: id, route: null },
+    });
+    const stranger = await memberJwt();
+    expect((await route(stranger.jwt, intervals)).status).toBe(404);
+  });
+
   const del = (jwt: string, recordingId: string, healthIds: string[] = []) => {
     const q = healthIds.map((h) => `health_workout_id=${encodeURIComponent(h)}`).join('&');
     return SELF.fetch(`${BASE}/api/activities/recordings/${recordingId}${q ? `?${q}` : ''}`, {

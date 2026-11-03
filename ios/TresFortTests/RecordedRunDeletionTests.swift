@@ -14,7 +14,7 @@ final class RecordedRunDeletionTests: XCTestCase {
         var sentHealthIDs: [UUID]?
     }
 
-    private func health(_ events: Events, found: [UUID], deletes: Bool = true) -> RecordedRunHealthCopies {
+    private func health(_ events: Events, found: [UUID]?, deletes: Bool = true) -> RecordedRunHealthCopies {
         RecordedRunHealthCopies(
             find: { id in
                 events.log.append("find \(id.uuidString.lowercased())")
@@ -97,6 +97,18 @@ final class RecordedRunDeletionTests: XCTestCase {
             recordingID: recordingID, health: health(Events(), found: []),
             server: { _, _ in throw APIError.http(404, "{}") })
         XCTAssertEqual(none, .deleted("This run was already deleted."))
+    }
+
+    func testNothingIsDeletedWhenHealthCantBeSearched() async {
+        let events = Events()
+        let outcome = await RecordedRunDeletion.delete(
+            recordingID: recordingID, health: health(events, found: nil),
+            server: { _, _ in
+                events.log.append("server")
+                return self.response(intervals: "deleted")
+            })
+        XCTAssertEqual(events.log, ["find \(recordingID)"])
+        XCTAssertEqual(outcome, .failed("Apple Health couldn’t be checked for this run’s workout, so nothing was deleted. Try again in a moment."))
     }
 
     func testSaysWhereTheRunWentFromAndWhatKeptACopy() async {

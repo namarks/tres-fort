@@ -165,8 +165,8 @@ coach sees it in the same place as Garmin runs.
       it does over a .fit import, and the recording wins over Apple
       Health's copy. `GET /api/activities/:id/route` serves the route for
       the recording or for the activity it is hidden behind, only to its
-      member. `DELETE /api/activities/recordings/:id` tombstones the run and
-      deletes its route; a copy on intervals.icu stays there.
+      member. `DELETE /api/activities/recordings/:id` deletes the run with
+      every copy the app made (P5(d)).
     - Routes are private: group views and the coach never read them. The
       account export includes them and account deletion removes them. The
       privacy policy says the app records location during a run, writes the
@@ -195,10 +195,40 @@ coach sees it in the same place as Garmin runs.
       `tres-fort-web`). Without a token
       it asks Apple for nothing; then, or when MapKit fails to load or
       refuses the token, it draws the route's shape without a map.
-  - [ ] **(d) Delete a recorded run in the app**
-    - The app offers deleting a recorded run. Deleting brings back the
-      Apple Health copy it hid, as deleting a .fit import does, so the
-      wording has to say so, or deleting should also hide that copy.
+  - [x] **(d) Delete a recorded run in the app**
+    - The owner chose on 2026-11-02 that deleting removes every copy the
+      app made: the run and its route in Tres Fort, its intervals.icu
+      upload and the Apple Health workout the recorder saved.
+    - A run recorded in the app shows "Delete run" on its card in the day
+      view and on a planned run's record, for the recording itself or the
+      intervals.icu copy it was matched to (known from the route answer's
+      `recording_id`, which `GET /api/activities/:id/route` gives with
+      `route: null` for a run recorded without GPS). It asks first; the answer says where the run was
+      deleted from, or why nothing was.
+    - The app finds the recorder's Health workouts by their
+      `tresfort:recording:<id>` external UUID (deleting nothing when Health
+      can't be searched) and names them in
+      `DELETE /api/activities/recordings/:id?health_workout_id=`. The
+      server deletes the intervals.icu upload first (external_id
+      `tresfort:recording:<id>`, from the activity cache or a day either
+      side of the run on intervals.icu). When intervals.icu can't delete it
+      the answer is its error with `deleted: false` (502, 409 for a missing
+      write scope, 422) and nothing changes. Then one batch tombstones the
+      recording, deletes its route, and tombstones the cached intervals.icu
+      copy and the named Health copies of this run (matched to the run, or
+      starting within two minutes of it), so dedup never brings them back.
+      A named workout Apple Health hasn't synced yet gets a tombstone too,
+      and a Health push never revives a workout the member deleted, so a
+      late or revised push doesn't bring the run back. A Health copy the app
+      doesn't name, such as another app's, comes back as the run, the way
+      deleting a .fit import brings one back.
+    - The app deletes the Health workouts, with the route and strap heart
+      rate it saved, only after the server succeeded, or when the server
+      says the run is already deleted (a retry after a lost answer). A
+      workout whose route or heart rate Health won't delete is kept, so
+      trying again finds it. When Health keeps one, the answer says so. A run with no connection or
+      never uploaded answers `intervals.status` `not_connected` or
+      `not_found`.
 
 ## Execution frontier
 
@@ -223,11 +253,11 @@ mirrors P1's session.
 (main 2832d0c), which carries auto-pause, the running layout, planned runs
 and planning them in the app.
 
-**Next (@agent):** Offer deleting a recorded run in the app (P5(d)).
-P5(a) to P5(c) need migration 0063 applied in production before the API
-Worker is deployed, and P5(c) needs the owner's MapKit JS token as
-`tres-fort-web`'s `MAPKIT_TOKEN` when the web app is deployed, each with the
-owner's go-ahead.
+**Next (@owner):** Approve applying migration 0063 in production and
+deploying the API Worker, which P5 needs, and give the MapKit JS token as
+`tres-fort-web`'s `MAPKIT_TOKEN` when the web app is deployed. Deleting a
+recorded run (P5(d)) then needs an app build. P5 is done in the repository
+once these are verified on a device.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -300,6 +330,21 @@ the scene delegate is left to P3's force-quit check.
   a failed script and a refused token fell back to the shape, the latter
   destroying the map. MapKit JS itself can't be reached from the build
   environment, so the real map is first seen on `app.tresfort.app`.
+- P5(d): `test/run_recording.test.ts` covers deleting a recording with its
+  route and the Health copy the app names (never taken again), the recording
+  named behind a run recorded without GPS and behind its intervals.icu copy,
+  a named Health workout pushed late or revised after the delete staying
+  deleted, a Health copy the app doesn't name coming back, deleting the
+  intervals.icu upload first from the cache or from intervals.icu, a run
+  never uploaded, and nothing deleted when intervals.icu fails (502) or
+  refuses (409). `RecordedRunDeletionTests` covers the order (server, then
+  Health), no Health change when the server refuses, deleting the Health
+  workout when the server already deleted the run, deleting nothing when
+  Health can't be searched, the messages for each outcome, which activities
+  can be deleted, forgetting the deleted route, and the request naming the
+  Health workouts; `ActivityRouteTests` covers a route answer without a
+  route. The HealthKit calls are compiled only; deleting the Health workout
+  is first seen on a device.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing
@@ -358,6 +403,7 @@ the scene delegate is left to P3's force-quit check.
 - Recovering the Sep 4 to Oct 27, 2026 Strava runs is an owner task (Strava
   export uploaded to intervals.icu), not part of this plan.
 - `delete_activity` deletes only `tresfort:activity:` activities, so it can't
-  remove a recorded run's intervals.icu copy. P5's delete removes only Tres
-  Fort's copy; whether it should also remove the intervals.icu copy is open.
+  remove a recorded run's intervals.icu copy. Deleting a recorded run in the
+  app (P5(d)) removes that copy too, since the owner chose that it removes
+  every copy the app made.
 - Merging any phase doesn't authorize a Worker deploy or an iOS distribution.

@@ -8928,7 +8928,8 @@ export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnectio
   getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals, refreshActivityLoads,
 });
 export type {
-  EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult, RecordedRunInput, RecordedRunUploadResult,
+  EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult, RecordedRunCopyDeleteResult, RecordedRunInput,
+  RecordedRunUploadResult,
 } from './services/intervalsActivityWrite';
 export { MAX_RECORDING_BYTES, recordingFormat } from './services/intervalsActivityWrite';
 export { refreshActivityLoads } from './services/activityLoad';
@@ -8960,7 +8961,9 @@ export {
   type ThresholdsView,
   type ThresholdSuggestion,
 } from './services/athleteThresholds';
-export const { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun } = createIntervalsActivityWriteService({
+export const {
+  logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun, deleteRecordedRunUpload,
+} = createIntervalsActivityWriteService({
   resolveIntervalsCredential, syncExternalActivities,
 });
 
@@ -9099,7 +9102,10 @@ export async function upsertHealthKitActivity(
          deleted_at=NULL,
          canonical=1,
          duplicate_of=NULL
-       WHERE (external_activities.start_date_utc_ms IS NULL AND excluded.start_date_utc_ms IS NOT NULL) OR
+       -- A workout the member deleted (a tombstone with no duplicate_of,
+       -- left by deleting a recorded run) is never revived by a push.
+       WHERE NOT (external_activities.deleted_at IS NOT NULL AND external_activities.duplicate_of IS NULL) AND (
+         (external_activities.start_date_utc_ms IS NULL AND excluded.start_date_utc_ms IS NOT NULL) OR
          external_activities.kind IS NOT excluded.kind OR
          external_activities.name IS NOT excluded.name OR
          external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
@@ -9112,7 +9118,7 @@ export async function upsertHealthKitActivity(
          external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
          (?23 AND (external_activities.stream_np_w IS NOT excluded.stream_np_w OR
            external_activities.stream_hr_rms IS NOT excluded.stream_hr_rms OR
-           external_activities.stream_hr_sec IS NOT excluded.stream_hr_sec))`,
+           external_activities.stream_hr_sec IS NOT excluded.stream_hr_sec)))`,
     )
     .bind(
       id,
@@ -9411,17 +9417,19 @@ export async function storeRecordedRun(
 }
 
 export interface StoredActivityRoute {
-  /** The recording that carries the route. */
+  /** The recording behind the activity. */
   activity_id: string;
   recording_id: string;
-  route: EncodedRoute;
+  /** Null for a run recorded without GPS fixes. */
+  route: EncodedRoute | null;
 }
 
 /**
- * The GPS route behind one of the member's activities: the recording's own,
- * or the recording that dedup hid behind this activity (an intervals.icu
- * copy of the same run). Null when there is none. Only the member's own
- * routes are ever read.
+ * The run recorded in the app behind one of the member's activities, with
+ * its GPS route when it has one: the recording itself, or the recording
+ * that dedup hid behind this activity (an intervals.icu copy of the same
+ * run). Null when there is no recording. Only the member's own recordings
+ * and routes are ever read.
  */
 export async function getActivityRoute(
   db: D1Database,
@@ -9430,48 +9438,126 @@ export async function getActivityRoute(
 ): Promise<StoredActivityRoute | null> {
   const row = await db
     .prepare(
-      `SELECT r.activity_id, r.route, rec.external_id AS recording_id
-         FROM activity_routes r
-         JOIN external_activities rec ON rec.id = r.activity_id AND rec.user_id = r.user_id
-        WHERE r.user_id = ?1 AND rec.source = 'recording'
+      `SELECT rec.id AS activity_id, r.route, rec.external_id AS recording_id
+         FROM external_activities rec
+         LEFT JOIN activity_routes r ON r.activity_id = rec.id AND r.user_id = rec.user_id
+        WHERE rec.user_id = ?1 AND rec.source = 'recording'
           AND (rec.id = ?2 OR rec.duplicate_of = ?2)
           AND (rec.deleted_at IS NULL OR rec.duplicate_of IS NOT NULL)
-        ORDER BY rec.id = ?2 DESC, rec.id
+        ORDER BY rec.id = ?2 DESC, r.route IS NOT NULL DESC, rec.id
         LIMIT 1`,
     )
     .bind(userId, activityId)
-    .first<{ activity_id: string; route: string; recording_id: string }>();
+    .first<{ activity_id: string; route: string | null; recording_id: string }>();
   if (!row) return null;
-  const route = parseStoredRoute(row.route);
-  return route ? { activity_id: row.activity_id, recording_id: row.recording_id, route } : null;
+  return {
+    activity_id: row.activity_id,
+    recording_id: row.recording_id,
+    route: row.route === null ? null : parseStoredRoute(row.route),
+  };
+}
+
+/** A run recorded in the app that the member can still delete: shown, or
+ * hidden behind its intervals.icu copy. */
+export async function getRecordedRun(
+  db: D1Database,
+  userId: string,
+  recordingId: string,
+): Promise<{ id: string; date: string } | null> {
+  return db
+    .prepare(
+      `SELECT id, date FROM external_activities
+        WHERE id = ?1 AND user_id = ?2 AND source = 'recording'
+          AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
+    )
+    .bind(`recording:activity:${userId}:${recordingId.toLowerCase()}`, userId)
+    .first<{ id: string; date: string }>();
 }
 
 /**
- * Remove a run recorded in the app from Tres Fort, by its recording id: the
- * activity is tombstoned (it reaches clients through /api/state) and its
- * route is deleted outright. A copy already on intervals.icu stays there.
- * Returns false when the member has no such recording.
+ * Remove a run recorded in the app from Tres Fort, by its recording id
+ * (docs/plans/run-recorder P5(d)): the activity is tombstoned (it reaches
+ * clients through /api/state), its route is deleted outright, and the
+ * cached intervals.icu copy is tombstoned (the caller has already deleted
+ * it on intervals.icu). `healthWorkoutIds` names the Apple Health workouts
+ * the recorder saved for this run, which the app deletes from Health: their
+ * synced copies are tombstoned for good, so dedup doesn't bring them back.
+ * Only a Health copy of this run can be named: one dedup hid behind the
+ * recording or its intervals.icu copy, or one starting within the dedup
+ * tolerance of the recording. A named workout Apple Health hasn't synced yet
+ * gets a tombstone now, so its first push stays deleted
+ * (`upsertHealthKitActivity` never revives a member's deletion). Returns
+ * null when the member has no such recording.
  */
-export async function deleteRecordedRun(db: D1Database, userId: string, recordingId: string): Promise<boolean> {
+export async function deleteRecordedRun(
+  db: D1Database,
+  userId: string,
+  recordingId: string,
+  { healthWorkoutIds = [] }: { healthWorkoutIds?: string[] } = {},
+): Promise<{ health_removed: number } | null> {
   const id = `recording:activity:${userId}:${recordingId.toLowerCase()}`;
+  const intervalsCopy = `tresfort:recording:${recordingId.toLowerCase()}`;
   const ts = now();
-  const [updated] = await db.batch([
+  const tombstone = `deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                canonical = 1,
+                duplicate_of = NULL`;
+  const [updated, , health] = await db.batch([
     db
       .prepare(
         `UPDATE external_activities
-            SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
-                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
-                canonical = 1,
-                duplicate_of = NULL
+            SET ${tombstone}
           WHERE id = ?1 AND user_id = ?2 AND source = 'recording'
             AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
       )
       .bind(id, userId, ts),
     db.prepare('DELETE FROM activity_routes WHERE activity_id = ?1 AND user_id = ?2').bind(id, userId),
+    db
+      .prepare(
+        `UPDATE external_activities
+            SET ${tombstone}
+          WHERE user_id = ?2 AND source = 'healthkit'
+            AND lower(external_id) IN (SELECT lower(value) FROM json_each(?4))
+            AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)
+            AND (duplicate_of = ?1
+              OR duplicate_of IN (SELECT i.id FROM external_activities i
+                                   WHERE i.user_id = ?2 AND i.source = 'intervals'
+                                     AND json_extract(i.raw, '$.external_id') = ?5)
+              OR EXISTS (SELECT 1 FROM external_activities rec
+                          WHERE rec.id = ?1 AND rec.user_id = ?2
+                            AND rec.start_date_utc_ms IS NOT NULL
+                            AND external_activities.start_date_utc_ms IS NOT NULL
+                            AND ABS(external_activities.start_date_utc_ms - rec.start_date_utc_ms) <= ?6))`,
+      )
+      .bind(id, userId, ts, JSON.stringify(healthWorkoutIds), intervalsCopy, ACTIVITY_DEDUP_TOLERANCE_MS),
+    db
+      .prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,start_date_local_ms,kind,name,raw,
+            synced_at,deleted_at,canonical,duplicate_of,start_date_utc_ms,source_timezone)
+         SELECT 'healthkit:activity:' || ?2 || ':' || named.value, ?2, 'healthkit', named.value,
+                rec.date, rec.start_date_local_ms, rec.kind, NULL, NULL,
+                ?3, ?3, 1, NULL, rec.start_date_utc_ms, rec.source_timezone
+           FROM json_each(?4) AS named
+           JOIN external_activities rec ON rec.id = ?1 AND rec.user_id = ?2 AND rec.source = 'recording'
+          WHERE NOT EXISTS (SELECT 1 FROM external_activities h
+                             WHERE h.user_id = ?2 AND h.source = 'healthkit'
+                               AND lower(h.external_id) = lower(named.value))
+         ON CONFLICT DO NOTHING`,
+      )
+      .bind(id, userId, ts, JSON.stringify(healthWorkoutIds)),
+    db
+      .prepare(
+        `UPDATE external_activities
+            SET ${tombstone}
+          WHERE user_id = ?2 AND source = 'intervals' AND deleted_at IS NULL
+            AND json_extract(raw, '$.external_id') = ?4`,
+      )
+      .bind(id, userId, ts, intervalsCopy),
   ]);
-  if ((updated!.meta.changes ?? 0) === 0) return false;
+  if ((updated!.meta.changes ?? 0) === 0) return null;
   await dedupeHealthKitAgainstIntervals(db, userId);
-  return true;
+  return { health_removed: health!.meta.changes ?? 0 };
 }
 
 /** Existing cross-source matching tolerance, applied to the shared clock:

@@ -135,6 +135,19 @@ export type IntervalsDeleteResult =
     }
   | EnduranceWriteError;
 
+/** What became of a recorded run's intervals.icu copy when the run was
+ *  deleted. An error means nothing was deleted anywhere. */
+export type RecordedRunCopyDeleteResult =
+  | {
+      ok: true;
+      status: 'deleted';
+      intervals_activity_id: string;
+      already_deleted?: true;
+      refresh: RefreshSummary;
+    }
+  | { ok: true; status: 'not_found' | 'not_connected' }
+  | EnduranceWriteError;
+
 interface IntervalsActivityWriteDependencies {
   resolveIntervalsCredential(db: D1Database, env: Env, userId: string): Promise<
     { apiKey: string | null; accessToken: string | null; athleteId: string } | null
@@ -423,5 +436,55 @@ export function createIntervalsActivityWriteService({
     };
   }
 
-  return { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun };
+  /**
+   * Delete the intervals.icu copy of a run recorded in the app: the activity
+   * whose external_id carries the recording prefix, found in the synced
+   * cache or on the provider a day either side of the run's date. Only that
+   * activity can be deleted here. A provider failure is an error, so the
+   * caller deletes nothing else either.
+   */
+  async function deleteRecordedRunUpload(
+    db: D1Database,
+    env: Env,
+    userId: string,
+    recordingId: string,
+    date: string,
+    deps: WriteServiceDeps = {},
+  ): Promise<RecordedRunCopyDeleteResult> {
+    const cred = await resolveIntervalsCredential(db, env, userId);
+    if (!cred) return { ok: true, status: 'not_connected' };
+    const request = { fetcher: deps.fetcher, accessToken: cred.accessToken };
+    const externalId = `${TRES_FORT_RECORDING_PREFIX}${recordingId}`;
+
+    let target: { id: string; date: string } | null = await db
+      .prepare(
+        `SELECT external_id AS id, date FROM external_activities
+          WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
+            AND json_extract(raw, '$.external_id') = ?2
+          LIMIT 1`,
+      )
+      .bind(userId, externalId)
+      .first<{ id: string; date: string }>();
+    if (target === null) {
+      const listed = await listActivityRefs(
+        cred.apiKey, cred.athleteId, addDays(date, -1), addDays(date, 1), request,
+      );
+      if (!listed.ok) return providerError(listed, 'look up the run');
+      const ref = listed.value.find((r) => r.external_id === externalId);
+      if (!ref) return { ok: true, status: 'not_found' };
+      target = { id: ref.id, date: ref.start_date_local?.slice(0, 10) ?? date };
+    }
+    const deleted = await deleteIntervalsActivity(cred.apiKey, target.id, request);
+    const alreadyGone = !deleted.ok && deleted.reason === 'http' && deleted.status === 404;
+    if (!deleted.ok && !alreadyGone) return providerError(deleted, 'delete the run');
+    return {
+      ok: true,
+      status: 'deleted',
+      intervals_activity_id: target.id,
+      ...(alreadyGone ? { already_deleted: true as const } : {}),
+      refresh: await refresh(db, env, userId, target.date, deps),
+    };
+  }
+
+  return { logEnduranceActivity, deleteIntervalsActivityByExternalId, uploadRecordedRun, deleteRecordedRunUpload };
 }

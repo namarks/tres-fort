@@ -143,16 +143,19 @@ struct PlannedRunRecordView: View {
     let run: ExternalActivity?
     /// Reads the run's route, when it was recorded in the app.
     var routeAccess: ActivityRouteAccess? = nil
+    /// Deletes a run recorded in the app; nil hides "Delete run".
+    var deleteRun: ((_ recordingID: String) async -> Void)? = nil
     @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
     private var unit: RunDistanceUnit { RunDistanceUnit(rawValue: unitRaw) ?? .miles }
 
     var body: some View {
-        WithActivityRoute(activity: run, access: routeAccess) { segments in
-            record(routeSegments: segments)
+        WithActivityRoute(activity: run, access: routeAccess) { segments, recordingID in
+            record(routeSegments: segments,
+                   recordedRunID: run?.recordedRunID(routeRecordingID: recordingID))
         }
     }
 
-    private func record(routeSegments: [[CLLocationCoordinate2D]]) -> some View {
+    private func record(routeSegments: [[CLLocationCoordinate2D]], recordedRunID: String?) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "figure.run")
@@ -192,6 +195,9 @@ struct PlannedRunRecordView: View {
                 }
                 if !routeSegments.isEmpty {
                     ActivityRouteThumbnail(segments: routeSegments)
+                }
+                if let recordedRunID, let deleteRun {
+                    RecordedRunDeleteButton(recordingID: recordedRunID, delete: deleteRun)
                 }
             } else {
                 Text("The run shows here once it syncs from the recorder, Apple Health or intervals.icu.")

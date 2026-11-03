@@ -66,11 +66,17 @@ final class HealthWorkoutStreamsTests: XCTestCase {
         XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: body))
     }
 
-    func testOnlyRunsAndRidesCarryStreams() {
+    func testRunsRidesAndHeartRateSportsCarryStreams() {
         XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "run"))
         XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "ride"))
         XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "swim"))
         XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "strength"))
+        // Sports the Worker scores from heart rate (sport-activities P1).
+        XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "other", sport: "soccer"))
+        XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "hike", sport: "hike"))
+        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "strength", sport: "strength"))
+        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "other", sport: "other"))
+        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "swim", sport: "swim"))
     }
 
     func testDropsReadingsTakenWhileThePauseLasts() {
@@ -99,5 +105,9 @@ final class HealthWorkoutStreamsTests: XCTestCase {
         XCTAssertTrue(push(kind: "ride", streams: nil).missedStreams)
         XCTAssertFalse(push(kind: "ride", streams: [:]).missedStreams)
         XCTAssertFalse(push(kind: "swim", streams: nil).missedStreams)
+        var soccer = push(kind: "other", streams: nil)
+        soccer.sport = "soccer"
+        XCTAssertTrue(soccer.missedStreams)
+        XCTAssertFalse(push(kind: "other", streams: nil).missedStreams)
     }
 }

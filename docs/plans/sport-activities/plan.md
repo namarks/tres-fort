@@ -84,14 +84,22 @@ What the sources can give (to confirm against real rows in each phase):
     recorded that day, whatever the watch called it.
   - `get_recent_activities`, the coach brief, the group feed and the web
     calendar report or show the sport.
-- [ ] **P1 — Heart-rate load for any sport**
-  - The Apple Health import reads heart-rate samples for every sport, and
-    `refreshActivityLoads` scores any sport whose vocabulary entry names a
-    threshold set: on-foot sports (soccer, basketball, tennis, hiking, …)
-    use the run threshold heart rate, cycling sports the ride one. Sparse data
-    still stores nothing, as in endurance-training-load P3.
-  - Members connected before this release have their last 365 days of
-    non-run, non-ride workouts pushed again once, with streams.
+- [x] **P1 — Heart-rate load for any sport**
+  - `HEART_RATE_THRESHOLDS` in `src/sports.ts` (pinned to `Sports.json`,
+    mirrored as `Sports.heartRateScored`) names whose threshold heart rate
+    scores each sport: on-foot and court, field, racquet, snow and combat
+    sports use the run one, rides the ride one. Swims, strength, mind-body,
+    rowing, paddling, golf and other sports get none.
+  - `refreshActivityLoads` (`thresholdSetFor`) gives those sports only the
+    threshold heart rate, never pace or power, so a match's distance or a
+    hike's pace never decides its load. Heart-rate samples win over the
+    average; sparse samples still store nothing, as in
+    endurance-training-load P3. The compare-and-swap also checks `sport`.
+  - The Apple Health import reads heart-rate samples for those sports, and a
+    second one-time pass pushes the last 365 days of them again with
+    samples (`healthSportStreamsBackfillKey`). Heart rate is already an
+    allowed Apple Health read, so no new permission is asked. Existing rows
+    from other sources are rescored on their next sync or threshold change.
 - [ ] **P2 — Effort when there is no data**
   - Delivers endurance-training-load P6 for every sport: a "How hard was it?"
     1 to 10 on any activity without a usable load, and Apple Watch's effort
@@ -136,9 +144,11 @@ What the sources can give (to confirm against real rows in each phase):
 
 ## Next step
 
-**Now (@agent):** P1, heart-rate load for any sport. P0 is in the
-repository; migration `0064`, the Worker deploy and an app build need the
-owner's separate go-ahead. The owner decided on 2026-11-03 that hand-entered
+**Now (@agent):** P2's one-tap "How hard was it?" effort, which needs no
+new Apple Health permission; reading Apple Watch's effort score waits for the
+owner's go-ahead on that permission. P0 and P1 are in the repository;
+migration `0064`, the Worker deploy and an app build need the owner's
+separate go-ahead. The owner decided on 2026-11-03 that hand-entered
 sessions live in Tres Fort with intervals.icu as an optional copy (P3).
 
 ## Notes / open questions

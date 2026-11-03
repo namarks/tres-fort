@@ -259,3 +259,55 @@ export function healthKitTypeOf(raw: string | null): number | null {
     return null;
   }
 }
+
+/**
+ * Whose threshold heart rate scores a sport's heart rate (sport-activities
+ * P1): on-foot sports use the run threshold, cycling the ride one. Only the
+ * heart-rate threshold applies outside runs and rides: a soccer match's pace
+ * or a hike's distance says nothing about effort. Sports not listed (swims,
+ * strength, mind-body, rowing and paddling) get no heart-rate load.
+ */
+export const HEART_RATE_THRESHOLDS: Readonly<Record<string, 'run' | 'ride'>> = {
+  run: 'run',
+  ride: 'ride',
+  walk: 'run',
+  hike: 'run',
+  elliptical: 'run',
+  stairs: 'run',
+  cardio: 'run',
+  hiit: 'run',
+  cross_training: 'run',
+  dance: 'run',
+  boxing: 'run',
+  martial_arts: 'run',
+  climbing: 'run',
+  soccer: 'run',
+  basketball: 'run',
+  volleyball: 'run',
+  american_football: 'run',
+  rugby: 'run',
+  hockey: 'run',
+  lacrosse: 'run',
+  handball: 'run',
+  baseball: 'run',
+  softball: 'run',
+  cricket: 'run',
+  disc_sports: 'run',
+  tennis: 'run',
+  pickleball: 'run',
+  padel: 'run',
+  squash: 'run',
+  racquetball: 'run',
+  badminton: 'run',
+  table_tennis: 'run',
+  skating: 'run',
+  downhill_ski: 'run',
+  cross_country_ski: 'run',
+  snowboard: 'run',
+  jump_rope: 'run',
+};
+
+export function heartRateThresholdFor(sport: string | null | undefined): 'run' | 'ride' | null {
+  return sport && Object.prototype.hasOwnProperty.call(HEART_RATE_THRESHOLDS, sport)
+    ? HEART_RATE_THRESHOLDS[sport]! : null;
+}

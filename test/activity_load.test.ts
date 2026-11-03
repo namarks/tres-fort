@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 import { dedupeHealthKitAgainstIntervals, refreshActivityLoads, syncExternalActivities } from '../src/db';
 import type { Env } from '../src/types';
+import { thresholdSetFor } from '../src/services/activityLoad';
 
 // Effective training load on external activities (migration 0060,
 // docs/plans/endurance-training-load P1).
@@ -362,5 +363,79 @@ describe('Apple Health detail streams', () => {
     }
     const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM external_activities WHERE user_id=?1').bind(u.id).first<{ n: number }>();
     expect(count?.n).toBe(0);
+  });
+});
+
+// Heart-rate load for sports beyond runs and rides
+// (docs/plans/sport-activities P1).
+describe('heart-rate load for any sport', () => {
+  const stream = (value: number, seconds: number, step = 5) => ({
+    t: Array.from({ length: Math.round(seconds / step) }, (_, i) => i * step),
+    v: Array.from({ length: Math.round(seconds / step) }, () => value),
+  });
+  const match = (over: Record<string, unknown> = {}) => ({
+    kind: 'other', name: 'Workout', moving_time_sec: 3600, elapsed_time_sec: 3600,
+    distance_m: 8000, average_hr: 150, raw: JSON.stringify({ hk_activity_type: 41 }), ...over,
+  });
+
+  it('borrows only the threshold heart rate from the run thresholds', () => {
+    const t = (sport: string, metric: string, value: number) => ({
+      id: crypto.randomUUID(), sport, metric, value, effective_date: '2026-01-01', source: 'member', created_at: 1,
+    }) as any;
+    const all = [t('run', 'threshold_hr', 165), t('run', 'threshold_pace_s_per_km', 300), t('ride', 'ftp_w', 250), t('ride', 'threshold_hr', 158)];
+    expect(thresholdSetFor('other', 'soccer', all, '2026-11-02')).toEqual({ threshold_hr: 165 });
+    expect(thresholdSetFor('hike', 'hike', all, '2026-11-02')).toEqual({ threshold_hr: 165 });
+    expect(thresholdSetFor('other', 'swim', all, '2026-11-02')).toEqual({});
+    expect(thresholdSetFor('strength', 'strength', all, '2026-11-02')).toEqual({});
+    // Runs and rides keep their whole set, whatever the sport says.
+    expect(thresholdSetFor('ride', 'ride', all, '2026-11-02')).toEqual({ ftp_w: 250, threshold_hr: 158 });
+    // A sport with only pace thresholds has nothing to borrow.
+    expect(thresholdSetFor('other', 'tennis', [all[1]], '2026-11-02')).toEqual({});
+  });
+
+  it('scores a soccer match from heart rate, never from its pace', async () => {
+    const u = await makeUser('hr-soccer');
+    await setThreshold(u.jwt, 'run', 'threshold_pace_s_per_km', 300);
+    // Pace alone (8 km in an hour) never scores a match.
+    const paced = await pushHealthRun(u.jwt, match({ average_hr: null }));
+    expect(paced).toMatchObject({ sport: 'soccer', effective_load: null, load_method: null });
+
+    // An hour at the run threshold heart rate is 100.
+    await setThreshold(u.jwt, 'run', 'threshold_hr', 150);
+    expect(await row(paced.id)).toMatchObject({ effective_load: null });
+    const averaged = await pushHealthRun(u.jwt, match({ start_date_local_ms: Date.parse('2026-10-24T18:00:00Z') }));
+    expect(averaged).toMatchObject({ effective_load: 100, effective_intensity: 100, load_method: 'heart_rate_average' });
+
+    // Heart-rate samples from the watch win over the average.
+    const sampled = await pushHealthRun(u.jwt, match({
+      start_date_local_ms: Date.parse('2026-10-24T20:00:00Z'), average_hr: 140,
+      streams: { heart_rate: stream(150, 3600) },
+    }));
+    expect(sampled).toMatchObject({ effective_load: 100, load_method: 'heart_rate' });
+  });
+
+  it('rescores other sports when the run threshold heart rate changes', async () => {
+    const u = await makeUser('hr-rescore');
+    const tennis = await pushHealthRun(u.jwt, match({ raw: JSON.stringify({ hk_activity_type: 48 }), distance_m: null }));
+    expect(tennis).toMatchObject({ sport: 'tennis', effective_load: null });
+    const id = await setThreshold(u.jwt, 'run', 'threshold_hr', 150);
+    expect(await row(tennis.id)).toMatchObject({ effective_load: 100, load_method: 'heart_rate_average' });
+    // A ride threshold does not score an on-foot sport.
+    await SELF.fetch(`${BASE}/api/me/thresholds/${id}`, { method: 'DELETE', headers: headers(u.jwt) });
+    await setThreshold(u.jwt, 'ride', 'threshold_hr', 150);
+    expect(await row(tennis.id)).toMatchObject({ effective_load: null, load_method: null });
+  });
+
+  it('leaves swims and strength without a heart-rate load', async () => {
+    const u = await makeUser('hr-none');
+    await setThreshold(u.jwt, 'run', 'threshold_hr', 150);
+    await setThreshold(u.jwt, 'ride', 'threshold_hr', 150);
+    const swim = await pushHealthRun(u.jwt, match({ kind: 'swim', name: 'Swim', distance_m: 2000, raw: JSON.stringify({ hk_activity_type: 46 }) }));
+    const lift = await pushHealthRun(u.jwt, match({
+      kind: 'strength', name: 'Strength', distance_m: null, raw: JSON.stringify({ hk_activity_type: 20 }),
+      start_date_local_ms: Date.parse('2026-10-24T18:00:00Z'),
+    }));
+    expect(swim).toMatchObject({ sport: 'swim', effective_load: null, load_method: null });
+    expect(lift).toMatchObject({ sport: 'strength', effective_load: null, load_method: null });
   });
 });

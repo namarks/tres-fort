@@ -8,27 +8,11 @@ private let accent = BrandPalette.liveAccent
 struct RestActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RestActivityAttributes.self) { ctx in
-            // Lock Screen / banner
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(ctx.state.isTimedSet ? "SET" : "REST") · \(ctx.attributes.exercise.uppercased())")
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
-                    Text(timerInterval: min(Date(), ctx.state.endDate)...ctx.state.endDate, countsDown: true)
-                        .font(.system(size: 40, weight: .heavy, design: .rounded))
-                        .monospacedDigit().foregroundStyle(accent)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(ctx.state.isTimedSet ? "TIMED SET" : "UP NEXT").font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Text(ctx.state.upNext).font(.headline).foregroundStyle(.white)
-                        .lineLimit(1)
-                    if let id = ctx.state.controlID {
-                        timerButtons(id: id, timed: ctx.state.isTimedSet)
-                    }
-                }
+            ActivityFamilyLayout {
+                wristLayout(ctx)
+            } standard: {
+                lockScreenLayout(ctx)
             }
-            .padding(16)
             .activityBackgroundTint(BrandPalette.liveBackground)
             .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { ctx in
@@ -61,7 +45,57 @@ struct RestActivityWidget: Widget {
             }
             .keylineTint(accent)
         }
+        .watchSmartStackFamily()
     }
+
+    /// Lock Screen and banner.
+    private func lockScreenLayout(_ ctx: ActivityViewContext<RestActivityAttributes>) -> some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(ctx.state.isTimedSet ? "SET" : "REST") · \(ctx.attributes.exercise.uppercased())")
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                Text(timerInterval: min(Date(), ctx.state.endDate)...ctx.state.endDate, countsDown: true)
+                    .font(.system(size: 40, weight: .heavy, design: .rounded))
+                    .monospacedDigit().foregroundStyle(accent)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(ctx.state.isTimedSet ? "TIMED SET" : "UP NEXT").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Text(ctx.state.upNext).font(.headline).foregroundStyle(.white)
+                    .lineLimit(1)
+                if let id = ctx.state.controlID {
+                    timerButtons(id: id, timed: ctx.state.isTimedSet)
+                }
+            }
+        }
+        .padding(16)
+    }
+
+    /// Apple Watch Smart Stack: the countdown and the one control that ends it.
+    private func wristLayout(_ ctx: ActivityViewContext<RestActivityAttributes>) -> some View {
+        let timed = ctx.state.isTimedSet
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("\(timed ? "SET" : "REST") · \(ctx.attributes.exercise.uppercased())")
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(timerInterval: min(Date(), ctx.state.endDate)...ctx.state.endDate, countsDown: true)
+                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                .monospacedDigit().foregroundStyle(accent)
+            HStack(spacing: 6) {
+                Text(timed ? "Timed set" : "Next · \(ctx.state.upNext)")
+                    .font(.caption2).foregroundStyle(.white)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if let id = ctx.state.controlID {
+                    Button(timed ? "Stop & log" : "End rest",
+                           intent: WorkoutTimerControlIntent(timerID: id, action: "stop"))
+                        .font(.caption2.bold()).buttonStyle(.bordered).tint(accent)
+                }
+            }
+        }
+    }
+
     private func timerButtons(id: String, timed: Bool) -> some View {
         HStack {
             if !timed {

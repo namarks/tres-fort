@@ -28,6 +28,7 @@ struct DayAgendaView: View {
     @State private var workoutStartTask: Task<Void, Never>?
     @State private var workoutStartRequestID: UUID?
     @State private var workoutStartError: String?
+    @State private var recordedRunDeleteOutcome: RecordedRunDeleteOutcome?
 
     private static let prettyDateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -107,6 +108,12 @@ struct DayAgendaView: View {
         } message: {
             Text("This date becomes a rest day. The saved workout and weekly schedule stay available.")
         }
+        .recordedRunDeleteAlert($recordedRunDeleteOutcome)
+    }
+
+    /// Deletes a run recorded in the app and keeps the outcome for the alert.
+    private func deleteRecordedRun(_ recordingID: String) async {
+        recordedRunDeleteOutcome = await sync.deleteRecordedRun(recordingID: recordingID)
     }
 
     private func canEditDate(today: String) -> Bool {
@@ -470,7 +477,8 @@ struct DayAgendaView: View {
             // A planned run's record is the run itself, against its plan,
             // not a count of sets.
             if let runSlot {
-                PlannedRunRecordView(slot: runSlot, run: run, routeAccess: sync.activityRouteAccess)
+                PlannedRunRecordView(slot: runSlot, run: run, routeAccess: sync.activityRouteAccess,
+                                     deleteRun: deleteRecordedRun)
             }
             if let session = realSession {
                 let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
@@ -644,15 +652,18 @@ struct DayAgendaView: View {
     }
 
     /// A completed activity's title + the intervals.icu basic stats grid,
-    /// and the route map of a run recorded in the app.
+    /// and the route map of a run recorded in the app, which can be deleted
+    /// here.
     private func activityCard(_ a: ExternalActivity) -> some View {
-        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments in
-            activityCardContent(a, routeSegments: segments)
+        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments, recordingID in
+            activityCardContent(a, routeSegments: segments,
+                                recordedRunID: a.recordedRunID(routeRecordingID: recordingID))
         }
     }
 
     private func activityCardContent(_ a: ExternalActivity,
-                                     routeSegments: [[CLLocationCoordinate2D]]) -> some View {
+                                     routeSegments: [[CLLocationCoordinate2D]],
+                                     recordedRunID: String?) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: a.glyph)
@@ -689,6 +700,9 @@ struct DayAgendaView: View {
             }
             if !routeSegments.isEmpty {
                 ActivityRouteThumbnail(segments: routeSegments)
+            }
+            if let recordedRunID {
+                RecordedRunDeleteButton(recordingID: recordedRunID, delete: deleteRecordedRun)
             }
         }
         .padding(16)

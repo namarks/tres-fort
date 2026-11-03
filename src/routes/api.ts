@@ -110,6 +110,8 @@ import {
   storeRecordedRun,
   getActivityRoute,
   deleteRecordedRun,
+  deleteRecordedRunUpload,
+  getRecordedRun,
   logEnduranceActivity,
   getUserTimezone,
   recordingFormat,
@@ -1700,15 +1702,38 @@ apiRoutes.get('/activities/:id/route', async (c) => {
   return c.json(found);
 });
 
-// DELETE /api/activities/recordings/:id — remove a run recorded in the app,
-// by its recording id: the activity is tombstoned and its route deleted. A
-// copy already uploaded to intervals.icu stays there.
+// DELETE /api/activities/recordings/:id — delete a run recorded in the app,
+// by its recording id, with every copy the app made (docs/plans/run-recorder
+// P5(d)). Its intervals.icu upload is deleted first; when intervals.icu
+// can't be reached or refuses, nothing is deleted and the error says so.
+// Then the run is tombstoned, its route deleted, and the Apple Health
+// workouts named by `health_workout_id` (the app deletes those from Health)
+// stay hidden for good.
+const MAX_HEALTH_WORKOUT_IDS = 10;
+
 apiRoutes.delete('/activities/recordings/:id', async (c) => {
   const id = c.req.param('id');
   if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400);
-  const ok = await deleteRecordedRun(c.env.DB, c.get('userId'), id);
-  if (!ok) return c.json({ error: 'not_found' }, 404);
-  return c.json({ ok: true });
+  const healthWorkoutIds = c.req.queries('health_workout_id') ?? [];
+  if (healthWorkoutIds.length > MAX_HEALTH_WORKOUT_IDS || !healthWorkoutIds.every((h) => UUID_RE.test(h))) {
+    return c.json({ error: 'invalid_health_workout_id' }, 400);
+  }
+  const userId = c.get('userId');
+  const recordingId = id.toLowerCase();
+  const run = await getRecordedRun(c.env.DB, userId, recordingId);
+  if (!run) return c.json({ error: 'not_found' }, 404);
+  const copy = await deleteRecordedRunUpload(c.env.DB, c.env, userId, recordingId, run.date);
+  if ('error' in copy) return c.json({ ...copy, deleted: false }, RECORDING_ERROR_STATUS[copy.error]);
+  const removed = await deleteRecordedRun(c.env.DB, userId, recordingId, { healthWorkoutIds });
+  if (!removed) return c.json({ error: 'not_found' }, 404);
+  return c.json({
+    ok: true,
+    recording_id: recordingId,
+    intervals: copy.status === 'deleted'
+      ? { status: 'deleted', activity_id: copy.intervals_activity_id }
+      : { status: copy.status },
+    health_removed: removed.health_removed,
+  });
 });
 
 // POST /api/activities/endurance — a run, ride, swim or walk entered by hand

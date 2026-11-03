@@ -412,6 +412,34 @@ final class SyncModel: ObservableObject {
         return ActivityRouteAccess(accountID: accountID, jwt: jwt)
     }
 
+    /// Deletes a run recorded in the app with every copy the app made: the
+    /// run and its route here, its intervals.icu upload and the Apple Health
+    /// workout the recorder saved (docs/plans/run-recorder P5(d)).
+    func deleteRecordedRun(recordingID: String) async -> RecordedRunDeleteOutcome {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else {
+            return .failed("Sign in again, then try deleting the run.")
+        }
+        let api = APIClient()
+        var unauthorized = false
+        let outcome = await RecordedRunDeletion.delete(
+            recordingID: recordingID, health: .live,
+            server: { id, healthWorkoutIDs in
+                do {
+                    return try await api.deleteRecordedRun(
+                        recordingID: id, healthWorkoutIDs: healthWorkoutIDs, jwt: jwt)
+                } catch {
+                    if (error as? APIError)?.httpStatus == 401 { unauthorized = true }
+                    throw error
+                }
+            })
+        if unauthorized, isCurrentBearer(jwt) { auth.requireReauthentication() }
+        if case .deleted = outcome {
+            ActivityRouteStore.shared.forget(recordingID: recordingID)
+            if canInitiateBoundFeatureAction { await loadAfterMutation() }
+        }
+        return outcome
+    }
+
     private var currentJWT: String? {
         guard let accountID, auth.userID == accountID else { return nil }
         return auth.featureJWT

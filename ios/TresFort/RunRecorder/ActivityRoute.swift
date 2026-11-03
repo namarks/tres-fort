@@ -124,6 +124,16 @@ final class ActivityRouteStore {
         }
         return route
     }
+
+    /// Drops the routes of a recording the member deleted, under every
+    /// activity that showed it, so a card doesn't keep drawing it.
+    func forget(recordingID: String) {
+        let deleted = routes.filter { $0.value.recording_id.caseInsensitiveCompare(recordingID) == .orderedSame }
+        for activityID in deleted.keys {
+            routes[activityID] = nil
+            missing[activityID] = now()
+        }
+    }
 }
 
 /// A route on a map: every segment as its own line, framed to fit.
@@ -211,25 +221,30 @@ extension ExternalActivity {
 
 /// Reads a run's route when its card appears and hands the drawable
 /// segments to `content`: none until the route arrives, and none for an
-/// activity that can't have one.
+/// activity that can't have one. `content` also gets the recording behind
+/// the route, which is how the intervals.icu copy of a run recorded in the
+/// app is known to be one.
 struct WithActivityRoute<Content: View>: View {
     let activity: ExternalActivity?
     let access: ActivityRouteAccess?
-    @ViewBuilder let content: (_ segments: [[CLLocationCoordinate2D]]) -> Content
+    @ViewBuilder let content: (_ segments: [[CLLocationCoordinate2D]], _ recordingID: String?) -> Content
     @State private var loaded: LoadedRoute?
 
     private struct LoadedRoute {
         let activityID: String
+        let recordingID: String?
         let segments: [[CLLocationCoordinate2D]]
     }
 
     var body: some View {
-        content(loaded?.activityID == activity?.id ? loaded?.segments ?? [] : [])
+        let current = loaded?.activityID == activity?.id ? loaded : nil
+        content(current?.segments ?? [], current?.recordingID)
             .task(id: activity?.id) {
                 guard let activity, activity.mayHaveRecordedRoute, let access else { return }
                 let route = await ActivityRouteStore.shared.route(for: activity.id, access: access)
                 guard !Task.isCancelled else { return }
-                loaded = LoadedRoute(activityID: activity.id, segments: route?.route.drawableSegments ?? [])
+                loaded = LoadedRoute(activityID: activity.id, recordingID: route?.recording_id,
+                                     segments: route?.route.drawableSegments ?? [])
             }
     }
 }

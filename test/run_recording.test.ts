@@ -361,30 +361,169 @@ describe('a recorded run among other copies of the same run', () => {
     expect((await route(stranger.jwt, recording)).status).toBe(404);
   });
 
-  it('deletes a recording and its route, and doesn\'t take the same run again', async () => {
+  const del = (jwt: string, recordingId: string, healthIds: string[] = []) => {
+    const q = healthIds.map((h) => `health_workout_id=${encodeURIComponent(h)}`).join('&');
+    return SELF.fetch(`${BASE}/api/activities/recordings/${recordingId}${q ? `?${q}` : ''}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${jwt}` },
+    });
+  };
+
+  it('deletes a recording, its route and the Apple Health copy the app names, and doesn\'t take the run again', async () => {
     const member = await memberJwt();
+    const hk = crypto.randomUUID().toUpperCase();
+    const health = await insertActivity(member.id, 'healthkit', hk, START_MS + 1_000);
+    // Another Health workout, three hours later: not a copy of this run.
+    const laterHk = crypto.randomUUID().toUpperCase();
+    const later = await insertActivity(member.id, 'healthkit', laterHk, START_MS + 3 * 3_600_000);
     const id = crypto.randomUUID();
     expect((await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id)))).status).toBe(201);
     const recording = `recording:activity:${member.id}:${id}`;
-    const del = (recordingId: string, jwt = member.jwt) => SELF.fetch(`${BASE}/api/activities/recordings/${recordingId}`, {
-      method: 'DELETE', headers: { Authorization: `Bearer ${jwt}` },
-    });
+    expect(await state(health)).toMatchObject({ duplicate_of: recording });
 
     const stranger = await memberJwt();
-    expect((await del(id, stranger.jwt)).status).toBe(404);
-    expect((await del('nope')).status).toBe(400);
-    const res = await del(id.toUpperCase());
+    expect((await del(stranger.jwt, id)).status).toBe(404);
+    expect((await del(member.jwt, 'nope')).status).toBe(400);
+    expect((await del(member.jwt, id, ['not-a-uuid'])).status).toBe(400);
+    expect(await state(recording)).toEqual({ deleted_at: null, duplicate_of: null });
+
+    const res = await del(member.jwt, id.toUpperCase(), [hk.toLowerCase(), laterHk]);
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true, recording_id: id, intervals: { status: 'not_connected' }, health_removed: 1,
+    });
     expect((await state(recording))?.deleted_at).not.toBeNull();
     expect((await route(member.jwt, recording)).status).toBe(404);
     const left = await env.DB.prepare('SELECT COUNT(*) AS n FROM activity_routes WHERE activity_id = ?1')
       .bind(recording).first<{ n: number }>();
     expect(left?.n).toBe(0);
-    expect((await del(id)).status).toBe(404);
+    // The Health copy stays gone, even when dedup runs again.
+    await dedupeHealthKitAgainstIntervals(env.DB, member.id);
+    const gone = await state(health);
+    expect(gone?.deleted_at).not.toBeNull();
+    expect(gone?.duplicate_of).toBeNull();
+    expect(await state(later)).toEqual({ deleted_at: null, duplicate_of: null });
+    expect((await del(member.jwt, id)).status).toBe(404);
 
     // A phone that still holds the file can't bring it back.
     const retry = await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id)));
     expect(retry).toMatchObject({ status: 200, body: { deleted: true, intervals: { status: 'skipped' } } });
     expect((await route(member.jwt, recording)).status).toBe(404);
+  });
+
+  it('brings back a Health copy the app doesn\'t name', async () => {
+    const member = await memberJwt();
+    const health = await insertActivity(member.id, 'healthkit', crypto.randomUUID(), START_MS + 1_000);
+    const id = crypto.randomUUID();
+    expect((await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id)))).status).toBe(201);
+    const res = await del(member.jwt, id);
+    expect(await res.json()).toMatchObject({ ok: true, health_removed: 0 });
+    expect(await state(health)).toEqual({ deleted_at: null, duplicate_of: null });
+  });
+
+  describe('with an intervals.icu connection', () => {
+    beforeEach(() => {
+      fetchMock.activate();
+      fetchMock.disableNetConnect();
+    });
+    afterEach(() => {
+      fetchMock.deactivate();
+      fetchMock.enableNetConnect();
+    });
+
+    /** Records and uploads a run as the owner; intervals.icu answers with `intervalsId`. */
+    async function recordUploaded(jwt: string, intervalsId: string) {
+      const id = crypto.randomUUID();
+      const provider = fetchMock.get(ORIGIN);
+      provider.intercept({ method: 'GET', path: lookup }).reply(200, []);
+      provider.intercept({ method: 'POST', path: upload }).reply(201, { id: intervalsId, activities: [{ id: intervalsId }] });
+      provider.intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
+      expect((await post(jwt, recordingForm({ id, date: DATE }, tcxFile(id)))).status).toBe(201);
+      return id;
+    }
+
+    /** The intervals.icu copy as the activity sync caches it. */
+    async function cacheIntervalsCopy(userId: string, intervalsId: string, recordingId: string) {
+      const id = `intervals:activity:${userId}:${intervalsId}`;
+      await env.DB.prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,start_date_local_ms,start_date_utc_ms,kind,name,moving_time_sec,raw,synced_at)
+         VALUES (?1,?2,'intervals',?3,?4,?5,?5,'run','Run',600,?6,?7)`,
+      ).bind(id, userId, intervalsId, DATE, START_MS - 2_000,
+        JSON.stringify({ id: intervalsId, external_id: `tresfort:recording:${recordingId}` }), Date.now()).run();
+      await dedupeHealthKitAgainstIntervals(env.DB, userId);
+      return id;
+    }
+
+    it('deletes the intervals.icu upload first, then the run, its cached copy and the Health copy', async () => {
+      const jwt = await devJwt();
+      const owner = await ownerId();
+      const hk = crypto.randomUUID().toUpperCase();
+      const health = await insertActivity(owner, 'healthkit', hk, START_MS + 1_000);
+      const id = await recordUploaded(jwt, 'i970');
+      const intervals = await cacheIntervalsCopy(owner, 'i970', id);
+      const recording = `recording:activity:${owner}:${id}`;
+      expect(await state(recording)).toMatchObject({ duplicate_of: intervals });
+      expect(await state(health)).toMatchObject({ duplicate_of: intervals });
+      expect((await route(jwt, intervals)).status).toBe(200);
+
+      const provider = fetchMock.get(ORIGIN);
+      provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i970' }).reply(200, {});
+      provider.intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
+      const res = await del(jwt, id, [hk]);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true, recording_id: id, intervals: { status: 'deleted', activity_id: 'i970' }, health_removed: 1,
+      });
+      fetchMock.assertNoPendingInterceptors();
+      await dedupeHealthKitAgainstIntervals(env.DB, owner);
+      for (const row of [recording, intervals, health]) {
+        expect((await state(row))?.deleted_at, row).not.toBeNull();
+      }
+      expect((await state(health))?.duplicate_of).toBeNull();
+      expect((await route(jwt, intervals)).status).toBe(404);
+    });
+
+    it('finds an upload the sync hasn\'t cached yet on intervals.icu, and deletes a run never uploaded', async () => {
+      const jwt = await devJwt();
+      const id = await recordUploaded(jwt, 'i980');
+      const provider = fetchMock.get(ORIGIN);
+      provider.intercept({ method: 'GET', path: lookup }).reply(200, [
+        { id: 'i981', type: 'Run', start_date_local: `${DATE}T09:00:00`, moving_time: 900 },
+        { id: 'i980', type: 'Run', start_date_local: `${DATE}T07:00:00`, moving_time: 600, external_id: `tresfort:recording:${id}` },
+      ]);
+      provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i980' }).reply(200, {});
+      provider.intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
+      expect(await (await del(jwt, id)).json()).toMatchObject({ ok: true, intervals: { status: 'deleted', activity_id: 'i980' } });
+
+      const never = await recordUploaded(jwt, 'i985');
+      provider.intercept({ method: 'GET', path: lookup }).reply(200, []);
+      expect(await (await del(jwt, never)).json()).toMatchObject({ ok: true, intervals: { status: 'not_found' } });
+      fetchMock.assertNoPendingInterceptors();
+    });
+
+    it('deletes nothing when intervals.icu can\'t delete the upload', async () => {
+      const jwt = await devJwt();
+      const owner = await ownerId();
+      const hk = crypto.randomUUID().toUpperCase();
+      const health = await insertActivity(owner, 'healthkit', hk, START_MS + 1_000);
+      const id = await recordUploaded(jwt, 'i990');
+      const intervals = await cacheIntervalsCopy(owner, 'i990', id);
+      const recording = `recording:activity:${owner}:${id}`;
+      const before = await Promise.all([recording, intervals, health].map(state));
+
+      const provider = fetchMock.get(ORIGIN);
+      provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i990' }).reply(503, {});
+      const down = await del(jwt, id, [hk]);
+      expect(down.status).toBe(502);
+      expect(await down.json()).toMatchObject({ error: 'intervals_unavailable', deleted: false });
+      provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i990' }).reply(403, {});
+      const refused = await del(jwt, id, [hk]);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: 'intervals_write_forbidden', deleted: false });
+      fetchMock.assertNoPendingInterceptors();
+
+      expect(await Promise.all([recording, intervals, health].map(state))).toEqual(before);
+      expect((await route(jwt, intervals)).status).toBe(200);
+    });
   });
 });

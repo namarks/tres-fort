@@ -207,6 +207,11 @@ integration or social breadth.
   thresholds screen and load display, P3's Apple Health heart-rate and
   power streams, P4's `.fit` file import and P7's suggestions from
   intervals.icu are in the repository; P6 is next and P5 waits on Garmin.
+- [Capture every sport properly](sport-activities/plan.md) — **planned**;
+  soccer, tennis, climbing, swims and every other sport land as that sport
+  from Apple Health, intervals.icu, `.fit` files or hand entry, with
+  heart-rate or effort load and swim detail (pool, lengths, strokes). Waits
+  on the owner's approval and a decision on where hand entries live.
 
 ### Platform (`platform`)
 

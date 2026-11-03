@@ -145,10 +145,11 @@ intervals.icu (`src/routes/intervalsAuth.ts`), with credentials on the
 
 ## Next step
 
-**Now (@owner):** decide whether anyone using Tres Fort wears a WHOOP and
-which route to take. Recommended: P0 then P1 (Apple Health, no WHOOP
-approval needed), and P2 and P3 only if a member wants recovery and HRV,
-which Apple Health does not carry.
+**Parked (owner, 2026-11-03):** the owner chose to keep this plan planned
+and build nothing until someone using Tres Fort wears a WHOOP. When one
+does, start at P0. The recommended route then is P0 and P1 (Apple Health,
+no WHOOP approval needed), with P2 and P3 only if a member wants recovery
+and HRV, which Apple Health does not carry.
 
 ## Notes / open questions
 

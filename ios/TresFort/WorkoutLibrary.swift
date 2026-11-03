@@ -55,6 +55,15 @@ enum WorkoutLibraryPolicy {
         })
     }
 
+    /// Use the persisted mapping. An unsaved picker draft must not accidentally
+    /// schedule other workouts when the member chooses Unschedule on one card.
+    static func unscheduling(workoutID: String, plan: PlanTree) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: PlanSchedule.weekdayKeys.map { key in
+            let id = plan.schedule?.templateID(forWeekdayKey: key) ?? ""
+            return (key, id == workoutID ? "" : id)
+        })
+    }
+
     static let weekdayNames = ["mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
                                "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"]
 }
@@ -94,15 +103,6 @@ enum PlannedActivity {
 
     private static func normalized(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    /// Use the persisted mapping. An unsaved picker draft must not accidentally
-    /// schedule other workouts when the member chooses Unschedule on one card.
-    static func unscheduling(workoutID: String, plan: PlanTree) -> [String: String] {
-        Dictionary(uniqueKeysWithValues: PlanSchedule.weekdayKeys.map { key in
-            let id = plan.schedule?.templateID(forWeekdayKey: key) ?? ""
-            return (key, id == workoutID ? "" : id)
-        })
     }
 }
 

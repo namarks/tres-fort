@@ -1,6 +1,6 @@
 # Capture every sport properly
 
-Slug: sport-activities · Status: planned · Updated: 2026-11-03 · Theme: connected-training
+Slug: sport-activities · Status: active · Updated: 2026-11-03 · Theme: connected-training
 
 ## Goal
 
@@ -105,8 +105,9 @@ What the sources can give (to confirm against real rows in each phase):
     Activity tab and the group feed treat them like any workout). When
     intervals.icu is connected, runs, rides, swims and walks are also copied
     there under the existing `tresfort:activity:` marker and the copy is
-    hidden as a duplicate. This changes today's intervals.icu-only route for
-    hand-entered endurance and needs the owner's decision.
+    hidden as a duplicate. The owner chose this on 2026-11-03 ("In Tres
+    Fort, copy to intervals"), replacing today's intervals.icu-only route for
+    hand-entered endurance.
   - The coach's `log_activity` takes the same fields, so app and coach stay at
     parity.
 - [ ] **P4 — Swimming detail**
@@ -126,13 +127,13 @@ What the sources can give (to confirm against real rows in each phase):
 | P0 | coordinates_with | plan:activity-integration-integrity | Both change `external_activities` rows; dedup rules stay owned there and keep matching on `kind`. |
 | P2 | coordinates_with | plan:endurance-training-load#P6 | This phase delivers that phase for every sport; it closes there when this merges. |
 | P2 | gated_by | external:owner-new-health-permission | Reading Apple Watch's effort score is a new Apple Health permission. |
-| P3 | gated_by | external:owner-manual-activity-storage-decision | Keeping hand entries in Tres Fort reverses the intervals.icu-only route for hand-entered endurance. |
 | P4 | gated_by | external:owner-new-health-permission | Swim stroke counts are a new Apple Health permission. |
 
 ## Next step
 
-**Now (@owner):** Approve this plan and decide where hand-entered sessions
-live (P3). P0 is the first agent phase once the plan is activated.
+**Now (@agent):** P0, naming every sport across the importers, the app and
+the coach tools. The owner decided on 2026-11-03 that hand-entered sessions
+live in Tres Fort with intervals.icu as an optional copy (P3).
 
 ## Notes / open questions
 

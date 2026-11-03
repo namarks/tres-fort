@@ -1,5 +1,5 @@
 // A recorded run's route on the web (docs/plans/run-recorder P5). Pure: the
-// map itself is drawn by RouteMap.tsx.
+// map itself is drawn by RouteMapView.tsx.
 import { asEncodedRoute, decodeRoute } from '../../src/activityRoute';
 import type { StateResponse } from './api';
 

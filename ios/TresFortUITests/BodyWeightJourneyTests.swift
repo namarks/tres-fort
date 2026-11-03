@@ -39,7 +39,7 @@ final class BodyWeightJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: UITestWait.screen))
         app.buttons["weight.manageAccess"].tap()
         app.switches["health.readWeight"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.staticTexts["View measurements in Activity → Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Done"].tap()
     }
 
@@ -119,7 +119,7 @@ final class BodyWeightJourneyTests: XCTestCase {
 
         reconnect.tap()
 
-        XCTAssertTrue(settings.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(settings.staticTexts["View measurements in Activity → Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
         XCTAssertEqual(app.switches["health.readWeight"].value as? String, "1")
         XCTAssertFalse(settings.staticTexts["weight.error.title"].exists)
         app.buttons["Done"].tap()

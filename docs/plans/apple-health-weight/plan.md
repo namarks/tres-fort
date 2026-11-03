@@ -50,7 +50,7 @@ upload permission.
     schedule count and the Progress order with model tests and journeys.
 - [ ] **P2 — Verify on an authorized device build**
   - After authorized iOS distribution, enable Read weight in Profile →
-    Connections → Apple Health, then open Progress → Weight on an iPhone with readings.
+    Connections → Apple Health, then open Activity → Progress → Weight on an iPhone with readings.
   - Verify Apple's weight permission sheet, a real dated measurement and its
     source, relaunch/foreground refresh, permission revocation and reconnect.
   - After P4 is merged and included in an authorized distribution, verify its
@@ -69,7 +69,7 @@ upload permission.
 
 **Now (@owner):** Complete P2 on an iPhone running TestFlight 1.0 (42) or a
 later build: enable Read weight in Profile → Connections → Apple Health, open
-Progress → Weight, and record the permission sheet, a real dated measurement
+Activity → Progress → Weight (Progress → Weight before the Activity tab), and record the permission sheet, a real dated measurement
 and its source, relaunch/foreground refresh, revocation/reconnect and a
 Withings-sourced reading. P4's recovery is implemented in this branch but has
 not been distributed; its real-device recovery check requires a later authorized

@@ -22,7 +22,7 @@ struct BodyWeightAccessSection: View {
             } else if model.failure != nil {
                 BodyWeightRecoveryView(model: model)
             } else if model.enabled {
-                Text("View measurements in Progress → Weight.").font(.footnote)
+                Text("View measurements in Activity → Progress → Weight.").font(.footnote)
             }
         } header: {
             Text("Weight")

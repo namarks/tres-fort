@@ -1,44 +1,42 @@
 import Charts
 import SwiftUI
 
-/// A small overview that leads with workout consistency, then drills down
-/// into strength, endurance and optional weight.
+/// The Progress side of the Activity tab: a small overview that leads with
+/// workout consistency, then drills down into strength, endurance and
+/// optional weight. The Activity tab owns the navigation stack.
 struct TrainingProgressView: View {
     @ObservedObject var sync: SyncModel
     var weight: BodyWeightModel? = nil
     var onHealthSettings: () -> Void = {}
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if sync.isUsingCachedState { CachedStateBanner() }
-                    if let error = sync.loadError {
-                        Text(error).font(.footnote).foregroundStyle(.orange)
-                        Button("Retry training history") { Task { await sync.load() } }
-                    }
-                    if sync.isLoading && sync.sessions.isEmpty && sync.sets.isEmpty {
-                        ProgressView("Loading training history…")
-                    } else if sync.hasVerifiedPlanState || !sync.sessions.isEmpty || !sync.sets.isEmpty {
-                        ConsistencyCard(sync: sync)
-                        strength
-                    } else if sync.loadError == nil {
-                        Text("Your training history will appear after syncing.")
-                            .foregroundStyle(Theme.muted)
-                    }
-                    EnduranceCard(sync: sync)
-                    if let weight {
-                        WeightProgressCard(model: weight, onHealthSettings: onHealthSettings)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                if sync.isUsingCachedState { CachedStateBanner() }
+                if let error = sync.loadError {
+                    Text(error).font(.footnote).foregroundStyle(.orange)
+                    Button("Retry training history") { Task { await sync.load() } }
                 }
-                .padding(16)
+                if sync.isLoading && sync.sessions.isEmpty && sync.sets.isEmpty {
+                    ProgressView("Loading training history…")
+                } else if sync.hasVerifiedPlanState || !sync.sessions.isEmpty || !sync.sets.isEmpty {
+                    ConsistencyCard(sync: sync)
+                    strength
+                } else if sync.loadError == nil {
+                    Text("Your training history will appear after syncing.")
+                        .foregroundStyle(Theme.muted)
+                }
+                EnduranceCard(sync: sync)
+                if let weight {
+                    WeightProgressCard(model: weight, onHealthSettings: onHealthSettings)
+                }
             }
-            .background(Theme.background)
-            .navigationTitle("Progress")
-            .refreshable {
-                await sync.load()
-                await weight?.refresh()
-            }
+            .padding(16)
+        }
+        .background(Theme.background)
+        .refreshable {
+            await sync.load()
+            await weight?.refresh()
         }
     }
 
@@ -195,7 +193,7 @@ struct WorkoutConsistencyView: View {
                 ConsistencyHeatmap(weeks: summary.weeks, maxCell: 30)
                 WorkoutConsistencyChart(weeks: summary.weeks).frame(height: 180)
             } footer: {
-                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday. A streak counts weeks in a row with at least one completed workout; the current week keeps it alive until Sunday ends. Runs, rides and swims are under Endurance, and everything else you log is in the calendar on Today.")
+                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday. A streak counts weeks in a row with at least one completed workout; the current week keeps it alive until Sunday ends. Runs, rides and swims are under Endurance, and everything you do is listed in Activity → History.")
             }
             Section("By week") {
                 ForEach(summary.weeks.reversed()) { week in

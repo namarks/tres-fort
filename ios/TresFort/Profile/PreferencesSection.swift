@@ -46,7 +46,7 @@ struct PreferencesSection: View {
         } header: {
             Text("Units and sounds")
         } footer: {
-            Text("Weights also sets how body weight reads in Progress. Timer sounds play when rest or a timed set ends.")
+            Text("Weights also sets how body weight reads in Activity → Progress. Timer sounds play when rest or a timed set ends.")
         }
     }
 }

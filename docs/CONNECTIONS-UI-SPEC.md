@@ -119,7 +119,7 @@ keeps separate controls for workouts, weight and workout sharing:
   Reads are opt-in; Très Fort does not write to Apple Health.
 - **Weight:** an independent **Read weight** toggle. Measurements stay on this
   iPhone and are visible only to the member in Très Fort. They appear in
-  **Progress → Weight**. Turning this off clears the app’s weight view without
+  **Activity → Progress → Weight**. Turning this off clears the app’s weight view without
   deleting Health measurements; personal sign-in requirements remain enforced.
 - **Workout sharing:** load authoritative sharing state before presenting the
   toggle. Sharing is off by default; **Show in group feed** controls HealthKit

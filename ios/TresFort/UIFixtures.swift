@@ -309,7 +309,7 @@ private struct UIFixtureTrainingView: View {
             } else if scenario.isHistory {
                 TabView {
                     NavigationStack { HistoryView(sync: sync) }.tabItem { Label("Calendar", systemImage: "calendar") }
-                    TrainingProgressView(sync: sync).tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
+                    ActivityTabView(sync: sync).tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
                 }
             } else {
                 TodayView(sync: sync, auth: auth, stationLink: stationLink)
@@ -421,6 +421,15 @@ private struct UIFixtureServer {
          "credential_generation": intervalsGeneration, "sync_pending": intervalsPending,
          "last_synced_at": intervalsConnected && !intervalsPending ? revision as Any : NSNull()]
     }
+    /// An activity logged by hand, for History on the Activity tab.
+    var loggedActivities: [[String: Any]] {
+        guard scenario == .progress,
+              ProcessInfo.processInfo.environment["TRESFORT_UI_PROGRESS_EMPTY"] != "1" else { return [] }
+        return [["id": "synthetic-soccer", "user_id": syntheticUserID, "date": "2026-09-07", "type": "other",
+                 "title": "Soccer", "duration_minutes": 90, "notes": NSNull(), "logged_at": revision,
+                 "source": "ios", "deleted_at": NSNull(), "updated_at": revision]]
+    }
+
     mutating func importIntervalsActivity() {
         importedActivities = [["id": "synthetic-imported-ride", "source": "intervals", "external_id": "ride-1",
             "date": "2026-09-08", "kind": "ride", "name": "Morning ride", "start_date_local_ms": revision,
@@ -761,7 +770,7 @@ private struct UIFixtureServer {
             }
             response = ["plan": plan as Any? ?? NSNull(), "plan_version": plan?["version"] ?? 0,
                 "sessions": sessions, "sets": sets, "server_time": revision, "plan_groups_version": 1,
-                "activities": [], "external_events": [], "external_activities": importedActivities]
+                "activities": loggedActivities, "external_events": [], "external_activities": importedActivities]
         case ("GET", "/api/plan/history"):
             let version = plan?["version"] as? Int ?? 1
             var items: [[String: Any]] = []

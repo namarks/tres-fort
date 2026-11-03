@@ -6375,6 +6375,12 @@ final class SyncModel: ObservableObject {
         return historyIndex.setsBySession[sid]?.count ?? 0
     }
 
+    /// Live (non-deleted) logged sets for one session, for the Activity
+    /// tab's history, without sorting them.
+    func loggedSetCount(sessionID: String) -> Int {
+        historyIndex.setsBySession[sessionID]?.count ?? 0
+    }
+
     /// True if this calendar date carries a lift (real session OR a
     /// projected lift) — the precondition for any ride conflict.
     func dateHasLift(_ dateString: String) -> Bool {

@@ -12,7 +12,8 @@ final class HistoryJourneyTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Progress"].tap()
+        app.tabBars.buttons["Activity"].tap()
+        app.segmentedControls["activity.side"].buttons["Progress"].tap()
         app.buttons["progress.strength"].tap()
         app.buttons["history.exercise.exercise-0"].tap()
         let chart = app.descendants(matching: .any).matching(identifier: "history.progress.chart")
@@ -69,8 +70,9 @@ final class HistoryJourneyTests: XCTestCase {
             app.swipeUp()
             times["calendar_swipe_wall_ms"] = Date().timeIntervalSince(start) * 1_000
             start = Date()
-            app.tabBars.buttons["Progress"].tap()
-        app.buttons["progress.strength"].tap()
+            app.tabBars.buttons["Activity"].tap()
+            app.segmentedControls["activity.side"].buttons["Progress"].tap()
+            app.buttons["progress.strength"].tap()
             let row = app.buttons.matching(identifier: "history.exercise.exercise-0").firstMatch
             // Only a viewport is built eagerly; scroll to a real history row.
             for _ in 0..<12 where !row.exists || !row.isHittable { app.swipeUp() }

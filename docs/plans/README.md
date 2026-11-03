@@ -233,7 +233,10 @@ without adding provider accounts, server collection or new data stores.
   one finish screen, fewer stacked sheets, a Plan tab, endurance logging
   without AI and one visual system. P0 to P4 are merged (PRs #287 to #291).
   P6 splits the Plan tab into Schedule (when you train) and Workouts (what
-  you do) and replaces the Active/Archived toggle. A TestFlight build and an owner device check remain.
+  you do) and replaces the Active/Archived toggle. P7 lets a tapped weekday
+  change or become an activity. P8 renames Progress to Activity, with a
+  History of past workouts, runs and logged activities beside the Progress
+  cards. A TestFlight build and an owner device check remain.
 - [Progress and Apple Health weight](apple-health-weight/plan.md) — **gated**;
   the private weight view and Progress tab are merged and included in internal
   TestFlight build 42. Owner verification on a real iPhone with Health readings

@@ -73,7 +73,8 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
     }
 
     /// No coach needed: a run typed in on Today goes to intervals.icu with its
-    /// distance and time, then shows under Endurance on Progress.
+    /// distance and time, then shows in Activity: in History and under
+    /// Endurance on Progress.
     func testLogARunWithDistanceAndTimeFromToday() {
         let app = launch("intervals-connect")
         connect(app)
@@ -101,14 +102,33 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: UITestWait.screen), .completed)
 
-        tap(app.tabBars.buttons["Progress"], in: app)
+        // Activity opens on History, which lists the run with its distance
+        // and opens that date's record.
+        tap(app.tabBars.buttons["Activity"], in: app)
+        let run = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH 'activityHistory.entry.activity:' AND label CONTAINS %@", "3.1 mi")).firstMatch
+        XCTAssertTrue(run.waitForExistence(timeout: UITestWait.screen))
+        let ride = app.descendants(matching: .any)["activityHistory.entry.activity:synthetic-imported-ride"]
+        XCTAssertTrue(ride.exists, "The synced ride is listed beside the run")
+        tap(app.buttons["activityHistory.filter.runs"], in: app)
+        XCTAssertTrue(run.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertFalse(ride.exists, "The Runs filter leaves the ride out")
+        let history = XCTAttachment(screenshot: app.screenshot())
+        history.name = "Activity history after logging a run"
+        history.lifetime = .keepAlways
+        add(history)
+        tap(run, in: app)
+        XCTAssertTrue(app.staticTexts["COMPLETED ACTIVITIES"].waitForExistence(timeout: UITestWait.screen))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        tap(app.segmentedControls["activity.side"].buttons["Progress"], in: app)
         let endurance = app.buttons["progress.endurance"]
         XCTAssertTrue(endurance.waitForExistence(timeout: UITestWait.screen))
         // The card reads as one button, so its run row is part of its label.
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "3.1 mi"))
             .firstMatch.waitForExistence(timeout: UITestWait.screen))
         let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "Endurance on Progress after logging a run"
+        attachment.name = "Endurance on Activity → Progress after logging a run"
         attachment.lifetime = .keepAlways
         add(attachment)
     }

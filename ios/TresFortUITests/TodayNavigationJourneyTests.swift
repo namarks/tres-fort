@@ -354,9 +354,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertTrue(app.segmentedControls["plan.side"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.segmentedControls["plan.side"].buttons["Schedule"].isSelected)
         XCTAssertTrue(app.buttons["library.weeklySchedule"].waitForExistence(timeout: UITestWait.screen))
-        XCTAssertEqual(app.buttons["library.weeklySchedule"].label, "Edit weekly schedule")
+        XCTAssertEqual(app.buttons["library.weeklySchedule"].label, "Edit all days")
         XCTAssertTrue(app.buttons["plan.week.thu"].exists)
-        XCTAssertFalse(app.buttons["plan.week.mon"].exists, "A rest day opens nothing")
+        XCTAssertTrue(app.buttons["plan.week.mon"].exists, "A rest day opens too, to put something on it")
+        XCTAssertFalse(app.buttons["plan.changes"].exists, "Plan changes stay off the Plan tab")
         XCTAssertFalse(app.buttons["library.workout.strength-b"].exists)
         XCTAssertFalse(app.buttons["Add workout"].exists)
         capture("plan-tab")
@@ -365,8 +366,13 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.buttons["weeklySchedule.cancel"], in: app)
         XCTAssertTrue(plan.waitForExistence(timeout: UITestWait.screen))
 
-        // A scheduled day opens its workout.
+        // A day opens to change it; its workout is one tap further.
         tap(app.buttons["plan.week.thu"], in: app)
+        XCTAssertTrue(app.navigationBars["Thursday"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.buttons["weekday.choice.strength-b"].isSelected)
+        XCTAssertTrue(app.buttons["weekday.newActivity"].exists)
+        capture("plan-weekday")
+        tap(app.buttons["weekday.viewWorkout"], in: app)
         XCTAssertTrue(app.navigationBars["Strength B"].waitForExistence(timeout: UITestWait.screen))
         tap(app.navigationBars["Strength B"].backButton, in: app)
         XCTAssertTrue(plan.waitForExistence(timeout: UITestWait.screen))

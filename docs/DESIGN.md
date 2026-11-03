@@ -856,7 +856,9 @@ for datasets, budgets and memory tradeoffs.
   Date notes and fatigue stay on their original dates when the assignment moves.
 - **Workouts:** keep reusable workouts with weekday badges or "On demand".
   Open named details before editing prescriptions or using a workout on a date.
-  Plan changes and recent-change review live in this library. Unschedule clears recurring weekdays only; Delete workout retains
+  A workout with no exercises is an activity (a soccer match, a class): Today
+  shows it with a button to log it. Plan history stays on the server for the
+  coach and is not shown in the app. Unschedule clears recurring weekdays only; Delete workout retains
   the existing history-preserving deletion semantics. Calendar exceptions use
   the shared attempt-CAS writer and leave the weekly schedule unchanged.
 - **Profile:** Training overview lives in the Coach section alongside coach setup.

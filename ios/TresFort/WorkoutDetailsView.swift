@@ -39,7 +39,7 @@ struct WorkoutDetailsView: View {
                         .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                     WorkoutExercisePreview(sync: sync, exercises: workout.exercises)
                     if workout.exercises.isEmpty {
-                        Text(workout.isArchived ? "No exercises saved in this archived workout." : "No exercises yet. Edit this workout to add exercises and targets.")
+                        Text(workout.isArchived ? "No exercises saved in this archived workout." : "An activity, with no sets to log. On its day, Today offers to log it. Edit it to add exercises instead.")
                             .foregroundStyle(Theme.muted)
                     }
                     if !workout.isArchived {

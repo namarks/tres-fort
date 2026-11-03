@@ -42,13 +42,20 @@ struct ManualActivitySheet: View {
     @FocusState private var focusedField: Field?
     private enum Field { case time, distance }
 
+    /// `plannedName` starts the form on a planned activity from the week,
+    /// such as Soccer: its type when the app knows one, and its name as the title.
     init(onSave: @escaping (PendingActivity) async -> Void,
          onLogEndurance: ((EnduranceEntry) async throws -> Void)? = nil,
-         now: @escaping () -> Date = Date.init) {
+         now: @escaping () -> Date = Date.init,
+         plannedName: String? = nil) {
         self.onSave = onSave
         self.onLogEndurance = onLogEndurance
         self.now = now
         _date = State(initialValue: now())
+        if let plannedName {
+            _kind = State(initialValue: PlannedActivity.kind(for: plannedName))
+            _title = State(initialValue: plannedName)
+        }
     }
 
     /// A run, ride, swim or walk goes to intervals.icu when it's connected.
@@ -306,6 +313,8 @@ struct LogActivitySheet: View {
     /// The app's clock (fixed in UI fixtures), so an entry dated "today"
     /// lands on the day Today and Progress show.
     var now: () -> Date = Date.init
+    /// A planned activity from the week to start the form on.
+    var plannedName: String? = nil
 
     var body: some View {
         ManualActivitySheet(
@@ -313,7 +322,8 @@ struct LogActivitySheet: View {
             onLogEndurance: groupModel.canLogEndurance
                 ? { try await groupModel.logEndurance($0) }
                 : nil,
-            now: now)
+            now: now,
+            plannedName: plannedName)
         .task {
             if groupModel.intervalsStatus == nil { await groupModel.refreshMe() }
         }

@@ -43,6 +43,59 @@ enum WorkoutLibraryPolicy {
         weekRows(plan: plan).contains { $0.workoutName != nil }
     }
 
+    /// The saved week with one weekday changed, for a change made from a
+    /// single day. Weekdays pointing at a missing or archived workout already
+    /// read as rest, so they are sent as rest instead of being rejected.
+    static func week(_ plan: PlanTree, setting weekdayKey: String, to workoutID: String?) -> [String: String] {
+        let live = Set(plan.availableWorkouts.map(\.id))
+        return Dictionary(uniqueKeysWithValues: PlanSchedule.weekdayKeys.map { key in
+            if key == weekdayKey { return (key, workoutID ?? "") }
+            let id = plan.schedule?.templateID(forWeekdayKey: key) ?? ""
+            return (key, live.contains(id) ? id : "")
+        })
+    }
+
+    static let weekdayNames = ["mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+                               "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"]
+}
+
+/// A saved workout with no exercises is an activity: something you do, like a
+/// soccer match or a yoga class, rather than sets to log. It sits on the week
+/// like any workout, and on the day Today offers to log it.
+enum PlannedActivity {
+    static func isActivity(_ workout: Workout) -> Bool { workout.exercises.isEmpty }
+
+    /// Ideas offered when making one. Any name works.
+    static let suggestions = ["Soccer", "Basketball", "Tennis", "Pickleball", "Climbing", "Yoga", "Pilates", "Hike"]
+
+    /// The log sheet's type for an activity's name: a type the sheet knows
+    /// ("Yoga", "Hike") or Other, with the name as its title.
+    static func kind(for name: String) -> String {
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return PendingActivity.kinds.first {
+            $0 == key || PendingActivity.label(for: $0).lowercased() == key
+        } ?? "other"
+    }
+
+    /// Logged when an activity or synced workout on that date carries its name.
+    static func isLogged(_ name: String, manual: [ActivityRow], synced: [ExternalActivity]) -> Bool {
+        let key = normalized(name)
+        guard !key.isEmpty else { return false }
+        return manual.contains { normalized($0.title ?? "") == key }
+            || synced.contains { normalized($0.name ?? "") == key }
+    }
+
+    /// An existing workout already called this, so a second isn't made.
+    static func existing(named name: String, in plan: PlanTree?) -> Workout? {
+        let key = normalized(name)
+        guard !key.isEmpty else { return nil }
+        return plan?.availableWorkouts.first { normalized($0.name) == key }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
     /// Use the persisted mapping. An unsaved picker draft must not accidentally
     /// schedule other workouts when the member chooses Unschedule on one card.
     static func unscheduling(workoutID: String, plan: PlanTree) -> [String: String] {
@@ -54,51 +107,42 @@ enum WorkoutLibraryPolicy {
 }
 
 /// The repeating week at the top of the Plan tab: what each weekday holds.
-/// A day with a workout opens that workout.
+/// Tapping any day, rest days too, opens that day to change it.
 struct PlanWeekSummary: View {
     @ObservedObject var sync: SyncModel
-    var onOpen: (String) -> Void
-    private static let names = ["mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
-                                "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"]
+    var onChangeDay: (String) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(WorkoutLibraryPolicy.weekRows(plan: sync.plan), id: \.weekdayKey) { row in
-                if let id = row.workoutID {
-                    Button { onOpen(id) } label: { line(row, opens: true) }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): \(row.workoutName ?? "")")
-                        .accessibilityHint("Opens workout details")
-                        .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
-                } else {
-                    line(row, opens: false)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(Self.names[row.weekdayKey] ?? row.weekdayKey): Rest")
-                        .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
-                }
+                Button { onChangeDay(row.weekdayKey) } label: { line(row) }
+                    .buttonStyle(.plain)
+                    .disabled(sync.isRoutineMutationInFlight)
+                    .accessibilityLabel("\(WorkoutLibraryPolicy.weekdayNames[row.weekdayKey] ?? row.weekdayKey): \(row.workoutName ?? "Rest")")
+                    .accessibilityHint("Change this day")
+                    .accessibilityIdentifier("plan.week.\(row.weekdayKey)")
             }
         }
         .padding(.vertical, 6)
     }
 
-    private func line(_ row: WorkoutLibraryPolicy.WeekRow, opens: Bool) -> some View {
-        HStack(spacing: 12) {
+    private func line(_ row: WorkoutLibraryPolicy.WeekRow) -> some View {
+        let isTraining = row.workoutName != nil
+        return HStack(spacing: 12) {
             Text(row.weekdayKey.uppercased())
                 .font(Theme.mono(11, .bold)).foregroundStyle(Theme.muted)
                 .frame(width: 40, alignment: .leading)
             Text(row.workoutName ?? "Rest")
-                .font(Theme.mono(15, opens ? .bold : .medium))
-                .foregroundStyle(opens ? Theme.text : Theme.muted)
+                .font(Theme.mono(15, isTraining ? .bold : .medium))
+                .foregroundStyle(isTraining ? Theme.text : Theme.muted)
                 .lineLimit(1)
             Spacer(minLength: 0)
-            if opens {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
-                    .accessibilityHidden(true)
-            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 16)
-        .frame(minHeight: 36)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
     }
 }

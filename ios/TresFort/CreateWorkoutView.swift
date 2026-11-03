@@ -6,6 +6,8 @@ import SwiftUI
 struct CreateWorkoutView: View {
     @ObservedObject var sync: SyncModel
     var onStart: ((String) -> Void)? = nil
+    /// The new workout's ID once saved, so a weekday can use it.
+    var onCreated: ((String) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var selectedExercises: [ExerciseCatalog] = []
@@ -121,7 +123,9 @@ struct CreateWorkoutView: View {
                         guard let authority else { return }
                         switch await sync.createLibraryWorkout(name: authority.name, exerciseIDs: authority.exerciseIDs,
                             expectedPlanID: authority.planID, expectedVersion: authority.version) {
-                        case let .created(id): createdID = id
+                        case let .created(id):
+                            createdID = id
+                            onCreated?(id)
                         case .needsReview:
                             // A first-attempt conflict proves no creation. A
                             // conflict after a lost reply cannot disprove that

@@ -119,7 +119,7 @@ struct WorkoutDatePickerView: View {
 
     private func prescriptionSummary(_ workout: Workout) -> String {
         let count = workout.exercises.count
-        guard count > 0 else { return "No exercises yet" }
+        guard count > 0 else { return "Activity" }
         let sets = workout.exercises.reduce(0) { $0 + $1.target_sets }
         return "\(count) \(count == 1 ? "exercise" : "exercises") · \(sets) \(sets == 1 ? "set" : "sets")"
     }

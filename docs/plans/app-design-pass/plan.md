@@ -1,6 +1,6 @@
 # App design pass
 
-Slug: app-design-pass · Status: active · Updated: 2026-11-02 · Theme: member-experience
+Slug: app-design-pass · Status: active · Updated: 2026-11-03 · Theme: member-experience
 
 ## Goal
 
@@ -11,6 +11,9 @@ one visual system. The owner asked for the whole ranked list from the
 2026-11-01 design review to be built, plus easier unplanned activities.
 On 2026-11-02 the owner found the Plan tab unclear on landing, above all its
 Active/Archived toggle, which P6 addresses.
+On 2026-11-03 the owner found changing a day of the week unintuitive: tapping
+a day didn't let them change it, and a day couldn't become something that
+isn't a workout yet (soccer every Monday). P7 addresses that.
 
 ## Phases
 
@@ -78,10 +81,34 @@ Active/Archived toggle, which P6 addresses.
   - Unit test for the week rows; UI journeys for both sides and the archive
     screen. Needs the owner's look on a TestFlight build like P5.
 
+- [ ] **P7 — Change a day from Your week**
+  - Every weekday in Your week, rest days too, opens that day: pick Rest or a
+    saved workout and only that weekday changes, carrying the plan version on
+    screen. "Edit all days" keeps the seven-picker editor.
+  - From the same day, New activity names something without sets (Soccer,
+    a class, a hike), saves it as a workout with no exercises and puts it on
+    that weekday. A name that matches an existing workout reuses it. New
+    workout opens the exercise picker and puts the result on that day once
+    its editor closes.
+  - On its day Today shows an activity with "Log <name>", which opens Log
+    activity on that name (its type when the app knows one, else Other), and
+    shows it as logged once an activity with that name is logged that day.
+    The library, calendar and date picker call it an activity.
+  - The owner asked (2026-11-03) to stop showing the plan change log: the
+    Plan changes button and the library's recent-changes card are gone and
+    the history screen with them. History stays on the server, and the coach
+    still reads and restores it over MCP.
+  - No backend change: `POST /api/workouts` already takes a workout without
+    exercises, and `PUT /api/plan/schedule` takes the whole week.
+  - Unit tests for one-day week changes, activity naming, kind and logged
+    checks; a UI journey adds Soccer to Monday from the Plan tab and sets it
+    back to rest. Needs the owner's look on a TestFlight build like P5.
+
 ## Execution frontier
 
 - P5
 - P6
+- P7
 
 ## Dependencies
 
@@ -91,12 +118,12 @@ Active/Archived toggle, which P6 addresses.
 
 ## Next step
 
-**Now (@agent):** Land P6 (Plan tab) with green CI and a clean Codex review.
+**Now (@agent):** Land P7 (change a day from Your week) with green CI and a
+clean Codex review.
 
-**Then (@owner):** The Worker is deployed and TestFlight build 61 (main
-1b273fa, uploaded 2026-11-02) carries P0 to P4. Try them on the iPhone. P6
-reaches the phone with the next TestFlight build, which needs its own
-go-ahead.
+**Then (@owner):** TestFlight build 62 (main 2b9be92) carries P0 to P6. Try
+them on the iPhone. P7 reaches the phone with the next TestFlight build, which
+needs its own go-ahead.
 
 ## Notes / open questions
 

@@ -102,6 +102,47 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         XCTAssertFalse(confirmation.exists, "An unchanged schedule should close directly")
     }
 
+    /// Tapping a day on the Plan tab changes only that day, and an activity
+    /// that isn't a workout yet (soccer every Monday) is made right there.
+    func testTappingADayAddsANewActivityToThatWeekdayAndCanRestAgain() {
+        let app = launch()
+        app.tabBars.buttons["Plan"].tap()
+        let monday = app.buttons["plan.week.mon"]
+        XCTAssertTrue(monday.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(monday.label.contains("Rest"), monday.label)
+        monday.tap()
+        let sheet = app.navigationBars["Monday"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.buttons["weekday.choice.rest"].isSelected)
+        app.buttons["weekday.newActivity"].tap()
+        let idea = app.buttons["newActivity.idea.Soccer"]
+        XCTAssertTrue(idea.waitForExistence(timeout: UITestWait.screen))
+        idea.tap()
+        let save = app.buttons["newActivity.save"]
+        XCTAssertEqual(save.label, "Do it every Monday")
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "plan-new-activity"; screenshot.lifetime = .keepAlways; add(screenshot)
+        save.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: sheet)
+        waitForExpectations(timeout: UITestWait.screen)
+        expectation(for: NSPredicate(format: "label CONTAINS 'Soccer'"), evaluatedWith: monday)
+        waitForExpectations(timeout: UITestWait.screen)
+        XCTAssertTrue(app.buttons["plan.week.thu"].label.contains("Strength B"), "Other days stay as they were")
+
+        // The same day goes back to rest; the activity stays saved for later.
+        monday.tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: UITestWait.screen))
+        let soccer = app.buttons["weekday.choice.created-workout"]
+        XCTAssertTrue(soccer.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(soccer.isSelected)
+        XCTAssertTrue(soccer.label.contains("Activity"), soccer.label)
+        app.buttons["weekday.choice.rest"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: sheet)
+        waitForExpectations(timeout: UITestWait.screen)
+        expectation(for: NSPredicate(format: "label CONTAINS 'Rest'"), evaluatedWith: monday)
+        waitForExpectations(timeout: UITestWait.screen)
+    }
+
     func testFailedSaveRetainsDraftAndAllowsExplicitRetry() {
         assertFailedSaveCanRetry(failure: "request")
     }

@@ -39,7 +39,9 @@ extension APIClient {
 struct RecordedRunHealthCopies {
     var find: (_ recordingID: UUID) async -> [UUID]
     /// Deletes the workouts with their route and the strap's heart rate.
-    /// False when Health kept any of them.
+    /// False when Health kept any of them. A workout whose samples Health
+    /// won't delete (sharing turned off since) is kept too, so trying again
+    /// still finds it by its tag.
     var delete: (_ workoutIDs: [UUID]) async -> Bool
 
     static var live: RecordedRunHealthCopies {
@@ -54,17 +56,24 @@ struct RecordedRunHealthCopies {
                 let workouts = await workouts(withIDs: ids, in: store)
                 var kept = workouts.count < ids.count
                 for workout in workouts {
-                    // Samples the app saved with the workout go first, so
-                    // none is left behind if deleting the workout fails.
+                    // Samples the app saved with the workout go first, and
+                    // the workout only once none is left.
                     let attached = NSCompoundPredicate(andPredicateWithSubpredicates: [
                         HKQuery.predicateForObjects(from: workout),
                         HKQuery.predicateForObjects(from: HKSource.default()),
                     ])
+                    var samplesLeft = false
                     for type in [HKSeriesType.workoutRoute(), HKQuantityType(.heartRate)] as [HKSampleType] {
-                        _ = await deleteObjects(of: type, matching: attached, in: store)
+                        // Nothing saved of this type (or sharing it was
+                        // never allowed): nothing to delete.
+                        if let found = await samples(of: type, matching: attached, limit: 1, in: store),
+                           found.isEmpty { continue }
+                        if !(await deleteObjects(of: type, matching: attached, in: store)) { samplesLeft = true }
                     }
                     let own = HKQuery.predicateForObjects(with: [workout.uuid])
-                    if !(await deleteObjects(of: HKObjectType.workoutType(), matching: own, in: store)) {
+                    if samplesLeft {
+                        kept = true
+                    } else if !(await deleteObjects(of: HKObjectType.workoutType(), matching: own, in: store)) {
                         kept = true
                     }
                 }
@@ -76,18 +85,23 @@ struct RecordedRunHealthCopies {
         let predicate = HKQuery.predicateForObjects(
             withMetadataKey: HKMetadataKeyExternalUUID,
             allowedValues: [RunRecordingHealthTag.externalID(for: recordingID)])
-        return await samples(matching: predicate, in: store)
+        return (await samples(of: HKObjectType.workoutType(), matching: predicate, limit: 10, in: store) ?? [])
+            .compactMap { $0 as? HKWorkout }
     }
 
     private static func workouts(withIDs ids: [UUID], in store: HKHealthStore) async -> [HKWorkout] {
-        await samples(matching: HKQuery.predicateForObjects(with: Set(ids)), in: store)
+        (await samples(of: HKObjectType.workoutType(), matching: HKQuery.predicateForObjects(with: Set(ids)),
+                       limit: 10, in: store) ?? [])
+            .compactMap { $0 as? HKWorkout }
     }
 
-    private static func samples(matching predicate: NSPredicate, in store: HKHealthStore) async -> [HKWorkout] {
+    /// Nil when the query failed.
+    private static func samples(of type: HKSampleType, matching predicate: NSPredicate, limit: Int,
+                                in store: HKHealthStore) async -> [HKSample]? {
         await withCheckedContinuation { continuation in
-            let query = HKSampleQuery(sampleType: HKObjectType.workoutType(), predicate: predicate,
-                                      limit: 10, sortDescriptors: nil) { _, samples, _ in
-                continuation.resume(returning: (samples as? [HKWorkout]) ?? [])
+            let query = HKSampleQuery(sampleType: type, predicate: predicate,
+                                      limit: limit, sortDescriptors: nil) { _, samples, error in
+                continuation.resume(returning: error == nil ? samples ?? [] : nil)
             }
             store.execute(query)
         }

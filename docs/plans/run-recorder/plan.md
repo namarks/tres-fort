@@ -222,8 +222,9 @@ coach sees it in the same place as Garmin runs.
       deleting a .fit import brings one back.
     - The app deletes the Health workouts, with the route and strap heart
       rate it saved, only after the server succeeded, or when the server
-      says the run is already deleted (a retry after a lost answer). When
-      Health keeps one, the answer says so. A run with no connection or
+      says the run is already deleted (a retry after a lost answer). A
+      workout whose route or heart rate Health won't delete is kept, so
+      trying again finds it. When Health keeps one, the answer says so. A run with no connection or
       never uploaded answers `intervals.status` `not_connected` or
       `not_found`.
 

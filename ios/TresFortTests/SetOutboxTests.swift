@@ -4093,6 +4093,35 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "mon"), "day-a")
     }
 
+    func testChangingOneWeekdaySendsTheSavedWeekWithThatDayAndTheShownVersion() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 0)
+        let workouts = [day(with: [exercise()])]
+        let meta = #"{"schedule":{"version":1,"week":{"tue":"day-a","thu":"day-a"}}}"#
+        let routineAPI = SetRoutineEditingAPIStub()
+        var sent: ([String: String], String, Int)?
+        routineAPI.scheduleHandler = { week, planID, version, _ in
+            sent = (week, planID, version)
+            return APIClient.ScheduleWriteResult(ok: true, version: 2,
+                schedule: PlanSchedule(version: 2, week: ["tue": "day-a", "thu": "day-a", "mon": "day-a"]))
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: SetWriteAPIStub(),
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], workouts: workouts, planMeta: meta))
+
+        let accepted = await model.setWeekday("mon", to: "day-a")
+
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(sent?.0, ["mon": "day-a", "tue": "day-a", "wed": "", "thu": "day-a",
+                                 "fri": "", "sat": "", "sun": ""])
+        XCTAssertEqual(sent?.1, "plan-a")
+        XCTAssertEqual(sent?.2, 1)
+        let rejected = await model.setWeekday("someday", to: "day-a")
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(routineAPI.scheduleCalls, 1)
+    }
+
     func testRejectedScheduleWriteReturnsFalseAndKeepsPersistedWeek() async {
         let defaults = defaults()
         let s = session(status: "planned", attempt: 0)

@@ -48,4 +48,49 @@ final class WorkoutMetadataTests: XCTestCase {
         XCTAssertEqual(WorkoutLibraryPolicy.weekRows(plan: nil).count, 7)
         XCTAssertFalse(WorkoutLibraryPolicy.hasScheduledDay(plan: nil))
     }
+
+    func testChangingOneWeekdayKeepsTheOthersAndClearsDeadReferences() {
+        let gym = Workout(id: "gym", name: "Gym", day_label: nil, order_index: 0, exercises: [])
+        let soccer = Workout(id: "soccer", name: "Soccer", day_label: nil, order_index: 1, exercises: [])
+        let retired = Workout(archived_at: 123, id: "retired", name: "Retired", day_label: nil, order_index: 2, exercises: [])
+        let plan = PlanTree(id: "p", name: "Library", version: 4, workouts: [gym, soccer, retired],
+            meta: #"{"schedule":{"version":1,"week":{"mon":"gym","wed":"retired","fri":"gone","sat":"gym"}}}"#)
+
+        let week = WorkoutLibraryPolicy.week(plan, setting: "mon", to: "soccer")
+        XCTAssertEqual(week, ["mon": "soccer", "tue": "", "wed": "", "thu": "",
+                              "fri": "", "sat": "gym", "sun": ""])
+        XCTAssertEqual(WorkoutLibraryPolicy.week(plan, setting: "sat", to: nil)["sat"], "")
+        XCTAssertEqual(WorkoutLibraryPolicy.week(plan, setting: "sat", to: nil)["mon"], "gym")
+    }
+
+    func testAPlannedActivityIsAWorkoutWithoutExercisesLoggedByItsName() {
+        let slot = TemplateExercise(id: "slot", exercise_id: "squat", exercise_name: "Squat",
+            exercise_unit: "lb", order_index: 0, target_sets: 3, target_reps: 5,
+            target_reps_max: nil, target_rpe: nil, rest_seconds: 90,
+            target_weight: nil, cues: nil, exercise_modality: "barbell",
+            exercise_laterality: nil, exercise_load_mode: nil, exercise_demo_slug: nil,
+            target_duration_s: nil, is_warmup: 0)
+        let soccer = Workout(id: "soccer", name: "Soccer", day_label: nil, order_index: 0, exercises: [])
+        let lift = Workout(id: "lift", name: "Lift", day_label: nil, order_index: 1, exercises: [slot])
+        XCTAssertTrue(PlannedActivity.isActivity(soccer))
+        XCTAssertFalse(PlannedActivity.isActivity(lift))
+
+        XCTAssertEqual(PlannedActivity.kind(for: "Soccer"), "other")
+        XCTAssertEqual(PlannedActivity.kind(for: " yoga "), "yoga")
+        XCTAssertEqual(PlannedActivity.kind(for: "Hike"), "hike")
+
+        func row(_ title: String?, deleted: Int? = nil) -> ActivityRow {
+            ActivityRow(id: UUID().uuidString, user_id: "u", date: "2026-11-02", type: "other",
+                        title: title, duration_minutes: 90, notes: nil, logged_at: 1,
+                        source: "ios", deleted_at: deleted)
+        }
+        XCTAssertTrue(PlannedActivity.isLogged("Soccer", manual: [row("soccer ")], synced: []))
+        XCTAssertFalse(PlannedActivity.isLogged("Soccer", manual: [row("Pilates"), row(nil)], synced: []))
+        XCTAssertFalse(PlannedActivity.isLogged("  ", manual: [row("")], synced: []))
+
+        let plan = PlanTree(id: "p", name: "Library", version: 1, workouts: [soccer, lift], meta: nil)
+        XCTAssertEqual(PlannedActivity.existing(named: "SOCCER", in: plan)?.id, "soccer")
+        XCTAssertNil(PlannedActivity.existing(named: "Tennis", in: plan))
+        XCTAssertNil(PlannedActivity.existing(named: "", in: plan))
+    }
 }

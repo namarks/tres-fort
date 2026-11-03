@@ -72,7 +72,7 @@ if [[ "$ui_suite" == smoke ]]; then
     testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine; do
     test_args+=("-only-testing:TresFortUITests/TrainingJourneyTests/$method")
   done
-  test_args+=("-only-testing:TresFortUITests/PlanChangeJourneyTests/testDismissRelaunchRevisitBothActorsAndRestore")
+  test_args+=("-only-testing:TresFortUITests/WeeklyScheduleJourneyTests/testTappingADayAddsANewActivityToThatWeekdayAndCanRestAgain")
 elif [[ -n "$ci_shard" ]]; then
   # Keep full-suite jobs near 30 minutes, including a cold build. The CI
   # limit for full runs is 40 minutes only as headroom for slow runners.

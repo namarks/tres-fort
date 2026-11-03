@@ -188,6 +188,9 @@ struct TodayView: View {
     /// existing tests / previews can construct the view without the new
     /// dependency.
     var onLogActivity: (() -> Void)? = nil
+    /// Logs today's planned activity (a workout with no exercises, such as a
+    /// soccer match), starting the log sheet on its name.
+    var onLogPlannedActivity: ((String) -> Void)? = nil
     /// Opens the run recorder MainTabView hosts. Nil where recording isn't
     /// supported (before iOS 26, iPad, the App Store build).
     var onRecordRun: (() -> Void)? = nil
@@ -683,6 +686,9 @@ struct TodayView: View {
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
                             if let run = soloPlannedRun(workout) {
                                 PlannedRunPrescription(exercise: run)
+                            } else if PlannedActivity.isActivity(workout) {
+                                Text(plannedActivityLogged(workout) ? "Activity · logged" : "Activity")
+                                    .font(.subheadline).foregroundStyle(Theme.muted)
                             } else {
                                 Text("\(workout.exercises.count) \(workout.exercises.count == 1 ? "exercise" : "exercises")")
                                     .font(.subheadline).foregroundStyle(Theme.muted)
@@ -706,6 +712,18 @@ struct TodayView: View {
                                 Button("Start run") { onStartRun(run.plannedRun(in: workout.name)) }
                                     .buttonStyle(WorkoutPrimaryButtonStyle())
                                     .accessibilityIdentifier("today.startRun")
+                            } else if PlannedActivity.isActivity(workout) {
+                                // Nothing to log set by set: log the activity itself.
+                                if plannedActivityLogged(workout) {
+                                    Label("Logged today", systemImage: "checkmark.circle.fill")
+                                        .font(.headline).foregroundStyle(Theme.accent)
+                                        .frame(maxWidth: .infinity, minHeight: 48)
+                                        .accessibilityIdentifier("today.plannedActivityLogged")
+                                } else if let onLogPlannedActivity {
+                                    Button("Log \(workout.name)") { onLogPlannedActivity(workout.name) }
+                                        .buttonStyle(WorkoutPrimaryButtonStyle())
+                                        .accessibilityIdentifier("today.logPlannedActivity")
+                                }
                             } else {
                                 Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
                                     #if DEBUG && targetEnvironment(simulator)
@@ -813,6 +831,14 @@ struct TodayView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(identifier)
+    }
+
+    /// Today's planned activity counts as done once something logged today
+    /// carries its name.
+    private func plannedActivityLogged(_ workout: Workout) -> Bool {
+        PlannedActivity.isLogged(workout.name,
+                                 manual: sync.manualActivities(on: sync.todayString),
+                                 synced: sync.activities(on: sync.todayString))
     }
 
     /// A workout that is one outdoor run and nothing else.

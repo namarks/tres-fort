@@ -551,7 +551,7 @@ struct DayAgendaView: View {
     // planned / projected → template name + targets.
     @ViewBuilder private func templateTargets(_ day: Workout) -> some View {
         if day.exercises.isEmpty {
-            note("This workout has no exercises.")
+            note("An activity, with no sets to log. Log it from Today once it's done.")
         } else {
             WorkoutExercisePreview(sync: sync, exercises: day.exercises)
         }

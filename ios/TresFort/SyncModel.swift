@@ -6017,6 +6017,17 @@ final class SyncModel: ObservableObject {
         return result?.ok == true
     }
 
+    /// Changes one weekday of the repeating week, leaving the others as saved.
+    /// It carries the plan version on screen, so a week changed elsewhere in
+    /// the meantime is a conflict to review rather than overwritten.
+    @discardableResult
+    func setWeekday(_ weekdayKey: String, to workoutID: String?) async -> Bool {
+        guard let plan, PlanSchedule.weekdayKeys.contains(weekdayKey) else { return false }
+        return await saveRecurringSchedule(
+            WorkoutLibraryPolicy.week(plan, setting: weekdayKey, to: workoutID),
+            expectedPlanID: plan.id, expectedVersion: plan.version)
+    }
+
     /// Adds away dates (`id == nil`) or edits one range, at the plan version
     /// the editor opened with. A newer plan, from the coach or another device,
     /// comes back as a conflict, reloads and asks the member to review; the

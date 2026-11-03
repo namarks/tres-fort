@@ -94,7 +94,10 @@ struct WorkoutsView: View {
     @State private var detailTarget: IdentifiedString?
     @State private var editTarget: IdentifiedString?
     @State private var assignmentTarget: Workout?
-    @State private var showHistory = false
+    /// The weekday opened from Your week, and a workout it asked to open
+    /// once it has closed.
+    @State private var weekdayTarget: IdentifiedString?
+    @State private var workoutAfterWeekday: String?
     @State private var showWeeklySchedule = false
     @State private var showCalendar = false
     @State private var showAwayDates = false
@@ -119,11 +122,17 @@ struct WorkoutsView: View {
                 WorkoutDateSheet(sync: sync, workout: workout)
             }
             .sheet(isPresented: $showWeeklySchedule) { WeeklyScheduleView(sync: sync) }
-            .sheet(isPresented: $showHistory) {
-                PlanHistoryView(sync: sync, onCorrect: { showHistory = false })
-            }
-            .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
-                await sync.refreshRecentPlanChanges()
+            .sheet(item: $weekdayTarget, onDismiss: {
+                // Push only after the sheet is gone, onto the tab's own stack.
+                if let id = workoutAfterWeekday {
+                    workoutAfterWeekday = nil
+                    detailTarget = IdentifiedString(id: id)
+                }
+            }) { target in
+                WeekdayPlanSheet(sync: sync, weekdayKey: target.id) { id in
+                    workoutAfterWeekday = id
+                    weekdayTarget = nil
+                }
             }
     }
 
@@ -150,16 +159,6 @@ struct WorkoutsView: View {
         if !isTabRoot {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
-            }
-        }
-        if isTabRoot {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showHistory = true } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                }
-                .disabled(sync.isRoutineMutationInFlight)
-                .accessibilityLabel("Plan changes")
-                .accessibilityIdentifier("plan.changes")
             }
         }
         if (!isTabRoot || planSide == .workouts) && canReorder && visibleWorkouts.count > 1 {
@@ -248,10 +247,9 @@ struct WorkoutsView: View {
             .navigationDestination(isPresented: $showArchivedWorkouts) { ArchivedWorkoutsView(sync: sync) }
     }
 
-    /// The tab opens on a plan with nothing in it: one clear first step.
-    private var needsFirstWorkout: Bool {
-        sync.plan?.availableWorkouts.isEmpty ?? true
-    }
+    /// No plan yet: one clear first step. A plan with nothing in it still
+    /// shows the week, since a day can get a new activity right there.
+    private var needsFirstWorkout: Bool { sync.plan == nil }
 
     private var archivedCount: Int {
         sync.plan?.workouts.filter(\.isArchived).count ?? 0
@@ -302,21 +300,21 @@ struct WorkoutsView: View {
             }
         } else {
             Section {
-                PlanWeekSummary(sync: sync) { detailTarget = IdentifiedString(id: $0) }
+                PlanWeekSummary(sync: sync) { weekdayTarget = IdentifiedString(id: $0) }
                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                Button { showWeeklySchedule = true } label: {
-                    Text(WorkoutLibraryPolicy.hasScheduledDay(plan: sync.plan)
-                         ? "Edit weekly schedule" : "Choose your training days")
+                // Every day opens on its own. This edits all seven at once.
+                if !(sync.plan?.availableWorkouts.isEmpty ?? true) {
+                    Button { showWeeklySchedule = true } label: { Text("Edit all days") }
+                        .buttonStyle(WorkoutPrimaryButtonStyle(quiet: true))
+                        .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .accessibilityIdentifier("library.weeklySchedule")
                 }
-                .buttonStyle(WorkoutPrimaryButtonStyle())
-                .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                .accessibilityIdentifier("library.weeklySchedule")
             } header: {
                 Text("Your week")
             } footer: {
-                Text("Repeats every week. To change a single date, use the calendar.")
+                Text("Tap a day to change it. Repeats every week. To change a single date, use the calendar.")
             }
         }
         Section {
@@ -355,17 +353,6 @@ struct WorkoutsView: View {
         List {
             workoutsSection
             archivedSection
-
-            // The Plan tab keeps plan changes in its toolbar instead.
-            Section("Changes") {
-                RecentPlanChanges(sync: sync) { showHistory = true }
-                Button {
-                    showHistory = true
-                } label: {
-                    Label("Plan changes", systemImage: "clock.arrow.circlepath")
-                }
-                .disabled(sync.isRoutineMutationInFlight)
-            }
 
             if let error = sync.loadError {
                 Section { Text(error).foregroundStyle(Theme.danger) }
@@ -430,9 +417,7 @@ struct WorkoutsView: View {
                                             .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                                             .accessibilityIdentifier("workoutTags-\(day.id)")
                                     }
-                                    Text(day.exercises.isEmpty
-                                         ? "No exercises yet"
-                                         : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
+                                    Text(WeekdayPlanSheet.detail(for: day))
                                         .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -91,6 +91,8 @@ struct MainTabView: View {
 
     @State private var showHealthSettings = false
     @State private var showActivitySheet = false
+    /// The planned activity Today asked to log, so the sheet starts on it.
+    @State private var plannedActivityName: String?
     @State private var showRunRecorder = false
     @State private var selectedTab: Tab = .today
     @State private var isWorkoutFocused = true
@@ -114,7 +116,14 @@ struct MainTabView: View {
             TodayView(sync: sync,
                       auth: auth,
                       stationLink: models.stationLink,
-                      onLogActivity: { showActivitySheet = true },
+                      onLogActivity: {
+                          plannedActivityName = nil
+                          showActivitySheet = true
+                      },
+                      onLogPlannedActivity: { name in
+                          plannedActivityName = name
+                          showActivitySheet = true
+                      },
                       onRecordRun: RunRecorderModel.isSupported ? {
                           models.runs.plannedRun = nil
                           showRunRecorder = true
@@ -257,7 +266,7 @@ struct MainTabView: View {
             // feed; if they have no group yet, the optimistic insert
             // silently no-ops on the visible feed (groupModel.selected ==
             // nil) but the POST still hits the server.
-            LogActivitySheet(groupModel: groupModel, now: models.now)
+            LogActivitySheet(groupModel: groupModel, now: models.now, plannedName: plannedActivityName)
         }
         .fullScreenCover(isPresented: $showRunRecorder) {
             RunRecorderView(model: models.runs) { showRunRecorder = false }

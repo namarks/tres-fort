@@ -197,10 +197,11 @@ private struct UpcomingDayRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 if day.hasWorkout {
                     let isRun = day.workout.map { !$0.exercises.isEmpty && $0.exercises.allSatisfy(\.isOutdoorRun) } ?? false
+                    let isActivity = day.workout.map(PlannedActivity.isActivity) ?? false
                     HStack(spacing: 8) {
-                        Image(systemName: isRun ? "figure.run" : "dumbbell.fill")
+                        Image(systemName: isRun ? "figure.run" : isActivity ? "sportscourt" : "dumbbell.fill")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(isRun ? WorkoutCategory.endurance.color : WorkoutCategory.lift.color)
+                            .foregroundStyle(isRun || isActivity ? WorkoutCategory.endurance.color : WorkoutCategory.lift.color)
                             .frame(width: 16)
                         Text(day.workout?.name ?? "Workout scheduled")
                             .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)

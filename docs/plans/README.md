@@ -207,6 +207,11 @@ integration or social breadth.
   thresholds screen and load display, P3's Apple Health heart-rate and
   power streams, P4's `.fit` file import and P7's suggestions from
   intervals.icu are in the repository; P6 is next and P5 waits on Garmin.
+- [WHOOP data in Tres Fort](whoop/plan.md) — **planned**; WHOOP-tracked
+  workouts arrive once with a load, first through Apple Health and later
+  through a direct WHOOP connection, with daily recovery, HRV and sleep as a
+  separate owner decision. Waits on the owner choosing a route and a member
+  who wears a WHOOP.
 
 ### Platform (`platform`)
 

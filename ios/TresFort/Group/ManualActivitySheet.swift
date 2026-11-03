@@ -53,8 +53,14 @@ struct ManualActivitySheet: View {
         self.now = now
         _date = State(initialValue: now())
         if let plannedName {
-            _kind = State(initialValue: PlannedActivity.kind(for: plannedName))
+            let kind = PlannedActivity.kind(for: plannedName)
+            _kind = State(initialValue: kind)
             _title = State(initialValue: plannedName)
+            // onChange(of: kind) doesn't run for the first value, so a swim
+            // starts on pool units here.
+            if kind == "swim" {
+                _distanceUnit = State(initialValue: EnduranceEntry.DistanceUnit.choices(for: kind)[0])
+            }
         }
     }
 

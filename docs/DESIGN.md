@@ -37,8 +37,10 @@ Both clients hit the same service layer over the same D1 database. The plan
 is a versioned document; sets/notes/sessions are an append-only event log.
 That split is what makes two-writer sync simple (§7).
 
-The iOS Progress tab brings per-exercise strength history, completed native
-workouts per week and optional weight together. Calendar owns workout dates
+The iOS Activity tab lists everything a member has done (native workouts,
+runs and rides from every source, and activities logged by hand) in its
+History, and its Progress side brings per-exercise strength history, completed
+native workouts per week and optional weight together. Calendar owns workout dates
 and the recurring schedule; Connections owns source permissions.
 
 The optional iOS weight view is a local projection of Apple Health body-mass

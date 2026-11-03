@@ -103,7 +103,7 @@ struct MainTabView: View {
     private var groupModel: GroupModel { models.group }
     private var health: HealthKitSyncModel { models.health }
 
-    enum Tab { case today, plan, progress, group, profile }
+    enum Tab { case today, plan, activity, group, profile }
 
     init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init,
          weightReader: (any BodyWeightReading)? = nil) {
@@ -147,10 +147,13 @@ struct MainTabView: View {
                          onShowWorkout: resumeWorkout)
                 .tabItem { Label("Plan", systemImage: "list.bullet.clipboard") }
                 .tag(Tab.plan)
-            TrainingProgressView(sync: sync, weight: health.weight,
-                                 onHealthSettings: { showHealthSettings = true })
-                .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
-                .tag(Tab.progress)
+            // What you've done: past workouts, runs and logged activities,
+            // with the progress trends on its other side.
+            ActivityTabView(sync: sync, weight: health.weight,
+                            onHealthSettings: { showHealthSettings = true },
+                            onShowWorkout: resumeWorkout)
+                .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
+                .tag(Tab.activity)
             Group {
                 if auth.isReviewAccount {
                     ContentUnavailableView("Personal sign-in required", systemImage: "person.2.fill",

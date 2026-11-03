@@ -3,7 +3,8 @@ import XCTest
 final class ProgressJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    private func launch(largeText: Bool = false, empty: Bool = false, shared: Bool = false, profileFailure: Bool = false) -> XCUIApplication {
+    private func launch(largeText: Bool = false, empty: Bool = false, shared: Bool = false, profileFailure: Bool = false,
+                        openProgress: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "progress"
         if shared { app.launchEnvironment["TRESFORT_UI_HEALTH_SHARED"] = "1" }
@@ -12,8 +13,12 @@ final class ProgressJourneyTests: XCTestCase {
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Progress"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Progress"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Activity"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Activity"].tap()
+        guard openProgress else { return app }
+        let progress = app.segmentedControls["activity.side"].buttons["Progress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: UITestWait.screen))
+        progress.tap()
         return app
     }
 
@@ -31,6 +36,48 @@ final class ProgressJourneyTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testActivityHistoryListsWorkoutsAndLoggedActivitiesAndOpensTheirRecord() {
+        let app = launch(openProgress: false)
+        let side = app.segmentedControls["activity.side"]
+        XCTAssertTrue(side.buttons["History"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(side.buttons["History"].isSelected, "Activity opens on History")
+        let soccer = app.descendants(matching: .any)["activityHistory.entry.logged:synthetic-soccer"]
+        let workout = app.descendants(matching: .any)["activityHistory.entry.workout:sample-session-3"]
+        XCTAssertTrue(soccer.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(workout.exists)
+        XCTAssertLessThan(soccer.frame.minY, workout.frame.minY, "Newest first: Sep 7 before Sep 5")
+        capture("Activity history — synthetic training", app: app)
+
+        tap(app.buttons["activityHistory.filter.other"], in: app)
+        XCTAssertTrue(soccer.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertFalse(workout.exists, "The Other filter leaves workouts out")
+        tap(app.buttons["activityHistory.filter.workouts"], in: app)
+        XCTAssertTrue(workout.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertFalse(soccer.exists)
+        tap(app.buttons["activityHistory.filter.all"], in: app)
+        XCTAssertTrue(soccer.waitForExistence(timeout: UITestWait.screen))
+
+        tap(workout, in: app)
+        XCTAssertTrue(app.staticTexts["Exercises"].waitForExistence(timeout: UITestWait.screen),
+                      "A workout opens its record with the logged sets")
+        capture("Activity history — workout record", app: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        tap(soccer, in: app)
+        XCTAssertTrue(app.staticTexts["LOGGED ACTIVITIES"].waitForExistence(timeout: UITestWait.screen))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        tap(side.buttons["Progress"], in: app)
+        XCTAssertTrue(app.buttons["progress.consistency"].waitForExistence(timeout: UITestWait.screen))
+        tap(side.buttons["History"], in: app)
+        XCTAssertTrue(soccer.waitForExistence(timeout: UITestWait.screen))
+    }
+
+    func testEmptyActivityHistorySaysWhatWillAppear() {
+        let app = launch(empty: true, openProgress: false)
+        XCTAssertTrue(app.staticTexts["activityHistory.empty"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertFalse(app.buttons["activityHistory.filter.all"].exists)
     }
 
     func testProgressTabLeadsWithConsistencyThenStrengthAndOptionalHealthWeight() {
@@ -63,7 +110,7 @@ final class ProgressJourneyTests: XCTestCase {
         tap(app.buttons["progress.weightSettings"], in: app)
         XCTAssertTrue(app.navigationBars["Apple Health"].waitForExistence(timeout: UITestWait.screen))
         tap(app.switches["health.readWeight"], in: app)
-        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.staticTexts["View measurements in Activity → Progress → Weight."].waitForExistence(timeout: UITestWait.screen))
         app.buttons["Done"].tap()
         tap(app.buttons["progress.weight"], in: app)
         XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: UITestWait.screen))

@@ -14,6 +14,8 @@ Active/Archived toggle, which P6 addresses.
 On 2026-11-03 the owner found changing a day of the week unintuitive: tapping
 a day didn't let them change it, and a day couldn't become something that
 isn't a workout yet (soccer every Monday). P7 addresses that.
+Later that day the owner asked to rename the Progress tab Activity and make
+it the place to look at past workouts and runs, which P8 addresses.
 
 ## Phases
 
@@ -104,11 +106,32 @@ isn't a workout yet (soccer every Monday). P7 addresses that.
     checks; a UI journey adds Soccer to Monday from the Plan tab and sets it
     back to rest. Needs the owner's look on a TestFlight build like P5.
 
+- [ ] **P8 — An Activity tab for past workouts and runs**
+  - The Progress tab becomes Activity, with a History | Progress switch.
+    History (the default) lists everything the member has done, newest first
+    and by month: workouts finished in the app, runs, rides and swims from the
+    recorder, Apple Health, intervals.icu and .fit files, and activities
+    logged by hand, such as soccer. A finished run workout shows once, as its
+    run. Filter chips (All, Workouts, Runs, Rides, Swims, Walks, Other) list
+    only the kinds the member has done.
+  - Tapping an entry opens that date's record, the same one the calendar
+    opens: the logged sets, a recorded run's route map and its delete, logged
+    activities and their notes.
+  - Progress keeps the consistency, strength, endurance and weight cards
+    unchanged. Copy that pointed to Progress → Weight now says Activity →
+    Progress → Weight, the privacy page included.
+  - No backend change: `/api/state` already carries the full history.
+  - Unit tests for the history rules (order, statuses, the run workout,
+    deleted and trip-hidden rows, filters and months); UI journeys for
+    History, its filters and records, and a run logged on Today appearing in
+    History. Needs the owner's look on a TestFlight build like P5.
+
 ## Execution frontier
 
 - P5
 - P6
 - P7
+- P8
 
 ## Dependencies
 
@@ -118,11 +141,11 @@ isn't a workout yet (soccer every Monday). P7 addresses that.
 
 ## Next step
 
-**Now (@agent):** Land P7 (change a day from Your week) with green CI and a
-clean Codex review.
+**Now (@agent):** Land P8 (the Activity tab) with green CI and a clean Codex
+review.
 
-**Then (@owner):** TestFlight build 62 (main 2b9be92) carries P0 to P6. Try
-them on the iPhone. P7 reaches the phone with the next TestFlight build, which
+**Then (@owner):** TestFlight build 63 (main 21f0f3f) carries P0 to P7. Try
+them on the iPhone. P8 reaches the phone with the next TestFlight build, which
 needs its own go-ahead.
 
 ## Notes / open questions

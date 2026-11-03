@@ -215,7 +215,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         app.buttons["runner.minimize"].tap()
         XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(app.tabBars.firstMatch.isHittable)
-        app.tabBars.buttons["Progress"].tap()
+        app.tabBars.buttons["Activity"].tap()
         let resume = app.buttons["workout.resume"]
         XCTAssertTrue(resume.waitForExistence(timeout: UITestWait.screen))
         XCTAssertTrue(resume.isHittable)
@@ -260,7 +260,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         app.buttons["START SET 1"].tap()
         app.buttons["runner.minimize"].tap()
         XCTAssertTrue(app.buttons["runner.resume"].waitForExistence(timeout: UITestWait.screen))
-        app.tabBars.buttons["Progress"].tap()
+        app.tabBars.buttons["Activity"].tap()
         let resume = app.buttons["workout.resume"]
         XCTAssertTrue(resume.waitForExistence(timeout: UITestWait.screen))
         expectation(for: NSPredicate(format: "label CONTAINS %@", "Review workout"), evaluatedWith: resume)

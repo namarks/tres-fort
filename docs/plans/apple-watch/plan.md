@@ -1,6 +1,6 @@
 # Runs on Apple Watch
 
-Slug: apple-watch · Status: active · Updated: 2026-11-03 · Theme: connected-training
+Slug: apple-watch · Status: paused · Updated: 2026-11-03 · Theme: connected-training
 
 ## Goal
 
@@ -85,10 +85,6 @@ recorded on the iPhone.
     planned and unplanned runs with the Watch app (P2), including a pause,
     a recovered session and a run saved while the iPhone was out of range.
 
-## Execution frontier
-
-- P1
-
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
@@ -96,15 +92,14 @@ recorded on the iPhone.
 | P1 | coordinates_with | plan:planned-runs | Reads the planned-run step format and marks the slot done through planned-runs P7's path. |
 | P2 | coordinates_with | plan:run-recorder | Moves pure recorder logic into `ios/Shared` and saves Watch runs through the recorder's store and upload. |
 | P2 | coordinates_with | plan:app-store-submission | A Watch app ships only in a version after 1.0 and needs the App Store project file and review notes updated. |
-| P3 | gated_by | external:apple-watch-device-verification | Needs a member who runs with an Apple Watch and an authorized TestFlight build. |
+| P1 | gated_by | external:apple-watch-device-verification | The owner paused after P0: P1 onward waits for a member who runs with an Apple Watch to test it (P3) on an authorized TestFlight build. |
 
 ## Next step
 
-**Now (@agent):** Build P1, sending a planned run to Apple's Workout app
-and bringing the finished run back as a recorded run.
-
-**Next (@owner):** Name who will check runs on a real Apple Watch (P3). The
-owner records with an iPhone 13 Pro or a Garmin Forerunner 945.
+**Paused (owner, 2026-11-03):** The owner has no Apple Watch, and no
+member is known to run with one, so P1 and P2 could only be checked on the
+Watch simulator. The owner chose to stop after P0's wrist layouts. Resume
+with P1 when a member who runs with an Apple Watch will test it (P3).
 
 ## Verification evidence
 

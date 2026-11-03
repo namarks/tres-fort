@@ -198,12 +198,12 @@ integration or social breadth.
   step editor, P6's watch-style step layout and P7's finished run (marked
   done, a run-aware record, intervals.icu optional) are in the repository;
   P4 is the owner's real runs.
-- [Runs on Apple Watch](apple-watch/plan.md) — **active**; the rest timer
+- [Runs on Apple Watch](apple-watch/plan.md) — **paused**; the rest timer
   and run stats laid out for the Watch, planned runs sent to Apple's Workout
   app and brought back as recorded runs, then a Tres Fort Watch app that
   records runs with GPS, wrist heart rate and haptic step cues and saves them
-  through the iPhone. P0's wrist layouts are in the repository; P1 is next.
-  Real runs need a member with an Apple Watch.
+  through the iPhone. P0's wrist layouts are in the repository. Paused
+  until a member who runs with an Apple Watch can test P1 onward.
 - [Real training load for endurance workouts](endurance-training-load/plan.md) —
   **active**; members set FTP, threshold heart rate and threshold pace in the
   app, and one Worker load engine gives every run, ride and swim a labeled

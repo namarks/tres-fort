@@ -75,8 +75,28 @@ final class RecordedRunDeletionTests: XCTestCase {
         XCTAssertEqual(signedOut, .failed("Sign in again, then try deleting the run."))
         let offline = await outcome(URLError(.notConnectedToInternet))
         XCTAssertEqual(offline, .failed("The run couldn’t be deleted. Check your connection and try again."))
-        let gone = await outcome(APIError.http(404, #"{"error":"not_found"}"#))
-        XCTAssertEqual(gone, .deleted("This run was already deleted."))
+    }
+
+    func testARunTheServerAlreadyDeletedStillLosesItsHealthWorkout() async {
+        // The first try deleted the run, but its answer was lost.
+        let events = Events()
+        let retry = await RecordedRunDeletion.delete(
+            recordingID: recordingID, health: health(events, found: [healthID]),
+            server: { _, _ in
+                events.log.append("server")
+                throw APIError.http(404, #"{"error":"not_found"}"#)
+            })
+        XCTAssertEqual(events.log, ["find \(recordingID)", "server", "health delete 1"])
+        XCTAssertEqual(retry, .deleted("This run was already deleted. Its Apple Health workout is deleted now too."))
+
+        let kept = await RecordedRunDeletion.delete(
+            recordingID: recordingID, health: health(Events(), found: [healthID], deletes: false),
+            server: { _, _ in throw APIError.http(404, "{}") })
+        XCTAssertEqual(kept, .deleted("This run was already deleted. Apple Health kept its copy; you can delete it in the Health app."))
+        let none = await RecordedRunDeletion.delete(
+            recordingID: recordingID, health: health(Events(), found: []),
+            server: { _, _ in throw APIError.http(404, "{}") })
+        XCTAssertEqual(none, .deleted("This run was already deleted."))
     }
 
     func testSaysWhereTheRunWentFromAndWhatKeptACopy() async {

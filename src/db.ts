@@ -9102,7 +9102,10 @@ export async function upsertHealthKitActivity(
          deleted_at=NULL,
          canonical=1,
          duplicate_of=NULL
-       WHERE (external_activities.start_date_utc_ms IS NULL AND excluded.start_date_utc_ms IS NOT NULL) OR
+       -- A workout the member deleted (a tombstone with no duplicate_of,
+       -- left by deleting a recorded run) is never revived by a push.
+       WHERE NOT (external_activities.deleted_at IS NOT NULL AND external_activities.duplicate_of IS NULL) AND (
+         (external_activities.start_date_utc_ms IS NULL AND excluded.start_date_utc_ms IS NOT NULL) OR
          external_activities.kind IS NOT excluded.kind OR
          external_activities.name IS NOT excluded.name OR
          external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
@@ -9115,7 +9118,7 @@ export async function upsertHealthKitActivity(
          external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
          (?23 AND (external_activities.stream_np_w IS NOT excluded.stream_np_w OR
            external_activities.stream_hr_rms IS NOT excluded.stream_hr_rms OR
-           external_activities.stream_hr_sec IS NOT excluded.stream_hr_sec))`,
+           external_activities.stream_hr_sec IS NOT excluded.stream_hr_sec)))`,
     )
     .bind(
       id,
@@ -9476,8 +9479,10 @@ export async function getRecordedRun(
  * synced copies are tombstoned for good, so dedup doesn't bring them back.
  * Only a Health copy of this run can be named: one dedup hid behind the
  * recording or its intervals.icu copy, or one starting within the dedup
- * tolerance of the recording. Returns null when the member has no such
- * recording.
+ * tolerance of the recording. A named workout Apple Health hasn't synced yet
+ * gets a tombstone now, so its first push stays deleted
+ * (`upsertHealthKitActivity` never revives a member's deletion). Returns
+ * null when the member has no such recording.
  */
 export async function deleteRecordedRun(
   db: D1Database,
@@ -9520,6 +9525,22 @@ export async function deleteRecordedRun(
                             AND ABS(external_activities.start_date_utc_ms - rec.start_date_utc_ms) <= ?6))`,
       )
       .bind(id, userId, ts, JSON.stringify(healthWorkoutIds), intervalsCopy, ACTIVITY_DEDUP_TOLERANCE_MS),
+    db
+      .prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,start_date_local_ms,kind,name,raw,
+            synced_at,deleted_at,canonical,duplicate_of,start_date_utc_ms,source_timezone)
+         SELECT 'healthkit:activity:' || ?2 || ':' || named.value, ?2, 'healthkit', named.value,
+                rec.date, rec.start_date_local_ms, rec.kind, NULL, NULL,
+                ?3, ?3, 1, NULL, rec.start_date_utc_ms, rec.source_timezone
+           FROM json_each(?4) AS named
+           JOIN external_activities rec ON rec.id = ?1 AND rec.user_id = ?2 AND rec.source = 'recording'
+          WHERE NOT EXISTS (SELECT 1 FROM external_activities h
+                             WHERE h.user_id = ?2 AND h.source = 'healthkit'
+                               AND lower(h.external_id) = lower(named.value))
+         ON CONFLICT DO NOTHING`,
+      )
+      .bind(id, userId, ts, JSON.stringify(healthWorkoutIds)),
     db
       .prepare(
         `UPDATE external_activities

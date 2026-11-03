@@ -215,12 +215,17 @@ coach sees it in the same place as Garmin runs.
       recording, deletes its route, and tombstones the cached intervals.icu
       copy and the named Health copies of this run (matched to the run, or
       starting within two minutes of it), so dedup never brings them back.
-      A Health copy the app doesn't name, such as another app's, comes back
-      as the run, the way deleting a .fit import brings one back.
+      A named workout Apple Health hasn't synced yet gets a tombstone too,
+      and a Health push never revives a workout the member deleted, so a
+      late or revised push doesn't bring the run back. A Health copy the app
+      doesn't name, such as another app's, comes back as the run, the way
+      deleting a .fit import brings one back.
     - The app deletes the Health workouts, with the route and strap heart
-      rate it saved, only after the server succeeded. When Health keeps
-      one, the answer says so. A run with no connection or never uploaded
-      answers `intervals.status` `not_connected` or `not_found`.
+      rate it saved, only after the server succeeded, or when the server
+      says the run is already deleted (a retry after a lost answer). When
+      Health keeps one, the answer says so. A run with no connection or
+      never uploaded answers `intervals.status` `not_connected` or
+      `not_found`.
 
 ## Execution frontier
 
@@ -323,12 +328,14 @@ the scene delegate is left to P3's force-quit check.
   destroying the map. MapKit JS itself can't be reached from the build
   environment, so the real map is first seen on `app.tresfort.app`.
 - P5(d): `test/run_recording.test.ts` covers deleting a recording with its
-  route and the Health copy the app names (never taken again), a Health copy
-  the app doesn't name coming back, deleting the intervals.icu upload first
+  route and the Health copy the app names (never taken again), a named Health
+  workout pushed late or revised after the delete staying deleted, a Health
+  copy the app doesn't name coming back, deleting the intervals.icu upload first
   from the cache or from intervals.icu, a run never uploaded, and nothing
   deleted when intervals.icu fails (502) or refuses (409).
   `RecordedRunDeletionTests` covers the order (server, then Health), no
-  Health change when the server refuses, the messages for each outcome, which
+  Health change when the server refuses, deleting the Health workout when the
+  server already deleted the run, the messages for each outcome, which
   activities can be deleted, forgetting the deleted route, and the request
   naming the Health workouts. The HealthKit calls are compiled only; deleting
   the Health workout is first seen on a device.

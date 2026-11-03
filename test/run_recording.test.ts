@@ -410,6 +410,40 @@ describe('a recorded run among other copies of the same run', () => {
     expect((await route(member.jwt, recording)).status).toBe(404);
   });
 
+  it('keeps a named Health workout deleted when Apple Health pushes it after the run was deleted', async () => {
+    const member = await memberJwt();
+    const push = (healthId: string, movingSec: number) => SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${member.jwt}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: healthId, date: DATE, start_date_local_ms: START_MS + 1_000, kind: 'run', name: 'Outdoor Run',
+        moving_time_sec: movingSec, elapsed_time_sec: movingSec, distance_m: 2000,
+      }),
+    });
+    // One Health copy synced before the delete, one Apple Health hadn't pushed yet.
+    const synced = crypto.randomUUID().toUpperCase();
+    expect((await push(synced, 600)).status).toBeLessThan(300);
+    const unsynced = crypto.randomUUID().toUpperCase();
+    const id = crypto.randomUUID();
+    expect((await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id)))).status).toBe(201);
+    const res = await del(member.jwt, id, [synced, unsynced]);
+    expect(await res.json()).toMatchObject({ ok: true, health_removed: 1 });
+
+    // The late first push, and a revision of the synced copy, both stay deleted.
+    expect((await push(unsynced, 600)).status).toBeLessThan(300);
+    expect((await push(synced, 640)).status).toBeLessThan(300);
+    for (const healthId of [synced, unsynced]) {
+      const row = await state(`healthkit:activity:${member.id}:${healthId}`);
+      expect(row?.deleted_at).not.toBeNull();
+      expect(row?.duplicate_of).toBeNull();
+    }
+    await dedupeHealthKitAgainstIntervals(env.DB, member.id);
+    const live = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM external_activities WHERE user_id = ?1 AND date = ?2 AND deleted_at IS NULL`,
+    ).bind(member.id, DATE).first<{ n: number }>();
+    expect(live?.n).toBe(0);
+  });
+
   it('brings back a Health copy the app doesn\'t name', async () => {
     const member = await memberJwt();
     const health = await insertActivity(member.id, 'healthkit', crypto.randomUUID(), START_MS + 1_000);

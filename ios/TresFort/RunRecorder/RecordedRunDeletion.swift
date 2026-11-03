@@ -116,7 +116,9 @@ enum RecordedRunDeletion {
     /// Finds the run's Health workouts, asks the server to delete the run and
     /// its intervals.icu upload, then deletes the Health workouts. Health is
     /// changed only after the server succeeded, so a refused delete leaves
-    /// every copy in place.
+    /// every copy in place. A run the server already deleted (an earlier try
+    /// whose answer was lost, or another device) still has its Health
+    /// workouts deleted here.
     static func delete(
         recordingID: String,
         health: RecordedRunHealthCopies,
@@ -126,16 +128,19 @@ enum RecordedRunDeletion {
             return .failed("This run can’t be deleted from the app.")
         }
         let healthIDs = await health.find(uuid)
-        let response: RecordedRunDeleteResponse
+        let intervals: String?
         do {
-            response = try await server(recordingID, healthIDs)
+            intervals = try await server(recordingID, healthIDs).intervals.status
+        } catch let error as APIError where error.httpStatus == 404 {
+            intervals = nil
         } catch let error as APIError {
             return failure(error)
         } catch {
             return .failed("The run couldn’t be deleted. Check your connection and try again.")
         }
         let healthDeleted = healthIDs.isEmpty ? nil : await health.delete(healthIDs)
-        return .deleted(message(intervals: response.intervals.status, healthDeleted: healthDeleted))
+        guard let intervals else { return .deleted(alreadyDeleted(healthDeleted: healthDeleted)) }
+        return .deleted(message(intervals: intervals, healthDeleted: healthDeleted))
     }
 
     static func message(intervals: String, healthDeleted: Bool?) -> String {
@@ -152,13 +157,19 @@ enum RecordedRunDeletion {
         return text
     }
 
+    static func alreadyDeleted(healthDeleted: Bool?) -> String {
+        switch healthDeleted {
+        case true?: "This run was already deleted. Its Apple Health workout is deleted now too."
+        case false?: "This run was already deleted. Apple Health kept its copy; you can delete it in the Health app."
+        case nil: "This run was already deleted."
+        }
+    }
+
     private static func failure(_ error: APIError) -> RecordedRunDeleteOutcome {
         let code = error.httpBody.flatMap { body in
             (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
         }?["error"] as? String
         switch (error.httpStatus ?? 0, code) {
-        case (404, _):
-            return .deleted("This run was already deleted.")
         case (401, _):
             return .failed("Sign in again, then try deleting the run.")
         case (_, "intervals_write_forbidden"):

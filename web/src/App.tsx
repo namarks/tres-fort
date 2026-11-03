@@ -15,7 +15,6 @@ import {
 import { describeWriteError } from './editing';
 import { WorkoutsPage, type Catalog, type Write } from './WorkoutEditor';
 import { AwayDates, DateActions, RoutineEditor } from './CalendarEditing';
-import { HistoryView } from './HistoryView';
 import { RouteMap } from './RouteMapView';
 import { routableActivityIds } from './routeMap';
 import {
@@ -86,14 +85,10 @@ export function App() {
   return <Planner me={load.me} state={load.state} reload={reload} onSignedOut={() => setLoad({ kind: 'signed_out' })} />;
 }
 
-type View = { kind: 'calendar' } | { kind: 'history' } | { kind: 'workouts'; workoutId: string | null };
+type View = { kind: 'calendar' } | { kind: 'workouts'; workoutId: string | null };
 
-/**
- * `#workouts` and `#workouts/<id>` open the workout editor, `#history` the
- * plan changes; anything else the calendar.
- */
+/** `#workouts` and `#workouts/<id>` open the workout editor; anything else the calendar. */
 function viewFromHash(hash: string): View {
-  if (hash === '#history') return { kind: 'history' };
   const match = /^#workouts(?:\/(.+))?$/.exec(hash);
   if (!match) return { kind: 'calendar' };
   return { kind: 'workouts', workoutId: match[1] ? decodeURIComponent(match[1]) : null };
@@ -101,7 +96,6 @@ function viewFromHash(hash: string): View {
 
 function hashFor(view: View): string {
   if (view.kind === 'calendar') return '#calendar';
-  if (view.kind === 'history') return '#history';
   return view.workoutId ? `#workouts/${encodeURIComponent(view.workoutId)}` : '#workouts';
 }
 
@@ -217,7 +211,6 @@ function Planner({ me, state, reload, onSignedOut }: {
         <nav className="views" aria-label="Views">
           <a href="#calendar" aria-current={view.kind === 'calendar' ? 'page' : undefined}>Calendar</a>
           <a href="#workouts" aria-current={view.kind === 'workouts' ? 'page' : undefined}>Workouts</a>
-          <a href="#history" aria-current={view.kind === 'history' ? 'page' : undefined}>Plan changes</a>
         </nav>
         <div className="account">
           <span className="muted">{me.display_name ?? me.email ?? 'Signed in'}</span>
@@ -230,10 +223,7 @@ function Planner({ me, state, reload, onSignedOut }: {
           <button type="button" className="ghost small" onClick={() => setNotice(null)}>Dismiss</button>
         </div>
       )}
-      {view.kind === 'history' ? (
-        <HistoryView plan={state.plan} sessions={state.sessions} write={write} busy={busy}
-          miles={prefersMiles()} onSignedOut={onSignedOut} />
-      ) : view.kind === 'workouts' ? (
+      {view.kind === 'workouts' ? (
         <WorkoutsPage
           workouts={state.plan?.workouts ?? []}
           version={state.plan?.version ?? 0}

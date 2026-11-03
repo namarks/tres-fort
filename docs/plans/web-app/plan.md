@@ -64,8 +64,8 @@ partner training are not web features.
       the Worker rather than a third copy of those rules. Sign out works.
   - Still to do in P1:
     - A week view, and a link to delete the account (the existing
-      `DELETE /api/me`). Plan version history is built with P2's restore,
-      below.
+      `DELETE /api/me`). Plan version history is not shown to members
+      (owner, 2026-11-03); see P2.
     - New accounts: `/auth/apple` already creates an ordinary account for
       any new Apple identity, so a person can sign up on the web first. A
       short first-run offers the existing starter workouts and a link to the
@@ -114,20 +114,24 @@ partner training are not web features.
     date's `sessions.attempt` as the app does; past, started and
     away-without-training dates stay as they are), and away dates (add,
     edit only the changed fields, and remove, with the plan version).
-  - Then plan changes: every saved version, newest first, with who changed
-    it (the coach, the app or the web), the coach's reason and what it
-    touched. Choosing one compares it with the plan now, field by field;
-    restoring it sends the plan ID and the version it was compared with,
-    and saves it as a new version, so the replaced plan stays in the list.
-    A plan changed elsewhere since the comparison is refused and reloaded,
-    and a workout in progress in the app blocks a restore.
+  - Released 2026-11-03 with the owner's written go-ahead: the API Worker
+    (version 7c97d561, rollback 71cbdaad) and `tres-fort-web` (version
+    29534bb1, rollback d9cd2ddb) were deployed from main 21f0f3f, which
+    carries the editing above (#315, #319). No migration was needed.
+  - That release also had a Plan changes view (every saved version, a
+    field-by-field comparison with the plan now, and restore as a new
+    version). On 2026-11-03 the owner decided the detailed change log
+    confuses members and belongs in the back end, as the iPhone app had
+    already done (#327), so the web view and its gateway route are removed.
+    Plan versions are still saved on the server, and the coach can still
+    compare and restore them.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
     rest, and superset or circuit groups.
   - Planned run step editor with pace or heart rate targets.
   - Weekly schedule by dragging a workout onto a weekday (with a keyboard
     alternative); assign, move and skip single dates; add, edit and remove
-    away dates; restore a past plan version.
+    away dates.
   - Every write sends the reviewed plan version. A 409 conflict reloads the
     plan and tells the member it changed elsewhere (the app or the coach)
     before they reapply.
@@ -167,14 +171,12 @@ partner training are not web features.
 
 ## Next step
 
-**Now (@agent):** P2's editing is built: workouts, slots, groups, run
-steps, the calendar and restoring a plan version. It waits for review and
-the owner's written go-ahead to deploy (the API Worker and `tres-fort-web`
-together). Race goal, training phases and deloads follow coach-free
-planning's REST. The rest of P1 (plan
-history, week view, delete-account link, first-run for web sign-ups, invite
-codes, committed browser checks) follows before the site is linked publicly
-in P5. Each later deploy needs the owner's written go-ahead.
+**Now (@agent):** P2's editing (workouts, slots, groups, run steps, the
+routine, single dates and away dates) is live on `app.tresfort.app`. Race
+goal, training phases and deloads follow coach-free planning's REST. The
+rest of P1 (week view, delete-account link, first-run for web sign-ups,
+invite codes, committed browser checks) follows before the site is linked
+publicly in P5. Each later deploy needs the owner's written go-ahead.
 
 ## Notes / open questions
 

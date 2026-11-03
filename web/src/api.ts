@@ -8,7 +8,6 @@ import type {
   WeeklySchedule,
 } from '../../src/types';
 import type { CatalogExercise } from './editing';
-import type { Comparison, HistoryPage } from './history';
 import type { ActivityRouteResponse } from './routeMap';
 
 /** The plan tree as GET /api/state returns it, with parsed plan meta. */
@@ -99,14 +98,6 @@ export async function fetchMapToken(): Promise<string | null> {
   }
 }
 
-/** Saved plan versions, newest first; `before` pages back through older ones. */
-export const fetchPlanHistory = (before?: number) =>
-  getJson<HistoryPage>(`/api/plan/history?limit=30${before ? `&before_version=${before}` : ''}`);
-
-/** What differs between a saved version and a later one (the plan now by default). */
-export const fetchComparison = (fromVersion: number, toVersion: number) =>
-  getJson<Comparison>(`/api/plan/history/${fromVersion}/compare?to_version=${toVersion}`);
-
 /** The plan version a write was reviewed against. */
 export interface Reviewed {
   planId: string;
@@ -168,15 +159,6 @@ export const planWrites = {
     request('PATCH', `/api/plan/trips/${id(tripId)}`, { ...fields, expected_version: at.version }),
   removeAwayDates: (tripId: string, at: Reviewed) =>
     request('DELETE', `/api/plan/trips/${id(tripId)}?expected_version=${at.version}`),
-  /**
-   * Makes a saved version the plan again, as a new version. `at` is the
-   * version the member compared it with, so a plan changed since then is
-   * refused rather than replaced unseen.
-   */
-  restoreVersion: (snapshotVersion: number, at: Reviewed) =>
-    request<{ version: number }>('POST', `/api/plan/history/${snapshotVersion}/restore`, {
-      expected_plan_id: at.planId, expected_version: at.version, reason: 'Restored from the web plan history',
-    }),
 };
 
 /**

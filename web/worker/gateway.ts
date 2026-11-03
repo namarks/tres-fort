@@ -73,7 +73,6 @@ const WRITE_ROUTES: { method: string; path: RegExp }[] = [
   { method: 'DELETE', path: new RegExp(`^/api/plan/trips/${SEGMENT}$`) },
   { method: 'PUT', path: new RegExp(`^/api/calendar/${SEGMENT}$`) },
   { method: 'POST', path: new RegExp(`^/api/calendar/${SEGMENT}/move$`) },
-  { method: 'POST', path: /^\/api\/plan\/history\/\d+\/restore$/ },
 ];
 
 export function isAllowedWrite(method: string, path: string): boolean {

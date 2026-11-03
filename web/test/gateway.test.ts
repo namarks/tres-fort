@@ -212,7 +212,6 @@ describe('API forwarding', () => {
     expect(isAllowedWrite('DELETE', '/api/plan/trips/t1')).toBe(true);
     expect(isAllowedWrite('PUT', '/api/calendar/2026-11-03')).toBe(true);
     expect(isAllowedWrite('POST', '/api/calendar/2026-11-03/move')).toBe(true);
-    expect(isAllowedWrite('POST', '/api/plan/history/3/restore')).toBe(true);
 
     const { env, apiFetch } = makeEnv();
     for (const [method, path] of [
@@ -225,8 +224,7 @@ describe('API forwarding', () => {
       ['POST', '/api/groups'],
       ['PUT', '/api/workouts/w1/groups/g1'],
       ['DELETE', '/api/workouts/w1/groups'],
-      ['POST', '/api/plan/history/latest/restore'],
-      ['POST', '/api/plan/history/3/compare'],
+      ['POST', '/api/plan/history/3/restore'],
       ['DELETE', '/api/calendar/2026-11-03'],
       ['PUT', '/api/plan/trips'],
       ['POST', '/api/workouts/w1/exercises/s1'],

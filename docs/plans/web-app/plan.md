@@ -127,9 +127,8 @@ partner training are not web features.
     still compare and restore them. Released 2026-11-03 with the owner's
     written go-ahead: `tres-fort-web` (version b3223134, rollback 29534bb1)
     was deployed from main e788a20; the API Worker was not redeployed, since
-    its code had not changed since 21f0f3f. The live
-    bundle no longer has the view, and the gateway answers the restore route
-    with 405.
+    its code had not changed since 21f0f3f. The live bundle no longer has
+    the view, and the gateway answers the restore route with 405.
   - Create, edit and delete workouts; add, edit, reorder and remove exercise
     slots with target sets, reps, weight and lb/kg unit, RPE, warm-up flag,
     rest, and superset or circuit groups.

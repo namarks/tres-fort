@@ -10,22 +10,11 @@ private let accent = BrandPalette.liveAccent
 struct RunActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RunActivityAttributes.self) { ctx in
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(ctx.state.isPaused ? "PAUSED" : "RUN")
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
-                    clock(ctx.state)
-                        .font(.system(size: 40, weight: .heavy, design: .rounded))
-                        .monospacedDigit().foregroundStyle(accent)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(distance(ctx.state)).font(.headline).foregroundStyle(.white)
-                    Text(pace(ctx.state)).font(.caption).foregroundStyle(.secondary)
-                    controls(ctx)
-                }
+            ActivityFamilyLayout {
+                wristLayout(ctx)
+            } standard: {
+                lockScreenLayout(ctx)
             }
-            .padding(16)
             .activityBackgroundTint(BrandPalette.liveBackground)
             .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { ctx in
@@ -56,6 +45,52 @@ struct RunActivityWidget: Widget {
             }
             .keylineTint(accent)
         }
+        .watchSmartStackFamily()
+    }
+
+    /// Lock Screen and banner.
+    private func lockScreenLayout(_ ctx: ActivityViewContext<RunActivityAttributes>) -> some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ctx.state.isPaused ? "PAUSED" : "RUN")
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                clock(ctx.state)
+                    .font(.system(size: 40, weight: .heavy, design: .rounded))
+                    .monospacedDigit().foregroundStyle(accent)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(distance(ctx.state)).font(.headline).foregroundStyle(.white)
+                Text(pace(ctx.state)).font(.caption).foregroundStyle(.secondary)
+                controls(ctx)
+            }
+        }
+        .padding(16)
+    }
+
+    /// Apple Watch Smart Stack: time first, then distance and pace, then the
+    /// same controls as the Lock Screen (Finish only while paused).
+    private func wristLayout(_ ctx: ActivityViewContext<RunActivityAttributes>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(ctx.state.isPaused ? "PAUSED" : "RUN")
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(distance(ctx.state))
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                    .monospacedDigit()
+            }
+            clock(ctx.state)
+                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                .monospacedDigit().foregroundStyle(accent)
+            HStack(spacing: 6) {
+                Text(pace(ctx.state))
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .monospacedDigit().lineLimit(1)
+                Spacer(minLength: 0)
+                controls(ctx, font: .caption2.bold())
+            }
+        }
     }
 
     @ViewBuilder private func clock(_ state: RunActivityAttributes.ContentState) -> some View {
@@ -74,7 +109,8 @@ struct RunActivityWidget: Widget {
         "\(RunFormat.pace(state.currentPace)) /\(state.unit.abbreviation)"
     }
 
-    private func controls(_ ctx: ActivityViewContext<RunActivityAttributes>) -> some View {
+    private func controls(_ ctx: ActivityViewContext<RunActivityAttributes>,
+                          font: Font = .caption.bold()) -> some View {
         let id = ctx.attributes.recordingID
         return HStack {
             if ctx.state.isPaused {
@@ -84,6 +120,6 @@ struct RunActivityWidget: Widget {
                 Button("Pause", intent: RunRecorderControlIntent(recordingID: id, action: .pause))
             }
         }
-        .font(.caption.bold()).buttonStyle(.bordered).tint(accent)
+        .font(font).buttonStyle(.bordered).tint(accent)
     }
 }

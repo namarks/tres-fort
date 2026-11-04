@@ -47,12 +47,13 @@ struct EncodedActivityRoute: Decodable, Equatable {
 }
 
 struct ActivityRouteResponse: Decodable, Equatable {
-    /// The activity the route belongs to: the recording behind the activity,
-    /// which can differ from the activity asked for when that is the
-    /// intervals.icu copy of the run, or the intervals.icu run itself.
+    /// The activity the route belongs to, which can differ from the activity
+    /// asked for when that is the intervals.icu copy of a run recorded in the
+    /// app or of an Apple Health run.
     let activity_id: String
     /// "recording" for a run recorded in the app, "intervals" for a track
-    /// intervals.icu sent. Nil from a server that predates P6.
+    /// intervals.icu sent, "healthkit" for the route Apple Health saved with
+    /// another app's run. Nil from a server that predates P6.
     let source: String?
     /// The run recorded in the app behind the activity; nil for a track from
     /// intervals.icu, which the app didn't record.
@@ -223,9 +224,10 @@ struct ActivityRouteThumbnail: View {
 extension ExternalActivity {
     /// Runs recorded in the app have a route, shown either as the recording
     /// itself or as the intervals.icu copy it was matched to, and so do
-    /// intervals.icu runs whose device kept a GPS track.
-    var mayHaveRecordedRoute: Bool {
-        kind == "run" && (source == "recording" || source == "intervals")
+    /// intervals.icu runs whose device kept a GPS track and Apple Health runs
+    /// whose route the app sent (run-recorder P6).
+    var mayHaveRoute: Bool {
+        kind == "run" && ["recording", "intervals", "healthkit"].contains(source)
     }
 }
 
@@ -250,7 +252,7 @@ struct WithActivityRoute<Content: View>: View {
         let current = loaded?.activityID == activity?.id ? loaded : nil
         content(current?.segments ?? [], current?.recordingID)
             .task(id: activity?.id) {
-                guard let activity, activity.mayHaveRecordedRoute, let access else { return }
+                guard let activity, activity.mayHaveRoute, let access else { return }
                 let route = await ActivityRouteStore.shared.route(for: activity.id, access: access)
                 guard !Task.isCancelled else { return }
                 loaded = LoadedRoute(activityID: activity.id, recordingID: route?.recording_id,

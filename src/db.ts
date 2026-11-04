@@ -7,7 +7,7 @@ import { refreshActivityLoads } from './services/activityLoad';
 import { heartRateStreamSummary, powerStreamSummary, type Sample } from './trainingLoad';
 import type { FitActivity } from './fitFile';
 import type { TcxRun } from './tcxFile';
-import { encodeRoute, parseStoredRoute, routePointCount, type EncodedRoute } from './activityRoute';
+import { decodeRoute, encodeRoute, parseStoredRoute, routePointCount, type EncodedRoute } from './activityRoute';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { createIntervalsRouteService } from './services/intervalsRoute';
@@ -9432,20 +9432,24 @@ export async function storeRecordedRun(
 }
 
 export interface StoredActivityRoute {
-  /** The recording behind the activity. */
+  /** The activity that carries the route: the recording, or the Apple
+   * Health run, behind the activity asked for or the activity itself. */
   activity_id: string;
-  source: 'recording';
-  recording_id: string;
+  source: 'recording' | 'healthkit';
+  /** The run recorded in the app; null for an Apple Health run. */
+  recording_id: string | null;
   /** Null for a run recorded without GPS fixes. */
   route: EncodedRoute | null;
 }
 
 /**
- * The run recorded in the app behind one of the member's activities, with
- * its GPS route when it has one: the recording itself, or the recording
- * that dedup hid behind this activity (an intervals.icu copy of the same
- * run). Null when there is no recording. Only the member's own recordings
- * and routes are ever read.
+ * The route Tres Fort keeps for one of the member's activities. First the
+ * run recorded in the app behind it, with its route when it has one: the
+ * recording itself, or the recording that dedup hid behind this activity
+ * (an intervals.icu copy of the same run). Then the route the app sent for
+ * an Apple Health run (docs/plans/run-recorder P6(b)): the Health run itself
+ * or one dedup hid behind this activity. Null when Tres Fort keeps none.
+ * Only the member's own activities and routes are ever read.
  */
 export async function getActivityRoute(
   db: D1Database,
@@ -9454,24 +9458,75 @@ export async function getActivityRoute(
 ): Promise<StoredActivityRoute | null> {
   const row = await db
     .prepare(
-      `SELECT rec.id AS activity_id, r.route, rec.external_id AS recording_id
-         FROM external_activities rec
-         LEFT JOIN activity_routes r ON r.activity_id = rec.id AND r.user_id = rec.user_id
-        WHERE rec.user_id = ?1 AND rec.source = 'recording'
-          AND (rec.id = ?2 OR rec.duplicate_of = ?2)
-          AND (rec.deleted_at IS NULL OR rec.duplicate_of IS NOT NULL)
-        ORDER BY rec.id = ?2 DESC, r.route IS NOT NULL DESC, rec.id
+      `SELECT a.id AS activity_id, a.source, a.external_id, r.route
+         FROM external_activities a
+         LEFT JOIN activity_routes r ON r.activity_id = a.id AND r.user_id = a.user_id
+        WHERE a.user_id = ?1
+          AND (a.id = ?2 OR a.duplicate_of = ?2)
+          AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)
+          AND (a.source = 'recording' OR (a.source = 'healthkit' AND r.route IS NOT NULL))
+        ORDER BY a.source = 'recording' DESC, a.id = ?2 DESC, r.route IS NOT NULL DESC, a.id
         LIMIT 1`,
     )
     .bind(userId, activityId)
-    .first<{ activity_id: string; route: string | null; recording_id: string }>();
+    .first<{ activity_id: string; source: 'recording' | 'healthkit'; external_id: string; route: string | null }>();
   if (!row) return null;
   return {
     activity_id: row.activity_id,
-    source: 'recording',
-    recording_id: row.recording_id,
+    source: row.source,
+    recording_id: row.source === 'recording' ? row.external_id : null,
     route: row.route === null ? null : parseStoredRoute(row.route),
   };
+}
+
+export type HealthKitRouteResult =
+  | { ok: true; activity_id: string; point_count: number }
+  /** No such Apple Health activity of the member's (not pushed yet, or deleted). */
+  | { ok: false; error: 'not_found' }
+  /** Only runs keep a route. */
+  | { ok: false; error: 'not_a_run' }
+  /** No valid point. */
+  | { ok: false; error: 'invalid_route' };
+
+/**
+ * Keep the GPS route Apple Health saved with one of the member's runs
+ * (docs/plans/run-recorder P6(b)), by its Health workout id. The app sends
+ * routes only for runs another app recorded; the recorder's own runs keep
+ * theirs through POST /api/activities/recordings. The route is re-encoded,
+ * so invalid points are dropped and a very long one is thinned, and a later
+ * send replaces it. Private to the member like a recorded route; the
+ * account export includes it and account deletion removes it.
+ */
+export async function saveHealthKitRoute(
+  db: D1Database,
+  userId: string,
+  healthWorkoutId: string,
+  route: EncodedRoute,
+): Promise<HealthKitRouteResult> {
+  const encoded = encodeRoute(decodeRoute(route));
+  if (!encoded) return { ok: false, error: 'invalid_route' };
+  const find = `SELECT id, kind FROM external_activities
+                 WHERE user_id = ?1 AND source = 'healthkit' AND lower(external_id) = lower(?2)
+                   AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`;
+  const found = await db.prepare(find).bind(userId, healthWorkoutId).first<{ id: string; kind: string }>();
+  if (!found) return { ok: false, error: 'not_found' };
+  if (found.kind !== 'run') return { ok: false, error: 'not_a_run' };
+  const pointCount = routePointCount(encoded);
+  // Checked again in the write, so a run deleted in between keeps no route.
+  const saved = await db
+    .prepare(
+      `INSERT INTO activity_routes (activity_id,user_id,point_count,route,created_at)
+       SELECT a.id, a.user_id, ?3, ?4, ?5 FROM external_activities a
+        WHERE a.id = ?6 AND a.user_id = ?1 AND a.source = 'healthkit' AND a.kind = 'run'
+          AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)
+       ON CONFLICT(activity_id) DO UPDATE SET
+         point_count = excluded.point_count, route = excluded.route, created_at = excluded.created_at
+        WHERE activity_routes.user_id = excluded.user_id`,
+    )
+    .bind(userId, healthWorkoutId, pointCount, JSON.stringify(encoded), now(), found.id)
+    .run();
+  if (!saved.meta.changes) return { ok: false, error: 'not_found' };
+  return { ok: true, activity_id: found.id, point_count: pointCount };
 }
 
 /** A run recorded in the app that the member can still delete: shown, or

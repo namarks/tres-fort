@@ -75,7 +75,7 @@ final class ActivityRouteTests: XCTestCase {
         XCTAssertNil(ActivityRouteMap.region(for: []))
     }
 
-    func testOnlyRunsFromTheRecorderOrIntervalsCanHaveARoute() {
+    func testOnlyRunsFromTheRecorderIntervalsOrHealthCanHaveARoute() {
         func activity(source: String, kind: String) -> ExternalActivity {
             ExternalActivity(
                 id: "a", source: source, external_id: "a", date: "2026-11-01", kind: kind, name: nil,
@@ -83,10 +83,11 @@ final class ActivityRouteTests: XCTestCase {
                 weighted_avg_watts: nil, average_hr: nil, max_hr: nil, training_load: nil,
                 intensity: nil, calories: nil, elevation_gain_m: nil, synced_at: 1, deleted_at: nil)
         }
-        XCTAssertTrue(activity(source: "recording", kind: "run").mayHaveRecordedRoute)
-        XCTAssertTrue(activity(source: "intervals", kind: "run").mayHaveRecordedRoute)
-        XCTAssertFalse(activity(source: "healthkit", kind: "run").mayHaveRecordedRoute)
-        XCTAssertFalse(activity(source: "intervals", kind: "ride").mayHaveRecordedRoute)
+        XCTAssertTrue(activity(source: "recording", kind: "run").mayHaveRoute)
+        XCTAssertTrue(activity(source: "intervals", kind: "run").mayHaveRoute)
+        XCTAssertTrue(activity(source: "healthkit", kind: "run").mayHaveRoute)
+        XCTAssertFalse(activity(source: "fit", kind: "run").mayHaveRoute)
+        XCTAssertFalse(activity(source: "intervals", kind: "ride").mayHaveRoute)
     }
 
     func testTheStoreReadsARouteOnceAndForgetsItForAnotherAccount() async throws {

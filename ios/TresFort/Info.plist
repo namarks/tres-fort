@@ -52,7 +52,7 @@
        Health, while the App Store build only reads and keeps its read-only
        wording. The Share string IS shown in the read-permission sheet. -->
   <key>NSHealthShareUsageDescription</key>
-  <string>Très Fort reads workouts, heart rate, distance, and calories for coaching. You can also allow weight access to view your weight trend privately on this device.</string>
+  <string>Très Fort reads workouts, heart rate, distance, and calories for coaching, and run routes for their maps. You can also allow weight access to view your weight trend privately on this device.</string>
   <key>NSHealthUpdateUsageDescription</key>
   <string>$(HEALTH_UPDATE_USAGE_DESCRIPTION)</string>
   <!-- Run recorder (docs/plans/run-recorder). The App Store build removes

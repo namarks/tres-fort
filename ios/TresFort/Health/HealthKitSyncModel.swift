@@ -113,9 +113,10 @@ final class HealthKitSyncModel: ObservableObject {
 
     /// Read-only scope. Workouts are the spine; HR/energy/distance enrich each
     /// one (HR is NOT a workout property — it's queried separately by time
-    /// range). We never request write access (`toShare: []`).
+    /// range), and a run's route draws its map (run-recorder P6(b)). We never
+    /// request write access (`toShare: []`).
     private var readTypes: Set<HKObjectType> {
-        var t: Set<HKObjectType> = [HKObjectType.workoutType()]
+        var t: Set<HKObjectType> = [HKObjectType.workoutType(), HKSeriesType.workoutRoute()]
         let ids: [HKQuantityTypeIdentifier] = [
             .heartRate, .activeEnergyBurned,
             .distanceWalkingRunning, .distanceCycling, .distanceSwimming,
@@ -190,6 +191,9 @@ final class HealthKitSyncModel: ObservableObject {
             store.disableAllBackgroundDelivery { _, _ in }
         }
         lastSyncedAt = nil
+        // Reconnecting looks for every run's route again, in case route
+        // access was granted in between.
+        defaults.removeObject(forKey: AccountLocalState.healthRoutesKey(userID: accountID))
         if defaults.resetHealthAnchors(userID: accountID) {
             anchorResetPending = false
             defaults.removeObject(forKey: AccountLocalState.healthResetPendingKey(userID: accountID))
@@ -306,6 +310,10 @@ final class HealthKitSyncModel: ObservableObject {
                 persistedAny = true
             }
             guard isCurrentSync(using: jwt, generation: generation) else { return }
+            if try await sendRunRoutes(jwt: jwt, generation: generation) {
+                persistedAny = true
+            }
+            guard isCurrentSync(using: jwt, generation: generation) else { return }
             lastSyncedAt = Date()
             lastError = nil
         } catch let APIError.http(code, _) where code == 401 {
@@ -368,6 +376,61 @@ final class HealthKitSyncModel: ObservableObject {
             defaults.set(true, forKey: pass.key)
         }
         return pushed
+    }
+
+    /// How far back runs' routes are looked for.
+    static let routesLookbackDays = 365
+    /// A run with no route yet is looked at again until it is this old, in
+    /// case the app that recorded it saves the route a little later.
+    static let routeGraceSeconds: TimeInterval = 24 * 3600
+
+    /// Sends the route Apple Health saved with each run another app recorded
+    /// in the last year (run-recorder P6(b)), once: the server keeps it for
+    /// the run's map in the app and on the web. Runs the Tres Fort recorder
+    /// saved are skipped; their recording carries the route. A run whose
+    /// route was sent, or that still has none a day after it ended, is
+    /// remembered and not read again. A failed read, or a run the server
+    /// hasn't stored, is tried on a later sync. Returns whether a route was
+    /// sent.
+    private func sendRunRoutes(jwt: String, generation: UInt64) async throws -> Bool {
+        guard let accountID else { return false }
+        let key = AccountLocalState.healthRoutesKey(userID: accountID)
+        var ledger = HealthRouteLedger(stored: defaults.object(forKey: key))
+        let now = Date()
+        let since = Calendar.current.date(byAdding: .day, value: -Self.routesLookbackDays, to: now) ?? now
+        ledger.prune(before: since)
+        let runs = try await fetchWorkouts(since: since).filter { w in
+            Self.kind(for: w.workoutActivityType) == "run" && !HealthWorkoutRoute.isFromRecorder(w)
+        }
+        // Saved after each run, so a sync cut short (the app suspended in
+        // the background) doesn't send the same routes again.
+        func remember(_ w: HKWorkout?) {
+            if let w { ledger.record(w.uuid, start: w.startDate) }
+            if isCurrentSync(using: jwt, generation: generation) { defaults.set(ledger.stored, forKey: key) }
+        }
+        remember(nil)
+        var sent = false
+        for w in runs where !ledger.contains(w.uuid) {
+            guard isCurrentSync(using: jwt, generation: generation) else { return sent }
+            guard let routes = await HealthWorkoutRoute.read(for: w, store: store) else { continue }
+            guard let route = HealthWorkoutRoute.encode(routes) else {
+                if now.timeIntervalSince(w.endDate) > Self.routeGraceSeconds { remember(w) }
+                continue
+            }
+            guard isCurrentSync(using: jwt, generation: generation) else { return sent }
+            do {
+                try await api.putHealthKitRoute(workoutID: w.uuid, route: route, jwt: jwt)
+                sent = true
+                remember(w)
+            } catch let APIError.http(code, _) where code == 404 {
+                continue // The run itself isn't stored yet.
+            } catch let APIError.http(code, _) where code == 400 || code == 422 {
+                // Not a run there, or a route the server can't use: sending
+                // it again won't change that.
+                remember(w)
+            }
+        }
+        return sent
     }
 
     // MARK: - HealthKit queries

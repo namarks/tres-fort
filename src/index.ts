@@ -108,6 +108,7 @@ export async function runIntervalsCron(
     env.INTERVALS_ICU_API_KEY,
     env.INTERVALS_ICU_ATHLETE_ID,
     env.OWNER_APPLE_SUB,
+    env.CREDENTIAL_ENCRYPTION_KEY,
   );
   const result: IntervalsCronResult = {
     failed: false,

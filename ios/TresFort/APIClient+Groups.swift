@@ -59,14 +59,11 @@ extension APIClient {
 
     // MARK: - M3: Coach MCP connect code
 
-    /// POST /api/me/mcp-passphrase — store THIS user's personal MCP connect
-    /// code. The server PBKDF2-hashes it and never returns it; it's matched at
-    /// `/oauth/authorize` to bind an AI app session to this account. We send an
-    /// app-generated random code (not a user-chosen passphrase). 409 = the
-    /// code is already in use by another account (caller regenerates).
-    func setMcpConnectCode(_ code: String, jwt: String) async throws {
-        let _: EmptyResponse = try await post(
-            "api/me/mcp-passphrase", body: ["passphrase": code], jwt: jwt)
+    /// Generate a short-lived, single-use code for this signed-in member.
+    func createMcpConnectCode(jwt: String) async throws -> String {
+        struct Response: Decodable { let code: String }
+        let response: Response = try await post("api/me/mcp-passphrase", body: [:], jwt: jwt)
+        return response.code
     }
 
     struct CoachDisconnectResult: Decodable, Equatable {

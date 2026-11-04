@@ -70,6 +70,8 @@ final class AuthModel: ObservableObject {
     /// against /api/groups members (the M2 list endpoint doesn't stamp
     /// `is_me` — only /feed and /stats do).
     @Published var userID: String?
+    @Published private(set) var signingOut = false
+    @Published private(set) var signOutError: String?
 
     func noteActivityPersisted(for accountID: String?) {
         noteAccountStatePersisted(for: accountID)
@@ -711,7 +713,31 @@ final class AuthModel: ObservableObject {
         phase = .signedOut
     }
 
-    /// Explicit sign-out removes the current account pointer. Feature state is
+    /// User-facing sign-out first revokes the whole bearer-renewal family.
+    func signOutOnServer() async {
+        guard !signingOut, !accountDeletionPending, let token = jwt, let accountID = userID else { return }
+        let epoch = featureSessionEpoch
+        signingOut = true
+        signOutError = nil
+        defer { signingOut = false }
+        do {
+            try await api.revokeAppSession(jwt: token)
+        } catch {
+            guard userID == accountID, featureSessionEpoch == epoch else { return }
+            if case APIError.http(401, _) = error {
+                // The server already rejects this credential, including a lost
+                // successful logout acknowledgement followed by a retry.
+            } else {
+                signOutError = "Couldn’t sign out. Check your connection and try again."
+                return
+            }
+        }
+        guard userID == accountID, featureSessionEpoch == epoch else { return }
+        signOut()
+    }
+
+    /// Local session teardown after revocation or an authentication boundary.
+    /// User-facing buttons call signOutOnServer. Feature state is
     /// keyed by user id and remains isolated for a later return to that account.
     func signOut() {
         guard !accountDeletionPending else {
@@ -733,6 +759,7 @@ final class AuthModel: ObservableObject {
         userID = nil
         appleCredentialUserID = nil
         reauthenticationReason = nil
+        signOutError = nil
         phase = .signedOut
     }
 

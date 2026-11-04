@@ -1,3 +1,4 @@
+import { credentialDigest, openCredential, randomSecret, sealCredential } from './credentials';
 import {
   createIntervalsSyncService, INTERVALS_EFFECTIVE_ATHLETE_SQL, INTERVALS_SOURCE_FENCE_ENABLED_SQL,
   type IntervalsConnectionStatus, type IntervalsUserCreds, type ActivityDedupeWindow,
@@ -1605,7 +1606,7 @@ export async function listUsersWithIntervalsCreds(
 }
 
 /** Read one user's intervals.icu credentials (nulls if either is unset). */
-export async function getUserIntervalsCreds(
+export async function getStoredUserIntervalsCreds(
   db: D1Database,
   userId: string,
 ): Promise<{
@@ -1646,6 +1647,16 @@ export async function getUserIntervalsCreds(
     athlete_id: r?.athlete_id ?? null,
     auth_error_at: r?.auth_error_at ?? null,
     credential_generation: r?.credential_generation ?? 0,
+  };
+}
+
+/** Plain credentials are released only to a caller holding the Worker key. */
+export async function getUserIntervalsCreds(db: D1Database, userId: string, encryptionKey: string | undefined) {
+  const stored = await getStoredUserIntervalsCreds(db, userId);
+  return { ...stored,
+    api_key: await openCredential(stored.api_key, encryptionKey, userId, 'intervals-api-key'),
+    access_token: await openCredential(stored.access_token, encryptionKey, userId, 'intervals-access-token'),
+    refresh_token: await openCredential(stored.refresh_token, encryptionKey, userId, 'intervals-refresh-token'),
   };
 }
 
@@ -1714,6 +1725,7 @@ export async function seedOwnerIntervalsCredsFromEnv(
   apiKey: string | null | undefined,
   athleteId: string | null | undefined,
   ownerAppleSub: string | undefined,
+  encryptionKey: string | undefined,
 ): Promise<IntervalsUserCreds[]> {
   // Resolve the owner row through findOwnerRow so OWNER_APPLE_SUB-set
   // deployments don't accidentally seed env creds onto a non-owner row
@@ -1774,7 +1786,7 @@ export async function seedOwnerIntervalsCredsFromEnv(
                  WHERE user_id = ?1 AND tool = 'set_intervals_creds'
               )`,
     )
-    .bind(owner.id, apiKey, athleteId)
+    .bind(owner.id, await sealCredential(apiKey, encryptionKey, owner.id, 'intervals-api-key'), athleteId)
     .run();
   return listUsersWithIntervalsCreds(db);
 }
@@ -1790,10 +1802,13 @@ export async function seedOwnerIntervalsCredsFromEnv(
 export async function setUserIntervalsCreds(
   db: D1Database,
   userId: string,
+  encryptionKey: string | undefined,
   apiKey: string | null,
   athleteId: string | null,
 ): Promise<{ connected: boolean; credential_generation: number; activity_sync_after: number | null }> {
   const connect = !!(apiKey && athleteId);
+  const previous = await getStoredUserIntervalsCreds(db, userId);
+  apiKey = await sealCredential(connect ? apiKey : null, encryptionKey, userId, 'intervals-api-key', previous.api_key);
   // The API-key and OAuth schemes are mutually exclusive: writing an API key
   // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
   // columns so "not connected" is unambiguous across the codebase.
@@ -1870,8 +1885,9 @@ async function writeUserIntervalsOAuth(
   expiresAt: number | null,
   athleteId: string,
   expectedGeneration?: number,
+  completion?: { digest: string; sessionId: string },
 ): Promise<{ credential_generation: number; activity_sync_after: number | null } | null> {
-  const { results: [row] } = await db
+  const statement = db
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?2,
@@ -1913,6 +1929,9 @@ async function writeUserIntervalsOAuth(
                 + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
           AND (?6 IS NULL OR intervals_credential_generation = ?6)
+          AND (?7 IS NULL OR EXISTS (SELECT 1 FROM intervals_oauth_completions
+            WHERE completion_sha256=?7 AND user_id=?1 AND app_session_id=?8
+              AND expires_at>?9 AND credential_generation=?6))
         RETURNING intervals_credential_generation AS credential_generation,
                   intervals_activities_synced_at AS activity_sync_after`,
     )
@@ -1923,25 +1942,38 @@ async function writeUserIntervalsOAuth(
       expiresAt,
       athleteId,
       expectedGeneration ?? null,
-    )
-    .run<{ credential_generation: number; activity_sync_after: number | null }>();
-  return row ?? null;
+      completion?.digest ?? null,
+      completion?.sessionId ?? null,
+      Date.now(),
+    );
+  const statements = [statement];
+  if (completion) {
+    statements.push(db.prepare('DELETE FROM intervals_oauth_completions WHERE completion_sha256=?1 AND changes()=1')
+      .bind(completion.digest));
+    statements.push(db.prepare(`INSERT INTO audit_log(id,user_id,actor,tool,args,result,created_at)
+      SELECT ?1,?2,'ios','set_intervals_creds','{"connected":true,"via":"oauth"}','connected',?3 WHERE changes()=1`)
+      .bind(uuid(),userId,Date.now()));
+  }
+  const [result] = await db.batch<{ credential_generation: number; activity_sync_after: number | null }>(statements);
+  return result?.results[0] ?? null;
 }
 
 export async function setUserIntervalsOAuth(
   db: D1Database,
   userId: string,
+  encryptionKey: string | undefined,
   accessToken: string,
   refreshToken: string | null,
   expiresAt: number | null,
   athleteId: string,
   expectedGeneration?: number,
 ): Promise<{ credential_generation: number; activity_sync_after: number | null } | null> {
+  const previous = await getStoredUserIntervalsCreds(db, userId);
   return writeUserIntervalsOAuth(
     db,
     userId,
-    accessToken,
-    refreshToken,
+    (await sealCredential(accessToken, encryptionKey, userId, 'intervals-access-token', previous.access_token))!,
+    await sealCredential(refreshToken, encryptionKey, userId, 'intervals-refresh-token', previous.refresh_token),
     expiresAt,
     athleteId,
     expectedGeneration,
@@ -1958,6 +1990,7 @@ export async function createIntervalsOAuthState(
   db: D1Database,
   userId: string,
   ttlMs = 10 * 60 * 1000,
+  appSessionId: string | null = null,
 ): Promise<string> {
   const state =
     crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
@@ -1968,11 +2001,11 @@ export async function createIntervalsOAuthState(
   if (!account) throw new Error('intervals_user_not_found');
   const inserted = await db
     .prepare(
-      `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at, credential_generation)
-       SELECT ?1, ?2, ?3, ?4, ?5 FROM users
+      `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at, credential_generation, app_session_id)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6 FROM users
         WHERE id = ?2 AND intervals_credential_generation = ?5`,
     )
-    .bind(state, userId, ts, ts + ttlMs, account.generation)
+    .bind(state, userId, ts, ts + ttlMs, account.generation, appSessionId)
     .run();
   if (inserted.meta.changes !== 1) throw new Error('intervals_connection_changed');
   return state;
@@ -1996,7 +2029,7 @@ export async function consumeIntervalsOAuthState(
 export async function consumeIntervalsOAuthAttempt(
   db: D1Database,
   state: string,
-): Promise<{ user_id: string; credential_generation: number } | null> {
+): Promise<{ user_id: string; credential_generation: number; app_session_id: string | null } | null> {
   const ts = now();
   // ATOMIC single-use: DELETE … RETURNING removes the row and yields its value
   // in one statement, so two concurrent callbacks (browser preload, double-tap,
@@ -2004,14 +2037,49 @@ export async function consumeIntervalsOAuthAttempt(
   // the row, the other gets nothing.
   const row = await db
     .prepare(`DELETE FROM intervals_oauth_states WHERE state = ?1
-      RETURNING user_id, expires_at, credential_generation`)
+      RETURNING user_id, expires_at, credential_generation, app_session_id`)
     .bind(state)
-    .first<{ user_id: string; expires_at: number; credential_generation: number | null }>();
+    .first<{ user_id: string; expires_at: number; credential_generation: number | null; app_session_id: string | null }>();
   // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
   // statement above so it never affects the single-use result).
   await db.prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
   if (!row || row.expires_at < ts || row.credential_generation === null) return null;
-  return { user_id: row.user_id, credential_generation: row.credential_generation };
+  return { user_id: row.user_id, credential_generation: row.credential_generation, app_session_id: row.app_session_id };
+}
+
+export interface PendingIntervalsCredential {
+  accessToken: string; refreshToken: string | null; expiresAt: number | null; athleteId: string;
+}
+
+export async function createIntervalsOAuthCompletion(db: D1Database, userId: string, sessionId: string,
+  generation: number, credential: PendingIntervalsCredential, encryptionKey: string | undefined): Promise<string> {
+  const completion = randomSecret(), digest = await credentialDigest(completion);
+  const ciphertext = await sealCredential(JSON.stringify(credential), encryptionKey, userId, `intervals-completion:${digest}`);
+  const inserted = await db.batch([
+    db.prepare('DELETE FROM intervals_oauth_completions WHERE expires_at<=?1').bind(Date.now()),
+    db.prepare(`INSERT INTO intervals_oauth_completions(completion_sha256,user_id,app_session_id,credential_generation,credential_ciphertext,expires_at)
+      SELECT ?1,?2,?3,?4,?5,?6 FROM users WHERE id=?2 AND intervals_credential_generation=?4`)
+      .bind(digest,userId,sessionId,generation,ciphertext,Date.now()+10*60_000),
+  ]);
+  if (inserted[1]!.meta.changes !== 1) throw new Error('intervals_connection_changed');
+  return completion;
+}
+
+export async function finishIntervalsOAuth(db: D1Database, userId: string, sessionId: string,
+  completion: string, encryptionKey: string | undefined) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(completion)) return null;
+  const digest = await credentialDigest(completion);
+  const pending = await db.prepare(`SELECT credential_ciphertext,credential_generation FROM intervals_oauth_completions
+    WHERE completion_sha256=?1 AND user_id=?2 AND app_session_id=?3 AND expires_at>?4`)
+    .bind(digest,userId,sessionId,Date.now()).first<{ credential_ciphertext: string; credential_generation: number }>();
+  if (!pending) return null;
+  const credential: PendingIntervalsCredential = JSON.parse((await openCredential(pending.credential_ciphertext,
+    encryptionKey,userId,`intervals-completion:${digest}`))!);
+  const previous = await getStoredUserIntervalsCreds(db,userId);
+  return writeUserIntervalsOAuth(db,userId,
+    (await sealCredential(credential.accessToken,encryptionKey,userId,'intervals-access-token',previous.access_token))!,
+    await sealCredential(credential.refreshToken,encryptionKey,userId,'intervals-refresh-token',previous.refresh_token),
+    credential.expiresAt,credential.athleteId,pending.credential_generation,{ digest,sessionId });
 }
 
 // ---- groups + invites (M2) -----------------------------------------------
@@ -8925,7 +8993,7 @@ export interface HealthKitStreams {
 }
 export type { SyncStatus, SyncResult, SyncDeps, ActivitySyncDeps, IntervalsImportResult, IntervalsConnectionStatus, IntervalsUserCreds, ActivityDedupeWindow } from './services/intervalsSync';
 export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities, resolveIntervalsCredential } = createIntervalsSyncService({
-  getUserIntervalsCreds, findOwnerRow, userHasTouchedIntervalsCreds,
+  getUserIntervalsCreds: getStoredUserIntervalsCreds, findOwnerRow, userHasTouchedIntervalsCreds,
   seedOwnerIntervalsCredsFromEnv, ensureOwnerUser, getIntervalsConnectionStatus,
   getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals, refreshActivityLoads,
 });
@@ -11438,3 +11506,6 @@ export async function cancelPartnerStart(db:D1Database,userId:string,input:Partn
   return {cancelled:true as const,session:existing?.attempt===input.expected_attempt+1
     && existing.status==='discarded' ? existing : null};
 }
+
+// Security credential/session operations remain behind the public service facade.
+export { isAppSessionRevoked, revokeAppSession, createCoachConnectCode, allowCoachAuthorization, authorizeCoachConnectCode } from './services/securityAccess';

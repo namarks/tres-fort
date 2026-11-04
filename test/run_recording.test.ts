@@ -262,7 +262,7 @@ describe('POST /api/activities/recordings', () => {
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({ error: 'intervals_write_forbidden', status: 403, stored: true, recording_id: id });
     const owner = await ownerId();
-    const creds = await getUserIntervalsCreds(env.DB, owner);
+    const creds = await getUserIntervalsCreds(env.DB, owner, env.CREDENTIAL_ENCRYPTION_KEY);
     expect(creds.athlete_id).toBe(ATHLETE);
     expect(creds.api_key).not.toBeNull();
     const kept = await env.DB.prepare('SELECT deleted_at FROM external_activities WHERE id = ?1')

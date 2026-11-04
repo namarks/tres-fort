@@ -16,6 +16,7 @@ import {
   syncExternalActivities,
   syncExternalEvents,
 } from '../src/db';
+import { openCredential } from '../src/credentials';
 import type { Fetcher } from '../src/intervals';
 import type { Env } from '../src/types';
 
@@ -59,15 +60,19 @@ async function addApiUser(label: string): Promise<{
   const id = await addUser(label);
   const athleteId = `p46-athlete-${label}-${id}`;
   const apiKey = `p46-key-${label}-${id}`;
-  await setUserIntervalsCreds(env.DB, id, apiKey, athleteId);
+  await setUserIntervalsCreds(env.DB, id, env.CREDENTIAL_ENCRYPTION_KEY, apiKey, athleteId);
   return { id, athleteId, apiKey };
 }
 
 async function userState(userId: string): Promise<Record<string, unknown>> {
-  return (await env.DB
+  const row = (await env.DB
     .prepare('SELECT * FROM users WHERE id = ?1')
     .bind(userId)
     .first<Record<string, unknown>>())!;
+  for (const [column, purpose] of [['intervals_api_key', 'intervals-api-key'], ['intervals_oauth_access_token', 'intervals-access-token'], ['intervals_oauth_refresh_token', 'intervals-refresh-token']]) {
+    row[column!] = await openCredential(row[column!] as string | null, env.CREDENTIAL_ENCRYPTION_KEY, userId, purpose!);
+  }
+  return row;
 }
 
 function activateBeforeRun(
@@ -166,7 +171,7 @@ describe('P4.6 inert migration and monotonic activation', () => {
       )
       .bind(id)
       .run();
-    expect(await getUserIntervalsCreds(env.DB, id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       api_key: 'old-key',
       athlete_id: 'old-athlete',
       credential_generation: 1,
@@ -202,7 +207,7 @@ describe('P4.6 inert migration and monotonic activation', () => {
     await setUserIntervalsOAuth(
       env.DB,
       oauthId,
-      'oauth-access',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'oauth-access',
       'oauth-refresh',
       ACTIVATED_AT + 10_000,
       oauthAthlete,
@@ -405,7 +410,7 @@ describe('P4.6 exact old-worker exclusion', () => {
 
   it('fences delayed P4 cache, tombstone, dedup, stamp, refresh, and 401 writes', async () => {
     const member = await addApiUser('old-delayed');
-    const oldGeneration = (await getUserIntervalsCreds(env.DB, member.id)).credential_generation;
+    const oldGeneration = (await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation;
     const eventId = `intervals:${member.id}:baseline`;
     const intervalsActivityId = `intervals:activity:${member.id}:baseline`;
     const healthkitId = `healthkit:${member.id}:baseline`;
@@ -648,7 +653,7 @@ describe('P4.6 dual-mode current Worker', () => {
     await setUserIntervalsCreds(
       connectRace.db,
       connectId,
-      'race-key',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'race-key',
       'race-athlete',
     );
     expect(connectRace.activated()).toBe(true);
@@ -665,7 +670,7 @@ describe('P4.6 dual-mode current Worker', () => {
     await setUserIntervalsOAuth(
       callbackRace.db,
       callbackId,
-      'callback-access',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'callback-access',
       'callback-refresh',
       ACTIVATED_AT + 1000,
       'callback-athlete',
@@ -680,7 +685,7 @@ describe('P4.6 dual-mode current Worker', () => {
 
     const disconnect = await addApiUser('race-disconnect');
     const disconnectRace = activateBeforeRun(env.DB, 'SET intervals_api_key = ?2');
-    await setUserIntervalsCreds(disconnectRace.db, disconnect.id, null, null);
+    await setUserIntervalsCreds(disconnectRace.db, disconnect.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     expect(await userState(disconnect.id)).toMatchObject({
       intervals_athlete_id: null,
       intervals_cutover_athlete_id: null,
@@ -739,7 +744,7 @@ describe('P4.6 dual-mode current Worker', () => {
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'active-oauth',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'active-oauth',
       null,
       null,
       member.athleteId,
@@ -757,7 +762,7 @@ describe('P4.6 dual-mode current Worker', () => {
       Number(before.intervals_protocol_write_seq) + 5,
     );
 
-    await setUserIntervalsCreds(env.DB, member.id, null, null);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     expect(await userState(member.id)).toMatchObject({
       intervals_cutover_athlete_id: null,
       intervals_oauth_access_token: null,
@@ -771,7 +776,7 @@ describe('P4.6 dual-mode current Worker', () => {
     await setUserIntervalsOAuth(
       env.DB,
       memberId,
-      'old-access',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'old-access',
       'old-refresh',
       null,
       'active-refresh-athlete',
@@ -874,7 +879,7 @@ describe('P4.6 dual-mode current Worker', () => {
       env.DB,
       'env-key',
       'env-athlete',
-      undefined,
+      undefined, env.CREDENTIAL_ENCRYPTION_KEY,
     );
     expect(seeded).toHaveLength(1);
     expect(await userState(owner.id)).toMatchObject({
@@ -897,7 +902,7 @@ describe('P4.6 dual-mode current Worker', () => {
       env.DB,
       'must-not-replace',
       'must-not-replace-athlete',
-      undefined,
+      undefined, env.CREDENTIAL_ENCRYPTION_KEY,
     );
     expect(repeated).toHaveLength(1);
     expect(await userState(owner.id)).toMatchObject({
@@ -934,7 +939,7 @@ describe('P4.6 dual-mode current Worker', () => {
       env.DB,
       'env-key',
       'env-athlete',
-      undefined,
+      undefined, env.CREDENTIAL_ENCRYPTION_KEY,
     );
 
     // Exact P4 commits the credential row and the iOS audit separately. Pause
@@ -962,7 +967,7 @@ describe('P4.6 dual-mode current Worker', () => {
       env.DB,
       'must-not-resurrect',
       'must-not-resurrect-athlete',
-      undefined,
+      undefined, env.CREDENTIAL_ENCRYPTION_KEY,
     );
     await env.DB
       .prepare(
@@ -996,7 +1001,7 @@ describe('P4.6 dual-mode current Worker', () => {
       env.DB,
       'must-not-seed',
       'must-not-seed-athlete',
-      undefined,
+      undefined, env.CREDENTIAL_ENCRYPTION_KEY,
     );
     expect(await userState(touched)).toMatchObject({
       intervals_cutover_athlete_id: null,

@@ -40,6 +40,15 @@ async function connect(jwt: string, api_key: string | null = 'synthetic-key', at
   await settle();
   return response;
 }
+async function startOAuth(jwt: string) {
+  const response = await request('https://test/auth/intervals/start', { method: 'POST', headers: headers(jwt) });
+  return new URL((await response.json<{ authorize_url: string }>()).authorize_url).searchParams.get('state')!;
+}
+async function finishOAuth(jwt: string, callback: Response) {
+  const completion = new URL(callback.headers.get('Location')!).searchParams.get('completion');
+  expect(completion).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  return request('https://test/auth/intervals/finish', { method: 'POST', headers: headers(jwt), body: JSON.stringify({ completion }) });
+}
 function importResponse(status = 200, body: object = [activity]) {
   fetchMock.get(origin).intercept({ path: /\/api\/v1\/athlete\/[^/]+\/activities\?/ })
     .reply(status, body);
@@ -87,7 +96,7 @@ describe('Intervals connection reconciliation', () => {
 
   it('preserves history on rejected credentials, clears the auth error on reconnect, and preserves it on disconnect', async () => {
     const user = await member();
-    const stored = await setUserIntervalsCreds(env.DB, user.id, 'old-key', 'athlete-a');
+    const stored = await setUserIntervalsCreds(env.DB, user.id, env.CREDENTIAL_ENCRYPTION_KEY, 'old-key', 'athlete-a');
     await reconcileIntervalsConnection(env.DB, env, user.id, stored.credential_generation, { fetcher: success, today });
     const previous = await rows(user.id);
     importResponse(401, {});
@@ -111,7 +120,7 @@ describe('Intervals connection reconciliation', () => {
 
   it.each(['disconnect', 'replace'] as const)('fences an import that finishes after %s', async (change) => {
     const user = await member();
-    const stored = await setUserIntervalsCreds(env.DB, user.id, 'old-key', 'athlete-a');
+    const stored = await setUserIntervalsCreds(env.DB, user.id, env.CREDENTIAL_ENCRYPTION_KEY, 'old-key', 'athlete-a');
     let started!: () => void;
     const began = new Promise<void>(resolve => { started = resolve; });
     let release!: () => void;
@@ -120,7 +129,7 @@ describe('Intervals connection reconciliation', () => {
       today, fetcher: async () => { started(); await gate; return success(''); },
     });
     await began;
-    await setUserIntervalsCreds(env.DB, user.id, change === 'replace' ? 'new-key' : null, change === 'replace' ? 'athlete-b' : null);
+    await setUserIntervalsCreds(env.DB, user.id, env.CREDENTIAL_ENCRYPTION_KEY, change === 'replace' ? 'new-key' : null, change === 'replace' ? 'athlete-b' : null);
     release();
     expect((await running).status).toBe('superseded');
     expect(await rows(user.id)).toEqual([]);
@@ -129,18 +138,18 @@ describe('Intervals connection reconciliation', () => {
 
   it('reconciles only the authenticated member and rejects a stale retry before provider I/O', async () => {
     const a = await member(), b = await member();
-    const old = await setUserIntervalsCreds(env.DB, a.id, 'a-key', 'athlete-a');
-    await setUserIntervalsCreds(env.DB, b.id, 'b-key', 'athlete-b');
+    const old = await setUserIntervalsCreds(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, 'a-key', 'athlete-a');
+    await setUserIntervalsCreds(env.DB, b.id, env.CREDENTIAL_ENCRYPTION_KEY, 'b-key', 'athlete-b');
     importResponse();
     await request('https://test/api/me/integrations/intervals/sync', { method: 'POST', headers: headers(a.jwt),
       body: JSON.stringify({ expected_generation: old.credential_generation }) });
     expect(await rows(a.id)).toHaveLength(1);
     expect(await rows(b.id)).toEqual([]);
-    await setUserIntervalsCreds(env.DB, a.id, null, null);
+    await setUserIntervalsCreds(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     const stale = await request('https://test/api/me/integrations/intervals/sync', { method: 'POST', headers: headers(a.jwt),
       body: JSON.stringify({ expected_generation: old.credential_generation }) });
     expect(await stale.json()).toMatchObject({ status: 'superseded' });
-    expect((await getUserIntervalsCreds(env.DB, b.id)).api_key).toBe('b-key');
+    expect((await getUserIntervalsCreds(env.DB, b.id, env.CREDENTIAL_ENCRYPTION_KEY)).api_key).toBe('b-key');
   });
 
   it('requires authentication and a valid generation for explicit retry', async () => {
@@ -156,14 +165,14 @@ describe('Intervals connection reconciliation', () => {
 
   it('imports through the actual OAuth callback and rejects replay without another exchange', async () => {
     const user = await member();
-    const state = await createIntervalsOAuthState(env.DB, user.id);
+    const state = await startOAuth(user.jwt);
     fetchMock.get(origin).intercept({ path: '/api/oauth/token', method: 'POST' })
       .reply(200, { access_token: 'synthetic-oauth-token', athlete: { id: 'oauth-athlete' } });
     importResponse();
     const callback = `https://test/auth/intervals/callback?code=synthetic-code&state=${state}`;
     const response = await request(callback, { redirect: 'manual' });
     expect(response.status).toBe(302);
-    expect(response.headers.get('Location')).toBe('tresfort://intervals-connected?ok=1&generation=1');
+    expect(await (await finishOAuth(user.jwt, response)).json()).toMatchObject({ connected: true, credential_generation: 1 });
     await settle();
     expect(await rows(user.id)).toHaveLength(1);
     const retry = await request(callback, { redirect: 'manual' });
@@ -172,12 +181,12 @@ describe('Intervals connection reconciliation', () => {
 
   it.each([503, 401])('keeps OAuth acceptance separate from initial import HTTP %i', async (status) => {
     const user = await member();
-    const state = await createIntervalsOAuthState(env.DB, user.id);
+    const state = await startOAuth(user.jwt);
     fetchMock.get(origin).intercept({ path: '/api/oauth/token', method: 'POST' })
       .reply(200, { access_token: 'synthetic-token', athlete: { id: 'oauth-athlete' } });
     importResponse(status, {});
     const response = await request(`https://test/auth/intervals/callback?code=synthetic-code&state=${state}`, { redirect: 'manual' });
-    expect(response.headers.get('Location')).toBe('tresfort://intervals-connected?ok=1&generation=1');
+    expect(await (await finishOAuth(user.jwt, response)).json()).toMatchObject({ connected: true, credential_generation: 1 });
     await settle();
     expect(await getIntervalsConnectionStatus(env.DB, user.id)).toMatchObject({
       connected: status !== 401, needs_reauth: status === 401,
@@ -198,7 +207,7 @@ describe('Intervals connection reconciliation', () => {
       return gate;
     });
     const pending = kind === 'oauth'
-      ? request(`https://test/auth/intervals/callback?code=synthetic&state=${await createIntervalsOAuthState(env.DB, user.id)}`)
+      ? request(`https://test/auth/intervals/callback?code=synthetic&state=${await startOAuth(user.jwt)}`).then(response => finishOAuth(user.jwt, response))
       : request('https://test/api/me/integrations/intervals', { method: 'PATCH', headers: headers(user.jwt),
           body: JSON.stringify({ api_key: 'synthetic-key', athlete_id: 'athlete-a' }) });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -207,9 +216,8 @@ describe('Intervals connection reconciliation', () => {
       const response = await Promise.race([pending, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 500); })]);
       expect(response, 'credential acknowledgement must not await provider completion').not.toBeNull();
       if (!response) throw new Error('acknowledgement_blocked');
-      expect(response.status).toBe(kind === 'oauth' ? 302 : 200);
-      if (kind === 'oauth') expect(response.headers.get('Location')).toBe('tresfort://intervals-connected?ok=1&generation=1');
-      else expect(await response.json()).toMatchObject({ connected: true, credential_generation: 1 });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ connected: true, credential_generation: 1 });
       expect(await rows(user.id)).toEqual([]);
     } finally {
       if (timer) clearTimeout(timer);
@@ -229,7 +237,7 @@ describe('Intervals connection reconciliation', () => {
         const wrap = (inner: D1PreparedStatement): D1PreparedStatement => new Proxy(inner, { get(item, key) {
           if (key === 'bind') return (...values: unknown[]) => wrap(item.bind(...values));
           if (key === 'run') return async () => {
-            await setUserIntervalsCreds(env.DB, user.id, null, null);
+            await setUserIntervalsCreds(env.DB, user.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
             return item.run();
           };
           const value = Reflect.get(item, key);
@@ -259,9 +267,9 @@ describe('Intervals connection reconciliation', () => {
     const pending = await createIntervalsOAuthState(env.DB, user.id);
     const consumed = await consumeIntervalsOAuthAttempt(env.DB, await createIntervalsOAuthState(env.DB, user.id));
     expect(consumed).toMatchObject({ user_id: user.id, credential_generation: 0 });
-    await setUserIntervalsCreds(env.DB, user.id, null, null);
+    await setUserIntervalsCreds(env.DB, user.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     expect(await consumeIntervalsOAuthAttempt(env.DB, pending)).toBeNull();
-    expect(await setUserIntervalsOAuth(env.DB, user.id, 'late-token', null, null, 'late-athlete', consumed!.credential_generation)).toBeNull();
+    expect(await setUserIntervalsOAuth(env.DB, user.id, env.CREDENTIAL_ENCRYPTION_KEY, 'late-token', null, null, 'late-athlete', consumed!.credential_generation)).toBeNull();
     expect((await getIntervalsConnectionStatus(env.DB, user.id)).connected).toBe(false);
   });
 });

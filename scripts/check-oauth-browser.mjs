@@ -1,6 +1,7 @@
 // Local-only behavioral coverage for browser-enforced OAuth navigation.
-// Run a migrated local Worker with OWNER_AUTH_PASSPHRASE set to the synthetic
-// value below. No real member or provider credentials are used or printed.
+// Run a migrated local Worker with DEV_AUTH_SECRET set to the synthetic
+// value below and APP_JWT_SECRET set to a synthetic signing key. No real
+// member or provider credentials are used or printed.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { chromium } from 'playwright-core';
@@ -63,7 +64,17 @@ try {
         assert.equal((await retry).status(), 401);
         await page.locator('.err').waitFor();
       }
-      await page.locator('input[name=passphrase]').fill('synthetic-browser-consent');
+      const signedIn = await fetch(new URL('/auth/dev', base), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secret: 'synthetic-browser-consent' }),
+      });
+      assert.equal(signedIn.status, 200);
+      const { jwt } = await signedIn.json();
+      const issued = await fetch(new URL('/api/me/mcp-passphrase', base), {
+        method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${jwt}` }, body: '{}',
+      });
+      assert.equal(issued.status, 200);
+      await page.locator('input[name=passphrase]').fill((await issued.json()).code);
       await Promise.all([
         page.waitForURL(url => url.origin === callback.origin && url.pathname === callback.pathname,
           { timeout: 10_000 }),

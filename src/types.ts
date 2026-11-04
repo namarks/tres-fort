@@ -14,12 +14,14 @@ export interface Env {
   /** PKCS#8 EC private signing key (`wrangler secret put`; never committed). */
   APPLE_PRIVATE_KEY?: string;
   APP_JWT_SECRET: string;
+  /** Base64-encoded 32-byte AES-GCM key; stored only as a Worker secret. */
+  CREDENTIAL_ENCRYPTION_KEY?: string;
   MCP_STATIC_TOKEN?: string;
   /** Allowlisted Apple `sub`. If set, only this user may sign in. */
   OWNER_APPLE_SUB?: string;
   /** If set, enables POST /auth/dev for local + integration tests. */
   DEV_AUTH_SECRET?: string;
-  /** Consent gate for the OAuth /authorize step (claude.ai/desktop). */
+  /** Retired: never authorizes public coach consent. Kept for legacy fixture compatibility. */
   OWNER_AUTH_PASSPHRASE?: string;
   /**
    * intervals.icu API key (a `wrangler secret put` secret — NEVER committed).
@@ -78,6 +80,8 @@ export type HonoEnv = {
   Variables: {
     userId: string;
     appAuthTime: number;
+    appSessionId: string;
+    appSessionExpiresAt: number;
     appReview: boolean;
     /** Which client signed in: the iOS app, or the web app (docs/plans/web-app). */
     appClient: AppClient;
@@ -135,10 +139,8 @@ export interface User {
   /** Monotonic protected-write sequence used by the P4.6 source fence. */
   intervals_protocol_write_seq: number;
   /**
-   * Per-user MCP passphrase (M3 multi-tenant, 0025). PBKDF2-SHA256 hash +
-   * per-user salt; never plaintext. NULL → no passphrase set, so this user
-   * cannot open a Claude MCP session via OAuth (the owner also has the
-   * OWNER_AUTH_PASSPHRASE env path). Set via POST /api/me/mcp-passphrase.
+   * Retired PBKDF2 fields (migration 0025). Public authorization no longer
+   * reads these; single-use coach_connect_codes replace reusable passwords.
    */
   mcp_passphrase_hash: string | null;
   mcp_passphrase_salt: string | null;

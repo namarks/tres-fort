@@ -3,6 +3,12 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { createCoachConnectCode, ensureOwnerUser } from '../src/db';
+
+async function ownerCode() {
+  return (await createCoachConnectCode(env.DB, (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))!.id)).code;
+}
+
 const BASE = 'https://tres-fort.test';
 const ATTACK_SHAPED_REQUEST_HEADERS =
   `x-prefix${' '.repeat(16_384)}x-suffix` + ',x-final-header';
@@ -138,7 +144,7 @@ describe('oauth discovery', () => {
     submit.set('redirect_uri', redirect);
     submit.set('code_challenge', challenge);
     submit.set('scope', 'mcp email');
-    submit.set('passphrase', 'test-pass');
+    submit.set('passphrase', await ownerCode());
     expect((await SELF.fetch(`${BASE}/oauth/authorize`, { method: 'POST', body: submit })).status).toBe(400);
     const token = new FormData();
     token.set('grant_type', 'refresh_token');
@@ -191,7 +197,7 @@ describe('native loopback OAuth callbacks', () => {
     });
     const page = await SELF.fetch(`${BASE}/oauth/authorize?${params}`);
     expect(page.status).toBe(valid ? 200 : 400);
-    params.set('passphrase', env.OWNER_AUTH_PASSPHRASE!);
+    params.set('passphrase', await ownerCode());
     const submitted = await SELF.fetch(`${BASE}/oauth/authorize`, {
       method: 'POST', body: params, redirect: 'manual',
     });
@@ -260,7 +266,7 @@ describe('oauth full PKCE flow', () => {
     good.set('code_challenge', challenge);
     good.set('state', 'xyz');
     good.set('scope', 'mcp');
-    good.set('passphrase', 'test-pass');
+    good.set('passphrase', await ownerCode());
     const authRes = await SELF.fetch(`${BASE}/oauth/authorize`, {
       method: 'POST',
       body: good,
@@ -334,7 +340,7 @@ describe('oauth full PKCE flow', () => {
     form.set('redirect_uri', redirect);
     form.set('code_challenge', challenge);
     form.set('scope', 'mcp');
-    form.set('passphrase', 'test-pass');
+    form.set('passphrase', await ownerCode());
     const authRes = await SELF.fetch(`${BASE}/oauth/authorize`, {
       method: 'POST',
       body: form,

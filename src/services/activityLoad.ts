@@ -7,12 +7,15 @@
 
 import { selectLoad, type LoadMethod, type ThresholdSet } from '../trainingLoad';
 import { listAthleteThresholds, thresholdsOn, type AthleteThreshold, type ThresholdSport } from './athleteThresholds';
+import { heartRateThresholdFor } from '../sports';
 
 interface LoadRow {
   id: string;
   deleted_at: number | null;
   date: string;
   kind: string;
+  /** Migration 0064; null on rows the backfill never saw. */
+  sport: string | null;
   moving_time_sec: number | null;
   distance_m: number | null;
   average_hr: number | null;
@@ -33,9 +36,25 @@ export function thresholdSportFor(kind: string): ThresholdSport | null {
   return kind === 'ride' ? 'ride' : kind === 'run' ? 'run' : null;
 }
 
-export function effectiveLoadFor(row: Omit<LoadRow, 'id' | 'deleted_at' | 'effective_load' | 'effective_intensity' | 'load_method'>, thresholds: readonly AthleteThreshold[]) {
-  const sport = thresholdSportFor(row.kind);
-  const set: ThresholdSet = sport ? thresholdsOn(thresholds, sport, row.date) : {};
+/** The thresholds that score an activity: a run's or ride's whole set, or for
+ * another sport only the threshold heart rate of the set it borrows
+ * (sport-activities P1), so its pace or power is never scored. */
+export function thresholdSetFor(
+  kind: string, sport: string | null | undefined, thresholds: readonly AthleteThreshold[], date: string,
+): ThresholdSet {
+  const own = thresholdSportFor(kind);
+  if (own) return thresholdsOn(thresholds, own, date);
+  const borrowed = heartRateThresholdFor(sport);
+  if (!borrowed) return {};
+  const hr = thresholdsOn(thresholds, borrowed, date).threshold_hr;
+  return hr ? { threshold_hr: hr } : {};
+}
+
+export function effectiveLoadFor(
+  row: Omit<LoadRow, 'id' | 'deleted_at' | 'effective_load' | 'effective_intensity' | 'load_method' | 'sport'> & { sport?: string | null },
+  thresholds: readonly AthleteThreshold[],
+) {
+  const set = thresholdSetFor(row.kind, row.sport, thresholds, row.date);
   return selectLoad(
     {
       moving_time_sec: row.moving_time_sec,
@@ -90,7 +109,7 @@ export async function refreshActivityLoads(
       listAthleteThresholds(db, userId),
       db
         .prepare(
-          `SELECT id, deleted_at, date, kind, moving_time_sec, distance_m, average_hr, weighted_avg_watts,
+          `SELECT id, deleted_at, date, kind, sport, moving_time_sec, distance_m, average_hr, weighted_avg_watts,
                   training_load, intensity, stream_np_w, stream_hr_rms, stream_hr_sec,
                   effective_load, effective_intensity, load_method
              FROM external_activities
@@ -122,6 +141,7 @@ export async function refreshActivityLoads(
                 AND average_hr IS ?11 AND weighted_avg_watts IS ?12
                 AND training_load IS ?13 AND intensity IS ?14
                 AND stream_np_w IS ?20 AND stream_hr_rms IS ?21 AND stream_hr_sec IS ?22
+                AND sport IS ?23
                 AND effective_load IS ?15 AND effective_intensity IS ?16 AND load_method IS ?17
                 AND (${thresholdFingerprintSql('?2')}) IS ?18`,
           )
@@ -134,6 +154,7 @@ export async function refreshActivityLoads(
             fingerprint?.fp ?? null,
             row.deleted_at,
             row.stream_np_w, row.stream_hr_rms, row.stream_hr_sec,
+            row.sport,
           ),
       );
     }

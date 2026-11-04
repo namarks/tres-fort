@@ -64,6 +64,11 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-streams-backfill.v1.\(userID)"
     }
 
+    /// The one-time pass for sports scored from heart rate (sport-activities P1).
+    static func healthSportStreamsBackfillKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-sport-streams-backfill.v1.\(userID)"
+    }
+
     static func appleCredentialUserKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
@@ -141,6 +146,7 @@ enum AccountLocalState {
             healthAnchorKey(userID: userID),
             healthResetPendingKey(userID: userID),
             healthStreamsBackfillKey(userID: userID),
+            healthSportStreamsBackfillKey(userID: userID),
         ]
         var erased = true
         do { try StationRecordingStore.deleteAccountRecordings(accountID: userID) }

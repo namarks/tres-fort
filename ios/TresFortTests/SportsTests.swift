@@ -9,6 +9,7 @@ final class SportsTests: XCTestCase {
         struct Entry: Decodable { let id: String; let label: String }
         let sports: [Entry]
         let healthkit: [String: String]
+        let heart_rate_thresholds: [String: String]
     }
 
     private func fixture() throws -> Fixture {
@@ -21,6 +22,10 @@ final class SportsTests: XCTestCase {
         XCTAssertEqual(Sports.all.map(\.id), f.sports.map(\.id))
         XCTAssertEqual(Sports.all.map(\.label), f.sports.map(\.label))
         XCTAssertFalse(Sports.all.contains { $0.glyph.isEmpty })
+        XCTAssertEqual(Sports.heartRateScored, Set(f.heart_rate_thresholds.keys))
+        XCTAssertTrue(Sports.scoresHeartRate("soccer"))
+        XCTAssertFalse(Sports.scoresHeartRate("swim"))
+        XCTAssertFalse(Sports.scoresHeartRate(nil))
     }
 
     func testHealthKitTypesMatchTheWorker() throws {

@@ -93,6 +93,22 @@ enum Sports {
         return all.first { $0.id != "other" && ($0.label.lowercased() == key || $0.id == key) }
     }
 
+    /// Sports the Worker scores from heart rate (sport-activities P1), so the
+    /// Apple Health import reads their heart-rate samples. Mirrors
+    /// `HEART_RATE_THRESHOLDS` in src/sports.ts.
+    static let heartRateScored: Set<String> = [
+        "run", "ride", "walk", "hike", "elliptical", "stairs", "cardio", "hiit", "cross_training",
+        "dance", "boxing", "martial_arts", "climbing", "soccer", "basketball", "volleyball",
+        "american_football", "rugby", "hockey", "lacrosse", "handball", "baseball", "softball",
+        "cricket", "disc_sports", "tennis", "pickleball", "padel", "squash", "racquetball",
+        "badminton", "table_tennis", "skating", "downhill_ski", "cross_country_ski", "snowboard",
+        "jump_rope"
+    ]
+
+    static func scoresHeartRate(_ id: String?) -> Bool {
+        id.map(heartRateScored.contains) ?? false
+    }
+
     /// The sport of an Apple Health workout. Types not listed are "other".
     static func sport(for type: HKWorkoutActivityType) -> String {
         // 14 is the deprecated `.dance`, matched by number to avoid the warning.

@@ -312,6 +312,8 @@ chat start) and a **prompt** (`coach_brief`).
   `ios/TresFort/Sports.swift` and pinned to
   `ios/TresFortTests/Fixtures/Sports.json`. `kind` stays coarse because
   cross-source dedup matches on kind and start time; never make it finer.
+  Sports beyond runs and rides get a heart-rate load from the run or ride
+  threshold heart rate only (`HEART_RATE_THRESHOLDS`), never pace or power.
   See [the plan](docs/plans/sport-activities/plan.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude
   editing `target_*` / the per-exercise `progression` JSON and writing a

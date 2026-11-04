@@ -2,8 +2,8 @@ import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 import {
-  HEALTHKIT_SPORTS, INTERVALS_SPORTS, SPORTS, healthKitTypeOf, isSport, sportForFit,
-  sportForHealthKitType, sportForIntervalsType, sportLabel,
+  HEALTHKIT_SPORTS, HEART_RATE_THRESHOLDS, INTERVALS_SPORTS, SPORTS, healthKitTypeOf, heartRateThresholdFor,
+  isSport, sportForFit, sportForHealthKitType, sportForIntervalsType, sportLabel,
 } from '../src/sports';
 import { fetchCompletedActivities, type Fetcher } from '../src/intervals';
 import { parseFit } from '../src/fitFile';
@@ -39,6 +39,16 @@ describe('the sport vocabulary', () => {
   it('matches the contract the iOS app is tested against', () => {
     expect(SPORTS).toEqual(fixture.sports);
     expect(Object.fromEntries(Object.entries(HEALTHKIT_SPORTS))).toEqual(fixture.healthkit);
+    expect(HEART_RATE_THRESHOLDS).toEqual(fixture.heart_rate_thresholds);
+  });
+
+  it('names a threshold set only for sports heart rate can score (P1)', () => {
+    for (const s of Object.keys(HEART_RATE_THRESHOLDS)) expect(isSport(s), s).toBe(true);
+    expect(heartRateThresholdFor('soccer')).toBe('run');
+    expect(heartRateThresholdFor('ride')).toBe('ride');
+    for (const s of ['swim', 'strength', 'yoga', 'row', 'paddling', 'other', 'toString', null, undefined]) {
+      expect(heartRateThresholdFor(s), String(s)).toBeNull();
+    }
   });
 
   it('has unique ids and only maps to known sports', () => {

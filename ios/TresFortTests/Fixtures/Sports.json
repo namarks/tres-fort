@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared contract for src/sports.ts and ios/TresFort/Sports.swift: the sport list (order, ids, labels) and HKWorkoutActivityType raw value to sport. Types not listed are 'other'.",
+  "_comment": "Shared contract for src/sports.ts and ios/TresFort/Sports.swift: the sport list (order, ids, labels), HKWorkoutActivityType raw value to sport (types not listed are 'other'), and which threshold heart rate scores each sport (sports not listed get no heart-rate load).",
   "sports": [
     {
       "id": "run",
@@ -256,5 +256,44 @@
     "77": "dance",
     "78": "dance",
     "79": "pickleball"
+  },
+  "heart_rate_thresholds": {
+    "run": "run",
+    "ride": "ride",
+    "walk": "run",
+    "hike": "run",
+    "elliptical": "run",
+    "stairs": "run",
+    "cardio": "run",
+    "hiit": "run",
+    "cross_training": "run",
+    "dance": "run",
+    "boxing": "run",
+    "martial_arts": "run",
+    "climbing": "run",
+    "soccer": "run",
+    "basketball": "run",
+    "volleyball": "run",
+    "american_football": "run",
+    "rugby": "run",
+    "hockey": "run",
+    "lacrosse": "run",
+    "handball": "run",
+    "baseball": "run",
+    "softball": "run",
+    "cricket": "run",
+    "disc_sports": "run",
+    "tennis": "run",
+    "pickleball": "run",
+    "padel": "run",
+    "squash": "run",
+    "racquetball": "run",
+    "badminton": "run",
+    "table_tennis": "run",
+    "skating": "run",
+    "downhill_ski": "run",
+    "cross_country_ski": "run",
+    "snowboard": "run",
+    "jump_rope": "run"
   }
 }

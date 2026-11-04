@@ -256,13 +256,35 @@ coach sees it in the same place as Garmin runs.
       read and show no map.
     - The privacy policy says the app and web read a run's track from
       Intervals.icu to show its map, only to the member, without keeping it.
-  - [ ] **(b) Apple Health runs**
-    - The iPhone app reads the route Apple Health saved with a run another
-      app recorded (not the recorder's own workouts, whose route Tres Fort
-      already keeps) and sends it to the server, which keeps it in
-      `activity_routes` for that Health activity, private like a recorded
-      route. The app and web then ask for Health runs' routes too. A Health
-      workout deleted from Health takes its route with it.
+  - [x] **(b) Apple Health runs**
+    - The app asks Apple Health for workout routes too (once, like any read
+      type added later), and the Health permission text names run routes.
+      After each sync it reads the route Health saved
+      with each run of the last year that another app recorded, such as
+      Strava; the recorder's own workouts are skipped, since their recording
+      carries the route. Each Health route object, and each stretch between
+      gaps over a minute, is its own line; fixes Health marks invalid are
+      left out.
+    - `PUT /api/activities/healthkit/:id/route` (the Health workout id) takes
+      the route in `src/activityRoute.ts`'s encoding, re-encodes it (invalid
+      points dropped, a very long route thinned) and keeps it in
+      `activity_routes` for that Health run; a later send replaces it. 404
+      until the run itself is stored or for a run the member deleted, 422
+      for a workout that isn't a run.
+    - The app remembers each run whose route was sent, or that still has
+      none a day after it ended, saving after each run, so it reads each
+      route once; a failed read or a run not stored yet is tried on a later
+      sync. Disconnecting Apple
+      Health forgets them, so reconnecting looks again (for example after
+      route access was granted in the Health app).
+    - `GET /api/activities/:id/route` serves the stored Health route (`source:
+      'healthkit'`) after a recording and before reading intervals.icu, for
+      the Health run or the intervals.icu copy it is hidden behind. The app
+      and web now ask for Health runs' routes too.
+    - Private like a recorded route: group views and the coach never read
+      it; the account export includes it and account deletion removes it.
+      The privacy policy says the app uploads the route of a run another app
+      saved to Apple Health.
 
 ## Execution frontier
 
@@ -284,15 +306,13 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@agent):** P6(b): send the routes Apple Health saved with runs from
-other apps.
-
-**Then (@owner):** Record the remaining P3 runs, now on TestFlight build 63
+**Now (@owner):** Record the remaining P3 runs, now on TestFlight build 63
 (main 21f0f3f), which also carries P5: the API and `tres-fort-web` run main
 21f0f3f with migration 0063 applied, and the owner set `MAPKIT_TOKEN` on
 2026-11-04. P5 is done once deleting a recorded run is seen on the device.
-P6(a) needs an API Worker deploy and an app build, each with the owner's
-go-ahead.
+P6 needs an API Worker deploy, a website deploy for the privacy policy and
+an app build, each with the owner's go-ahead; it is done once maps of an
+intervals.icu run and of a Strava run show on the device.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -388,6 +408,17 @@ the scene delegate is left to P3's force-quit check.
   `test/activity_route.test.ts` covers building segments from a provider's
   samples. `ActivityRouteTests` and `web/test/routeMap.test.ts` cover a
   route with no recording behind it.
+- P6(b): `test/health_route.test.ts` covers keeping a Health run's route
+  and serving it to its member only, replacing it and dropping invalid
+  points, refusing a workout not stored yet, a ride, a deleted run and a
+  malformed route, and serving it for the intervals.icu copy it hides
+  behind without asking intervals.icu. `HealthWorkoutRouteTests` covers the
+  encoding (a line per route object and per long gap, invalid fixes and
+  unknown altitudes left out), the request body, skipping the recorder's
+  workouts and the remembered runs. `ActivityRouteTests` and
+  `web/test/routeMap.test.ts` cover asking for Health runs' routes. The
+  HealthKit route queries are compiled only; the first real route is seen
+  on a device.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

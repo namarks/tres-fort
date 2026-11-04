@@ -36,7 +36,7 @@ describe('a recorded route', () => {
     expect(drawableSegments({ ...ROUTE, dlat: [95000000, 0, 0, 0, 0] })).toEqual([]);
   });
 
-  it('is looked for only on runs recorded in the app or their intervals.icu copy', () => {
+  it('is looked for only on runs recorded in the app, from intervals.icu or from Apple Health', () => {
     const activity = (id: string, source: string, kind: string, deleted_at: number | null = null) =>
       ({ id, source, kind, deleted_at });
     const state = {
@@ -45,10 +45,12 @@ describe('a recorded route', () => {
         activity('intervals:activity:i1', 'intervals', 'run'),
         activity('healthkit:h1', 'healthkit', 'run'),
         activity('intervals:activity:i2', 'intervals', 'ride'),
+        activity('fit:activity:f1', 'fit', 'run'),
         activity('recording:activity:u:r2', 'recording', 'run', 5),
       ],
     } as unknown as StateResponse;
-    expect([...routableActivityIds(state)]).toEqual(['recording:activity:u:r1', 'intervals:activity:i1']);
+    expect([...routableActivityIds(state)])
+      .toEqual(['recording:activity:u:r1', 'intervals:activity:i1', 'healthkit:h1']);
   });
 });
 

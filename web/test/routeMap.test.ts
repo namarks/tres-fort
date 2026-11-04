@@ -96,8 +96,15 @@ describe('reading a route and the map token', () => {
     expect(url).toBe('/api/activities/intervals%3Aactivity%3Ai1/route');
     expect((init.headers as Record<string, string>)['x-tres-fort-web']).toBe('1');
 
+    stubFetch(200, { activity_id: 'intervals:activity:u:i9', source: 'intervals', recording_id: null, route: ROUTE });
+    const track = await fetchActivityRoute('intervals:activity:u:i9');
+    expect(track?.recording_id).toBeNull();
+    expect(drawableSegments(track?.route).length).toBeGreaterThan(0);
+
     stubFetch(404, { error: 'not_found' });
     expect(await fetchActivityRoute('a')).toBeNull();
+    stubFetch(502, { error: 'intervals_unavailable' });
+    await expect(fetchActivityRoute('a')).rejects.toBeInstanceOf(ApiError);
     stubFetch(500, {});
     await expect(fetchActivityRoute('a')).rejects.toBeInstanceOf(ApiError);
   });

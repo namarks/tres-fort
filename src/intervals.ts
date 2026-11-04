@@ -696,3 +696,60 @@ export async function deleteIntervalsActivity(
   const r = await intervalsRequest(url, 'DELETE', authHeader, undefined, deps);
   return r.ok ? { ok: true, value: null } : r;
 }
+
+/**
+ * One activity's GPS track as intervals.icu streams it, index for index:
+ * seconds from the start, latitude and longitude (the `latlng` stream's
+ * `data` and `data2`) and altitude in meters. Null entries are missing
+ * samples. `time` is null when intervals.icu sent no time stream.
+ */
+export interface IntervalsRouteStreams {
+  time: (number | null)[] | null;
+  lat: (number | null)[];
+  lon: (number | null)[];
+  altitude: (number | null)[] | null;
+}
+
+/**
+ * GET /api/v1/activity/{id}/streams with the time, latlng and altitude
+ * streams. `value` is null when the activity has no GPS track (an indoor
+ * run, a manual entry). Read only: nothing here is stored.
+ */
+export async function fetchActivityRouteStreams(
+  apiKey: string | null | undefined,
+  activityId: string,
+  deps: WriteDeps = {},
+): Promise<IntervalsWriteResult<IntervalsRouteStreams | null>> {
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader) return { ok: false, reason: 'disabled' };
+  const url =
+    `https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}` +
+    '/streams?types=time,latlng,altitude';
+  const r = await intervalsRequest(url, 'GET', authHeader, undefined, {
+    ...deps,
+    timeoutMs: deps.timeoutMs ?? 15_000,
+  });
+  if (!r.ok) return r;
+  if (!Array.isArray(r.value)) return { ok: false, reason: 'parse' };
+  const byType = new Map<string, Record<string, unknown>>();
+  for (const stream of r.value) {
+    if (isRecord(stream) && typeof stream.type === 'string') byType.set(stream.type, stream);
+  }
+  const numbers = (v: unknown): (number | null)[] | null =>
+    Array.isArray(v) ? v.map((x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)) : null;
+  const latlng = byType.get('latlng');
+  const lat = numbers(latlng?.data);
+  const lon = numbers(latlng?.data2);
+  if (!lat || !lon || lat.length !== lon.length) return { ok: true, value: null };
+  const time = numbers(byType.get('time')?.data);
+  const altitude = numbers(byType.get('altitude')?.data);
+  return {
+    ok: true,
+    value: {
+      time: time && time.length === lat.length ? time : null,
+      lat,
+      lon,
+      altitude: altitude && altitude.length === lat.length ? altitude : null,
+    },
+  };
+}

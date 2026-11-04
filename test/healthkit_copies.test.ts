@@ -170,4 +170,24 @@ describe('Apple Health copies of one workout', () => {
     expect(tombstone.duplicate_of).toBeNull();
     expect(shown(all)).toHaveLength(1);
   });
+
+  it('moves an effort rating on an older copy to the copy shown, with its load', async () => {
+    const userId = await user();
+    const insert = (suffix: string, effort: number | null) => env.DB.prepare(`INSERT INTO external_activities
+      (id,user_id,source,external_id,date,kind,name,start_date_local_ms,moving_time_sec,elapsed_time_sec,
+       distance_m,calories,synced_at,canonical,effort)
+      VALUES (?1,?2,'healthkit',?3,'2020-12-27','run','Run',?4,1124,1124,4990,340,1,1,?5)`)
+      .bind(`healthkit:activity:${userId}:${suffix}`, userId, suffix, start, effort).run();
+    await insert('A-SHOWN', null);
+    await insert('B-RATED', 7);
+    // Today's push reconciles the whole history.
+    await upsertHealthKitActivity(env.DB, userId, copy({ date: '2026-06-18',
+      start_date_local_ms: Date.parse('2026-06-18T10:00:00Z') }));
+
+    const winner = (await rows(userId)).find(r => r.external_id === 'A-SHOWN')!;
+    expect(winner.deleted_at).toBeNull();
+    expect(winner.effort).toBe(7);
+    expect(winner.load_method).toBe('effort');
+    expect(winner.effective_load).not.toBeNull();
+  });
 });

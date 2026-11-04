@@ -9884,6 +9884,8 @@ export async function retireHealthKitCopies(
   // the same batch finds it shown.
   const restores: D1PreparedStatement[] = [];
   const retires: D1PreparedStatement[] = [];
+  const dateOf = new Map(rows.map(r => [r.id, r.date]));
+  const touched: string[] = [];
   for (const row of rows) {
     if (window && (row.date < window.healthKitFromDate || row.date > window.healthKitToDate)) continue;
     const winner = winnerOf.get(row.id) ?? null;
@@ -9907,6 +9909,7 @@ export async function retireHealthKitCopies(
           )
           .bind(row.id, userId, ts, winner),
       );
+      touched.push(row.date, dateOf.get(winner)!);
     } else if (winner === null && row.deleted_at !== null) {
       // The copy it was hidden behind is gone, so this one is shown again.
       restores.push(
@@ -9922,12 +9925,21 @@ export async function retireHealthKitCopies(
           )
           .bind(row.id, userId, ts),
       );
+      touched.push(row.date);
     }
   }
   const stmts = [...restores, ...retires];
   if (stmts.length === 0) return 0;
   const results = await db.batch(stmts);
-  return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
+  const changed = results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
+  // An effort rating moves with the copy shown, and so does the load it
+  // gives: rescore the days whose shown copy changed, which a push alone
+  // would not reach for older history.
+  if (changed > 0) {
+    touched.sort();
+    await refreshActivityLoads(db, userId, { fromDate: touched[0], toDate: touched[touched.length - 1] });
+  }
+  return changed;
 }
 
 /** One pass of the rule above: live `loser` rows matching a live row of any

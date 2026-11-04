@@ -116,8 +116,9 @@ What the sources can give (to confirm against real rows in each phase):
     workout or clears it with null, writing the row and the copies hidden as
     its duplicates, then rescores the day. Importers never send or
     overwrite the rating. A shown copy without a rating takes a hidden
-    copy's, so a rating given to an Apple Health workout survives
-    intervals.icu delivering the same one later. Covered by
+    copy's, and a hidden copy without one takes the shown copy's, so a
+    rating survives whichever source delivers the same workout later and
+    a restore when the shown copy goes away. Covered by
     `test/activity_load.test.ts` ("effort rating").
   - The day view shows ten one-tap buttons on any workout without a measured
     load (and keeps them once the rating scores it, to change or clear); the

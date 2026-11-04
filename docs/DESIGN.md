@@ -795,7 +795,8 @@ Health pushes, intervals.icu syncs and threshold changes, advancing
 `PUT /api/activities/:id/effort` or the coach's `rate_activity`) scores a
 workout only when nothing measured does: `load_method='effort'`, one hour at
 effort 7 is 100, labeled an estimate. The rating is written to the row and its
-hidden duplicates, and a live row without one inherits a hidden copy's. See
+hidden duplicates; a live row without one inherits a hidden copy's, and a
+hidden copy without one inherits its live winner's. See
 [the plan](plans/endurance-training-load/plan.md) and
 [sport-activities P2](plans/sport-activities/plan.md).
 

@@ -107,7 +107,9 @@ const thresholdFingerprintSql = (userParam: string) =>
  * A member's effort rating follows the workout across dedup: a live row with
  * no rating of its own takes the newest rating on a row hidden as its
  * duplicate (rated before another source's copy arrived), and keeps it, so
- * the app shows the rating its load came from. `setActivityEffort` rates a
+ * the app shows the rating its load came from. A hidden copy without one
+ * takes its live winner's (rated before the copy arrived), so the rating
+ * survives the copy being restored when the winner goes away. `setActivityEffort` rates a
  * row and its hidden copies together, so clearing it never brings it back.
  */
 export async function refreshActivityLoads(
@@ -135,10 +137,16 @@ export async function refreshActivityLoads(
            SELECT e.id, e.deleted_at, e.date, e.kind, e.sport, e.moving_time_sec, e.elapsed_time_sec, e.distance_m,
                   e.average_hr, e.weighted_avg_watts, e.training_load, e.intensity,
                   e.stream_np_w, e.stream_hr_rms, e.stream_hr_sec, e.effort,
-                  CASE WHEN e.effort IS NULL AND e.deleted_at IS NULL THEN r.effort ELSE e.effort END AS effort_in,
+                  CASE
+                    WHEN e.effort IS NOT NULL THEN e.effort
+                    WHEN e.deleted_at IS NULL THEN r.effort
+                    ELSE w.effort
+                  END AS effort_in,
                   e.effective_load, e.effective_intensity, e.load_method
              FROM external_activities e
              LEFT JOIN rated r ON r.winner = e.id AND r.rn = 1
+             LEFT JOIN external_activities w
+               ON w.id = e.duplicate_of AND w.user_id = e.user_id AND w.deleted_at IS NULL
             WHERE e.user_id = ?1
               AND (e.deleted_at IS NULL OR (e.source IN ('healthkit', 'fit', 'recording') AND e.duplicate_of IS NOT NULL))
               AND e.date >= ?2 AND e.date <= ?3`,
@@ -171,9 +179,14 @@ export async function refreshActivityLoads(
                 AND training_load IS ?13 AND intensity IS ?14
                 AND stream_np_w IS ?20 AND stream_hr_rms IS ?21 AND stream_hr_sec IS ?22
                 AND sport IS ?23 AND elapsed_time_sec IS ?25 AND effort IS ?26
-                AND (?24 IS ?26 OR EXISTS (
-                  SELECT 1 FROM external_activities d
-                   WHERE d.user_id = ?2 AND d.duplicate_of = ?1 AND d.effort IS ?24))
+                AND (?24 IS ?26
+                  OR EXISTS (
+                    SELECT 1 FROM external_activities d
+                     WHERE d.user_id = ?2 AND d.duplicate_of = ?1 AND d.effort IS ?24)
+                  OR EXISTS (
+                    SELECT 1 FROM external_activities w
+                     WHERE w.user_id = ?2 AND w.id = external_activities.duplicate_of
+                       AND w.deleted_at IS NULL AND w.effort IS ?24))
                 AND effective_load IS ?15 AND effective_intensity IS ?16 AND load_method IS ?17
                 AND (${thresholdFingerprintSql('?2')}) IS ?18`,
           )

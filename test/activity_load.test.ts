@@ -533,6 +533,35 @@ describe('effort rating', () => {
     expect((await rate(u.jwt, pushed.id, { effort: 5 })).status).toBe(404);
   });
 
+  it('keeps a rating given before another copy arrived when that copy is later restored', async () => {
+    const u = await makeUser('effort-late-copy');
+    const start = Date.parse('2026-10-24T12:14:00Z');
+    const intervalsId = `intervals:activity:${u.id}:effort-first`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,name,moving_time_sec,
+         start_date_local_ms,synced_at)
+       VALUES (?1,?2,'intervals','effort-first','2026-10-24','run','Run',5400,?3,1)`,
+    ).bind(intervalsId, u.id, start).run();
+    await rate(u.jwt, intervalsId, { effort: 6 });
+
+    // The Apple Health copy arrives afterwards and is hidden behind it; it
+    // takes the rating with it.
+    const pushed = await pushHealthRun(u.jwt, soccer({ kind: 'run', name: 'Run', start_date_local_ms: start }));
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    await refreshActivityLoads(env.DB, u.id);
+    const hidden = await env.DB.prepare('SELECT deleted_at, duplicate_of, effort FROM external_activities WHERE id=?1')
+      .bind(pushed.id).first<any>();
+    expect(hidden).toMatchObject({ duplicate_of: intervalsId, effort: 6 });
+    expect(hidden.deleted_at).not.toBeNull();
+
+    // The intervals.icu run goes away; the restored copy keeps the rating and its load.
+    await env.DB.prepare('UPDATE external_activities SET deleted_at=?2 WHERE id=?1').bind(intervalsId, Date.now()).run();
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    await refreshActivityLoads(env.DB, u.id);
+    expect(await env.DB.prepare('SELECT deleted_at, effort, effective_load, load_method FROM external_activities WHERE id=?1')
+      .bind(pushed.id).first<any>()).toMatchObject({ deleted_at: null, effort: 6, effective_load: 129, load_method: 'effort' });
+  });
+
   it('rejects bad ratings and other members’ workouts', async () => {
     const a = await makeUser('effort-a');
     const b = await makeUser('effort-b');

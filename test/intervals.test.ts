@@ -1307,7 +1307,7 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
          (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
           synced_at,deleted_at,canonical,duplicate_of)
        SELECT 'healthkit:history:' || n, ?1, 'healthkit', 'hk-' || n,
-              '2020-01-01', 'ride', 'Historical HealthKit', ?3 + n,
+              '2020-01-01', 'ride', 'Historical HealthKit', ?3 + n * 180000,
               1000, NULL, 1, NULL
          FROM seq`,
     )
@@ -1322,7 +1322,7 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
          (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
           synced_at,deleted_at,canonical,duplicate_of)
        SELECT 'intervals:history:' || n, ?1, 'intervals', 'iv-' || n,
-              '2020-01-01', 'ride', 'Historical Intervals', ?3 + n + 10800000,
+              '2020-01-01', 'ride', 'Historical Intervals', ?3 + n * 180000 + 43200000,
               1000, NULL, 1, NULL
          FROM seq`,
     )

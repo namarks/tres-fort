@@ -1,6 +1,6 @@
 # Activity Integration Integrity
 
-Slug: activity-integration-integrity · Status: paused · Updated: 2026-09-11 · Theme: connected-training
+Slug: activity-integration-integrity · Status: paused · Updated: 2026-11-04 · Theme: connected-training
 
 ## Goal
 
@@ -77,6 +77,25 @@ repository delivery; its implementation PR carries the exact-head review and CI
 evidence. Rollout and HealthKit write-back remain separate owner decisions.
 
 ## Notes / open questions
+
+- P0 follow-up repair (2026-11-04): Apple Health can hold one workout several
+  times under different workout ids. Garmin Connect had written the owner's
+  2020 to 2022 workouts into Health up to 25 times each (383 extra rows), and
+  Strava adds its own copy of a run Garmin recorded, so Activity history
+  listed every copy. `retireHealthKitCopies` now matches the Apple Health rows
+  still shown with each other by the cross-source rule (same kind, start within
+  two minutes on the shared clock) and keeps one: the copy carrying the most
+  data, then the lowest id. The rest are retired the existing reversible way
+  (`deleted_at`, `canonical=0`, `duplicate_of=<shown copy>`) and come back when
+  the shown copy goes. Rows behind an intervals.icu, .fit or recorded copy,
+  rows matched to a native session and member deletions are unchanged. It runs
+  at the end of every `dedupeHealthKitAgainstIntervals`: an Apple Health push
+  reconciles the member's whole history, and an intervals.icu sync only its
+  bounded window. Existing copies therefore clear on the member's next Apple
+  Health push after deploy, or at once through an authorized one-off run of
+  the same function; no migration is needed. A native session discard can
+  briefly restore two strength copies until the next push or sync. This is a focused repair to shipped matching, not
+  activation of P2.
 
 - P0 regression repair: Intervals and HealthKit dedup now compares their stored
   source instants when both are available. Local clock values can differ after

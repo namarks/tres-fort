@@ -9760,7 +9760,174 @@ export async function dedupeHealthKitAgainstIntervals(
   const recording = await retireSourceDuplicates(db, userId, 'recording', ['intervals'], window, expectedIntervalsFence);
   const healthKit = await retireSourceDuplicates(
     db, userId, 'healthkit', ['intervals', 'fit', 'recording'], window, expectedIntervalsFence);
-  return fit + recording + healthKit;
+  // Last, the Apple Health rows still shown are matched with each other.
+  const copies = await retireHealthKitCopies(db, userId, window);
+  return fit + recording + healthKit + copies;
+}
+
+/** A `duplicate_of` naming another Apple Health row (retireHealthKitCopies). */
+function isHealthKitCopy(duplicateOf: string | null): boolean {
+  return duplicateOf !== null && duplicateOf.startsWith('healthkit:');
+}
+
+/**
+ * Apple Health can hold one workout several times, each copy with its own
+ * workout id: Garmin Connect, for one, has written the same run into Health
+ * many times over, and Strava adds its own copy of a run Garmin recorded.
+ * Every id is a row here, so without this pass each copy was listed and
+ * counted. Copies follow the cross-source rule: the same `kind`, starting
+ * within ACTIVITY_DEDUP_TOLERANCE_MS on the shared clock (source instants
+ * when both are known, otherwise local wall time).
+ *
+ * One copy stays shown: the one carrying the most data (a known start
+ * instant, heart rate, distance, calories, power, elevation), then the
+ * lowest id, so the choice doesn't depend on push order. The others are
+ * retired the same reversible way as cross-source duplicates (deleted_at,
+ * canonical=0, duplicate_of=<the shown copy>), and come back when the shown
+ * copy goes. Rows another rule manages are left alone: those hidden behind
+ * an intervals.icu, .fit or recorded copy, those matched to a native
+ * session, and those the member deleted.
+ */
+export async function retireHealthKitCopies(
+  db: D1Database,
+  userId: string,
+  window?: ActivityDedupeWindow,
+): Promise<number> {
+  // A bounded caller changed only one date range: copies are read over its
+  // wider range, so a copy across a date line is still seen, and only rows
+  // in the changed range are written.
+  const dateClause = window ? ' AND date >= ?2 AND date <= ?3' : '';
+  const statement = db.prepare(
+    `SELECT id, kind, date, start_date_local_ms, start_date_utc_ms, deleted_at, duplicate_of,
+            (start_date_utc_ms IS NOT NULL) + (average_hr IS NOT NULL)
+              + (distance_m IS NOT NULL AND distance_m > 0) + (calories IS NOT NULL)
+              + (average_watts IS NOT NULL) + (elevation_gain_m IS NOT NULL) AS richness
+       FROM external_activities
+      WHERE user_id = ?1 AND source = 'healthkit'
+        AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)
+        AND (deleted_at IS NULL OR duplicate_of LIKE 'healthkit:%')
+        AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${dateClause}`,
+  );
+  const rows = (
+    await (window
+      ? statement.bind(userId, window.intervalsFromDate, window.intervalsToDate)
+      : statement.bind(userId))
+      .all<{
+        id: string;
+        kind: string;
+        date: string;
+        start_date_local_ms: number | null;
+        start_date_utc_ms: number | null;
+        deleted_at: number | null;
+        duplicate_of: string | null;
+        richness: number;
+      }>()
+  ).results;
+  if (rows.length === 0) return 0;
+
+  // Richest first, then by id: each row joins the nearest shown copy already
+  // chosen, or becomes one itself. Shown copies are kept sorted by start on
+  // each clock, so a lookup reads only those within the tolerance.
+  rows.sort((a, b) => b.richness - a.richness || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  type Shown = { id: string; start: number; hasInstant: boolean };
+  const byInstant = new Map<string, Shown[]>();
+  const byLocal = new Map<string, Shown[]>();
+  const firstAtOrAfter = (list: Shown[], start: number) => {
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (list[middle]!.start < start) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  const insert = (clock: Map<string, Shown[]>, kind: string, item: Shown) => {
+    const list = clock.get(kind) ?? [];
+    list.splice(firstAtOrAfter(list, item.start), 0, item);
+    clock.set(kind, list);
+  };
+  const nearest = (list: Shown[] | undefined, start: number | null, accept: (c: Shown) => boolean) => {
+    if (!list || start === null) return null;
+    let best: Shown | null = null;
+    let bestDelta = Infinity;
+    for (let i = firstAtOrAfter(list, start - ACTIVITY_DEDUP_TOLERANCE_MS); i < list.length; i += 1) {
+      const candidate = list[i]!;
+      if (candidate.start > start + ACTIVITY_DEDUP_TOLERANCE_MS) break;
+      const delta = Math.abs(candidate.start - start);
+      if (accept(candidate) && delta < bestDelta) {
+        best = candidate;
+        bestDelta = delta;
+      }
+    }
+    return best;
+  };
+  const winnerOf = new Map<string, string | null>();
+  for (const row of rows) {
+    // Source instants decide when both are known; only a missing instant
+    // falls back to local wall time, as in the cross-source rule.
+    const best = row.start_date_utc_ms !== null
+      ? nearest(byInstant.get(row.kind), row.start_date_utc_ms, () => true)
+        ?? nearest(byLocal.get(row.kind), row.start_date_local_ms, c => !c.hasInstant)
+      : nearest(byLocal.get(row.kind), row.start_date_local_ms, () => true);
+    winnerOf.set(row.id, best?.id ?? null);
+    if (best) continue;
+    const hasInstant = row.start_date_utc_ms !== null;
+    if (hasInstant) insert(byInstant, row.kind, { id: row.id, start: row.start_date_utc_ms!, hasInstant });
+    if (row.start_date_local_ms !== null) {
+      insert(byLocal, row.kind, { id: row.id, start: row.start_date_local_ms, hasInstant });
+    }
+  }
+
+  const ts = now();
+  // Copies shown again go first, so a copy hidden behind one of them in
+  // the same batch finds it shown.
+  const restores: D1PreparedStatement[] = [];
+  const retires: D1PreparedStatement[] = [];
+  for (const row of rows) {
+    if (window && (row.date < window.healthKitFromDate || row.date > window.healthKitToDate)) continue;
+    const winner = winnerOf.get(row.id) ?? null;
+    if (winner !== null && row.duplicate_of !== winner) {
+      // Hide this copy behind the shown one, or point it at a new one. Both
+      // rows are checked again in the write.
+      retires.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET deleted_at = COALESCE(deleted_at, CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END),
+                    synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                    canonical = 0,
+                    duplicate_of = ?4
+              WHERE id = ?1 AND user_id = ?2 AND source = 'healthkit'
+                AND (deleted_at IS NULL OR duplicate_of LIKE 'healthkit:%')
+                AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL
+                AND EXISTS (SELECT 1 FROM external_activities w
+                             WHERE w.id = ?4 AND w.user_id = ?2 AND w.source = 'healthkit'
+                               AND w.deleted_at IS NULL)`,
+          )
+          .bind(row.id, userId, ts, winner),
+      );
+    } else if (winner === null && row.deleted_at !== null) {
+      // The copy it was hidden behind is gone, so this one is shown again.
+      restores.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET deleted_at = NULL,
+                    synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                    canonical = 1,
+                    duplicate_of = NULL
+              WHERE id = ?1 AND user_id = ?2 AND source = 'healthkit'
+                AND deleted_at IS NOT NULL AND duplicate_of LIKE 'healthkit:%'`,
+          )
+          .bind(row.id, userId, ts),
+      );
+    }
+  }
+  const stmts = [...restores, ...retires];
+  if (stmts.length === 0) return 0;
+  const results = await db.batch(stmts);
+  return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
 
 /** One pass of the rule above: live `loser` rows matching a live row of any
@@ -9942,9 +10109,10 @@ async function retireSourceDuplicates(
               expectedIntervalsFence.attempt,
             ),
       );
-    } else if (!best && isRetiredDup) {
+    } else if (!best && isRetiredDup && !isHealthKitCopy(h.duplicate_of)) {
       // We retired this as a dup but its intervals winner is gone → restore it
-      // as the surviving copy so the workout doesn't vanish.
+      // as the surviving copy so the workout doesn't vanish. A row hidden
+      // behind another Apple Health copy is left to retireHealthKitCopies.
       const statement = db.prepare(
             `UPDATE external_activities
                 SET deleted_at = NULL,

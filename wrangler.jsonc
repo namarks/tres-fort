@@ -7,6 +7,8 @@
   // This is an identifier, not a secret (it appears in dashboard URLs).
   "account_id": "f8d78ce7cbf48da4f2a3ac9d9a63a5d5",
   "main": "src/index.ts",
+  // CREDENTIAL_ENCRYPTION_KEY: 32 random bytes, base64, provisioned via
+  // wrangler secret put; never a var. See docs/audits/security-2026-11-release.md.
   "compatibility_date": "2024-12-30",
   "compatibility_flags": ["nodejs_compat"],
   // Approved first-release policy: aggregate platform metrics only.

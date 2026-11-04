@@ -229,10 +229,11 @@ struct ProfileView: View {
                 Text("Saves a JSON file containing your profile and training data. It excludes credentials, access tokens, invite codes, and other members’ private data.")
             }
             Section {
-                Button(role: .destructive) { auth.signOut() } label: {
-                    Text("Sign out")
+                Button(role: .destructive) { Task { await auth.signOutOnServer() } } label: {
+                    Text(auth.signingOut ? "Signing out…" : "Sign out")
                 }
-                .disabled(isDeletingAccount || auth.accountDeletionPending)
+                .disabled(isDeletingAccount || auth.accountDeletionPending || auth.signingOut)
+                if let error = auth.signOutError { Text(error).foregroundStyle(.red) }
                 Button(role: .destructive) {
                     showDeleteConfirmation = true
                 } label: {

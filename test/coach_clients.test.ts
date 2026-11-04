@@ -1,7 +1,7 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
-import { createPlan, setUserMcpPassphrase } from '../src/db';
+import { createPlan, createCoachConnectCode } from '../src/db';
 
 const BASE = 'https://tres-fort.test';
 const MEMBER = '74794029-c461-43b4-9021-5f29d544dc60';
@@ -114,14 +114,13 @@ beforeAll(async () => {
     await env.DB.prepare('INSERT INTO users (id, apple_sub, created_at) VALUES (?1, ?2, ?3)')
       .bind(userId, `synthetic-${userId}`, Date.now()).run();
     await createPlan(env.DB, userId, userId === MEMBER ? 'Member plan' : 'Other private plan');
-    await setUserMcpPassphrase(env.DB, userId, `synthetic-code-${userId}`);
   }
   jwt = await issueAppJwt(MEMBER, env.APP_JWT_SECRET);
   otherJwt = await issueAppJwt(OTHER, env.APP_JWT_SECRET);
   for (const client of clients) {
-    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`, client.registeredRedirect, client.scope, client.recipient));
+    connections.set(client.name, await connect(client.name, client.redirect, (await createCoachConnectCode(env.DB, MEMBER)).code, client.registeredRedirect, client.scope, client.recipient));
   }
-  otherConnection = await connect('Another member’s app', 'http://127.0.0.1:41234/callback', `synthetic-code-${OTHER}`);
+  otherConnection = await connect('Another member’s app', 'http://127.0.0.1:41234/callback', (await createCoachConnectCode(env.DB, OTHER)).code);
 });
 
 describe('external AI client compatibility', () => {

@@ -183,5 +183,6 @@ export const dateWrites = {
 };
 
 export async function signOut(): Promise<void> {
-  await fetch('/auth/signout', { method: 'POST', headers: WEB_HEADERS, credentials: 'same-origin' });
+  const response = await fetch('/auth/signout', { method: 'POST', headers: WEB_HEADERS, credentials: 'same-origin' });
+  if (!response.ok) throw new Error('Couldn’t sign out. Please try again.');
 }

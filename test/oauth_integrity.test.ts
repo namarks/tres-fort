@@ -1,3 +1,4 @@
+import { oauthTokenDigest } from '../src/credentials';
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
@@ -465,7 +466,7 @@ describe('OAuth grant lifecycle policy', () => {
       `SELECT g.created_at, g.inactivity_expires_at, g.absolute_expires_at, t.expires_at
          FROM oauth_grants g JOIN oauth_tokens t ON t.grant_id = g.id
         WHERE t.access_token = ?1`,
-    ).bind(body.access_token).first<any>();
+    ).bind(await oauthTokenDigest(body.access_token)).first<any>();
     expect(row.inactivity_expires_at).toBe(grant.createdAt + OAUTH_GRANT_INACTIVITY_MS);
     expect(row.absolute_expires_at).toBe(grant.createdAt + OAUTH_GRANT_ABSOLUTE_MS);
     expect(row.expires_at).toBeLessThanOrEqual(Math.floor(row.inactivity_expires_at / 1000));
@@ -566,7 +567,7 @@ describe('OAuth grant lifecycle policy', () => {
       `SELECT g.inactivity_expires_at, g.absolute_expires_at, t.expires_at
          FROM oauth_grants g JOIN oauth_tokens t ON t.grant_id = g.id
         WHERE t.access_token = ?1`,
-    ).bind(successor.access_token).first<any>();
+    ).bind(await oauthTokenDigest(successor.access_token)).first<any>();
     expect(row.inactivity_expires_at).toBe(row.absolute_expires_at);
     expect(row.absolute_expires_at).toBe(absolute);
     expect(row.expires_at).toBeLessThanOrEqual(Math.floor(absolute / 1000));

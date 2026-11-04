@@ -3,6 +3,7 @@ declare module 'cloudflare:test' {
     DB: D1Database;
     TEST_MIGRATIONS: D1Migration[];
     APP_JWT_SECRET: string;
+    CREDENTIAL_ENCRYPTION_KEY: string;
     MCP_STATIC_TOKEN: string;
     DEV_AUTH_SECRET: string;
     OWNER_AUTH_PASSPHRASE: string;

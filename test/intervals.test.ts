@@ -1,3 +1,4 @@
+import { openCredential } from '../src/credentials';
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -471,7 +472,7 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     // Explicitly disconnect after the seeded poll. Owner env credentials are
     // now durably versioned before the first provider request, so merely
     // omitting the env key on a later call must not erase that stored identity.
-    await setUserIntervalsCreds(env.DB, userId, null, null);
+    await setUserIntervalsCreds(env.DB, userId, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     const r = await syncExternalEvents(
       env.DB,
       { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
@@ -1410,7 +1411,7 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
       today: TODAY,
       fetcher: payload([act({ id: 'a1' })]),
     } as any);
-    await setUserIntervalsCreds(env.DB, userId, null, null);
+    await setUserIntervalsCreds(env.DB, userId, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     const r = await syncExternalActivities(
       env.DB,
       { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
@@ -1564,7 +1565,7 @@ describe('M1: per-user creds — multi-user fan-out in syncExternalEvents', () =
     )
       .bind(ownerId)
       .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
-    expect(post!.intervals_api_key).toBe(env.INTERVALS_ICU_API_KEY);
+    expect(await openCredential(post!.intervals_api_key, env.CREDENTIAL_ENCRYPTION_KEY, ownerId, 'intervals-api-key')).toBe(env.INTERVALS_ICU_API_KEY);
     expect(post!.intervals_athlete_id).toBe(env.INTERVALS_ICU_ATHLETE_ID);
 
     // And the synced row tags to the owner.
@@ -1799,7 +1800,7 @@ describe('M1: owner env-seed gate is owner-specific (not global)', () => {
     )
       .bind(ownerId)
       .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
-    expect(post!.intervals_api_key).toBe(env.INTERVALS_ICU_API_KEY);
+    expect(await openCredential(post!.intervals_api_key, env.CREDENTIAL_ENCRYPTION_KEY, ownerId, 'intervals-api-key')).toBe(env.INTERVALS_ICU_API_KEY);
     expect(post!.intervals_athlete_id).toBe(env.INTERVALS_ICU_ATHLETE_ID);
   });
 });
@@ -1940,7 +1941,7 @@ describe('0023: intervals auth-failure recovery (401/403 → disconnect / refres
     )
       .bind(userId)
       .first<{ tok: string | null; err: number | null }>();
-    expect(row!.tok).toBe('fresh-token');
+    expect(await openCredential(row!.tok, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-access-token')).toBe('fresh-token');
     expect(row!.err).toBeNull(); // recovered → no auth-error marker
   });
 
@@ -1968,7 +1969,7 @@ describe('0023: intervals auth-failure recovery (401/403 → disconnect / refres
     // Reconnecting (PATCH /api/me/integrations/intervals → setUserIntervalsCreds)
     // must clear the stale auth-error marker, else the user is stuck showing
     // "reconnect needed" forever despite a fresh, working credential.
-    await setUserIntervalsCreds(env.DB, userId, 'fresh-key', 'ath-reconnect');
+    await setUserIntervalsCreds(env.DB, userId, env.CREDENTIAL_ENCRYPTION_KEY, 'fresh-key', 'ath-reconnect');
     const me = await getMeProfile(env.DB, userId, undefined);
     expect(me.intervals.connected).toBe(true);
     expect(me.intervals.needs_reauth).toBe(false);

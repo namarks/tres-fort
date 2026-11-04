@@ -1,17 +1,16 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createPlan, findUserByMcpPassphrase, setUserMcpPassphrase } from '../src/db';
+import { createCoachConnectCode, createPlan, findUserByMcpPassphrase, setUserMcpPassphrase } from '../src/db';
 import type { Env } from '../src/types';
 
 // M3 (multi-tenant MCP): the /mcp bearer resolves to a SPECIFIC user.
 //  - static MCP_STATIC_TOKEN  → the owner (Claude Code / curl).
 //  - OAuth access token       → the user bound at /oauth/authorize.
-// A non-owner authenticates /authorize with their per-user passphrase and gets
+// A non-owner authenticates /authorize with a single-use connect code and gets
 // a token scoped to THEM; they must see only their own data (owner-isolation).
 
 const BASE = 'https://tres-fort.test';
 const STATIC_TOKEN = 'test-mcp-token';
-const OWNER_PASS = 'test-pass'; // = OWNER_AUTH_PASSPHRASE in vitest.config
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -120,12 +119,12 @@ describe('mcp multi-tenant auth (M3)', () => {
     expect(ownerStatic.json.name).toBe('Owner Plan');
 
     // 2. OAuth with the OWNER passphrase → owner.
-    const ownerOauth = await oauthConnect(OWNER_PASS);
+    const ownerOauth = await oauthConnect((await createCoachConnectCode(env.DB, ownerJwt.user.id)).code);
     expect(ownerOauth.token).toBeTruthy();
     expect((await mcp(ownerOauth.token!, 'get_current_plan')).json.name).toBe('Owner Plan');
 
     // 3. OAuth with DAD's passphrase → dad. THE ISOLATION GUARANTEE.
-    const dadOauth = await oauthConnect('dad-passphrase');
+    const dadOauth = await oauthConnect((await createCoachConnectCode(env.DB, dadId)).code);
     expect(dadOauth.token).toBeTruthy();
     const dadView = await mcp(dadOauth.token!, 'get_current_plan');
     expect(dadView.json.name).toBe('Dad Plan');

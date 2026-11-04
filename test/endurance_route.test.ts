@@ -159,7 +159,7 @@ describe('POST /api/activities/endurance', () => {
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({ error: 'intervals_write_forbidden', status: 403 });
     const owner = await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>();
-    const creds = await getUserIntervalsCreds(env.DB, owner!.id);
+    const creds = await getUserIntervalsCreds(env.DB, owner!.id, env.CREDENTIAL_ENCRYPTION_KEY);
     expect(creds.athlete_id).toBe(ATHLETE);
   });
 

@@ -6,13 +6,15 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { bodyLimit } from 'hono/body-limit';
 import { requireAppJwt } from './auth';
+import { oauthTokenDigest } from './credentials';
 import type { Env, HonoEnv } from './types';
 import {
   createMobileCoachRequest,
   getMobileCoachRequest,
   decideMobileCoachRequest,
   ensureOwnerUser,
-  findUserByMcpPassphrase,
+  allowCoachAuthorization,
+  authorizeCoachConnectCode,
   isAccountDeletionInProgress,
   redeemOAuthAuthorizationCode,
   refreshOAuthGrant,
@@ -62,7 +64,7 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
        FROM oauth_tokens t
        LEFT JOIN oauth_grants g ON g.id = t.grant_id
        LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-      WHERE t.access_token = ?1
+      WHERE (t.access_token = ?1 OR (t.access_token = ?2 AND t.access_token NOT LIKE 'sha256:%'))
         AND t.expires_at > unixepoch('now')
         AND (
           (p.id = 1 AND p.activated_at IS NULL
@@ -77,7 +79,7 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
            AND g.absolute_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER))
         )`,
   )
-    .bind(token)
+    .bind(await oauthTokenDigest(token), token)
     .first<{ user_id: string | null; expires_at: number }>();
   if (!row) return null;
   if (row.user_id) {
@@ -345,7 +347,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   );
 });
 
-oauthRoutes.post('/oauth/authorize', async (c) => {
+oauthRoutes.post('/oauth/authorize', bodyLimit({ maxSize: 8192 }), async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
   const refuse = (reason: string) => logOAuthRefusal('authorize_submit', reason, {
@@ -373,67 +375,21 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     scope: 'mcp',
     resource: f('resource'),
   };
-  // Resolve WHICH user is connecting: the owner via OWNER_AUTH_PASSPHRASE, or
-  // any user via their personal MCP passphrase. No match → re-prompt. The
-  // resolved user id is bound to the code so the issued token is scoped to them.
-  // Trim so a connect code pasted with a stray trailing space/newline (common
-  // on mobile paste) still matches — the app stores codes without surrounding
-  // whitespace, and env passphrases don't carry any either.
-  const pass = f('passphrase').trim();
-  let userId: string | null = null;
-  if (c.env.OWNER_AUTH_PASSPHRASE && pass === c.env.OWNER_AUTH_PASSPHRASE) {
-    userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB))?.id ?? null;
-  } else if (pass) {
-    userId = await findUserByMcpPassphrase(c.env.DB, pass);
+  const budget = await allowCoachAuthorization(c.env.DB, c.req.header('CF-Connecting-IP') ?? 'unknown');
+  if (!budget.allowed) {
+    c.header('Retry-After', String(budget.retryAfter));
+    return c.json({ error: 'too_many_attempts' }, 429);
   }
-  if (!userId) {
-    logOAuthRefusal('authorize_submit', pass ? 'connect_code_mismatch' : 'connect_code_missing', { client_name: client.client_name ?? undefined });
-    return c.html(
-      consentPage(params, client.client_name, 'That code did not match — open Très Fort → Profile → Coach to copy the current one.'),
-      401,
-    );
-  }
-  if (await isAccountDeletionInProgress(c.env.DB, userId)) {
-    refuse('account_deletion_in_progress');
-    return c.html(
-      consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
-      401,
-    );
-  }
-
   const code = rand();
-  const inserted = await c.env.DB.prepare(
-    `INSERT INTO oauth_codes
-       (code, client_id, redirect_uri, code_challenge, code_challenge_method,
-        scope, resource, expires_at, created_at, user_id)
-     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10
-      WHERE EXISTS (SELECT 1 FROM users WHERE id = ?10)
-        AND NOT EXISTS (
-              SELECT 1 FROM account_deletion_intents WHERE user_id = ?10
-            )
-        AND NOT EXISTS (
-              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?10
-            )`,
-  )
-    .bind(
-      code,
-      params.client_id,
-      params.redirect_uri,
-      params.code_challenge,
-      'S256',
-      'mcp',
-      params.resource || null,
-      Date.now() + CODE_TTL_MS,
-      Date.now(),
-      userId,
-    )
-    .run();
-  if (inserted.meta.changes !== 1) {
-    refuse('account_unavailable');
-    return c.html(
-      consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
-      401,
-    );
+  const accepted = await authorizeCoachConnectCode(c.env.DB, f('passphrase').trim(), {
+    code, client_id: params.client_id, redirect_uri: params.redirect_uri,
+    code_challenge: params.code_challenge, scope: 'mcp', resource: params.resource || null,
+    expires_at: Date.now() + CODE_TTL_MS,
+  });
+  if (!accepted) {
+    logOAuthRefusal('authorize_submit', 'connect_code_invalid', { client_name: client.client_name ?? undefined });
+    return c.html(consentPage(params, client.client_name,
+      'That code is invalid, expired or already used. Open Très Fort → Profile → Coach to generate a new one.'), 401);
   }
   callback.searchParams.set('code', code);
   if (params.state) callback.searchParams.set('state', params.state);
@@ -499,9 +455,10 @@ oauthRoutes.post('/oauth/token', async (c) => {
 
   if (grant === 'refresh_token') {
     const row = await c.env.DB.prepare(
-      'SELECT * FROM oauth_tokens WHERE refresh_token = ?1',
+      `SELECT * FROM oauth_tokens WHERE refresh_token=?1
+        OR (refresh_token=?2 AND refresh_token NOT LIKE 'sha256:%')`,
     )
-      .bind(f('refresh_token'))
+      .bind(await oauthTokenDigest(f('refresh_token')), f('refresh_token'))
       .first<any>();
     if (!row) {
       if (f('client_id')) {

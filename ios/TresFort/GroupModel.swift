@@ -99,7 +99,7 @@ final class GroupModel: ObservableObject {
     private let groupBlockWriter: ((String, Bool, String) async throws -> Void)?
     private let groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)?
     private let profileLoader: ((String) async throws -> MeProfile)?
-    private let coachCodeWriter: ((String, String) async throws -> Void)?
+    private let coachCodeIssuer: ((String) async throws -> String)?
     private let intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)?
     private let intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)?
     private let intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)?
@@ -130,7 +130,7 @@ final class GroupModel: ObservableObject {
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
         groupLoader: ((String, String) async throws -> GroupSummary)? = nil,
         profileLoader: ((String) async throws -> MeProfile)? = nil,
-        coachCodeWriter: ((String, String) async throws -> Void)? = nil,
+        coachCodeIssuer: ((String) async throws -> String)? = nil,
         groupBlockWriter: ((String, Bool, String) async throws -> Void)? = nil,
         groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)? = nil,
         groupSafetyLoader: ((String) async throws -> GroupSafetyState)? = nil,
@@ -147,7 +147,7 @@ final class GroupModel: ObservableObject {
         self.groupLister = groupLister
         self.groupLoader = groupLoader
         self.profileLoader = profileLoader
-        self.coachCodeWriter = coachCodeWriter
+        self.coachCodeIssuer = coachCodeIssuer
         self.groupBlockWriter = groupBlockWriter
         self.groupRestrictionWriter = groupRestrictionWriter
         self.groupSafetyLoader = groupSafetyLoader
@@ -1079,10 +1079,13 @@ final class GroupModel: ObservableObject {
             else {
                 let url = try await api.startIntervalsOAuth(jwt: jwt)
                 guard isCurrentIntervalsOperation(operation) else { return false }
-                result = try await IntervalsWebAuth().authorize(url)
+                let pending = try await IntervalsWebAuth().authorize(url)
+                guard isCurrentIntervalsOperation(operation), let completion = pending.completion,
+                      let currentToken = currentJWT else { return false }
+                result = try await api.finishIntervalsOAuth(completion: completion, jwt: currentToken)
             }
             guard isCurrentIntervalsOperation(operation), result.connected else { return false }
-            // The redirect acknowledges a saved connection, but only a fresh
+            // The authenticated finish acknowledges the connection; a fresh
             // profile can say whether it remains connected after import.
             intervalsStatus = nil
             await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation, expectedGeneration: result.credentialGeneration, syncAfter: result.activitySyncAfter)
@@ -1129,10 +1132,10 @@ final class GroupModel: ObservableObject {
 
     // MARK: - Coach connect code (M3)
 
-    /// Generate a fresh MCP connect code, store it server-side, and return the
-    /// plaintext for one-time display. The user copies it into their AI app's
+    /// Request a server-generated, ten-minute, single-use MCP connect code for
+    /// one-time display. The user copies it into their AI app's
     /// connection flow to bind their own AI coach to this account. The server keeps
-    /// only a PBKDF2 hash, so the plaintext lives only here and on the user's
+    /// only a digest, so the plaintext lives only here and on the user's
     /// screen — regenerating just rotates it (existing linked AI app sessions
     /// keep working, since their token was already bound at authorize time).
     func generateCoachConnectCode() async throws -> String {
@@ -1140,12 +1143,9 @@ final class GroupModel: ObservableObject {
             throw APIError.http(401, "not_signed_in")
         }
         let epoch = auth.featureSessionEpoch
-        let code = Self.makeConnectCode()
-        if let coachCodeWriter {
-            try await coachCodeWriter(code, jwt)
-        } else {
-            try await api.setMcpConnectCode(code, jwt: jwt)
-        }
+        let code: String
+        if let coachCodeIssuer { code = try await coachCodeIssuer(jwt) }
+        else { code = try await api.createMcpConnectCode(jwt: jwt) }
         // Renewal can replace the bearer while this one-time code is being
         // saved. Retain it for the same feature session, but never after a
         // sign-out or reauthentication, even when the same account returns.
@@ -1187,19 +1187,6 @@ final class GroupModel: ObservableObject {
             handle(error, jwt: jwt)
             return false
         }
-    }
-
-    /// 16 chars of an unambiguous base-32 alphabet (no I/L/O/0/1), grouped
-    /// 4×4 with dashes for legibility — e.g. `K7M4-PQ2R-9XTW-6NBV`. ~78 bits of
-    /// entropy: far above the server's 8-char minimum and collision-safe
-    /// against other users' codes. Copy-paste preserves the dashes, which are
-    /// part of the stored code.
-    private static func makeConnectCode() -> String {
-        let alphabet = Array("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
-        let groups = (0..<4).map { _ in
-            String((0..<4).map { _ in alphabet.randomElement()! })
-        }
-        return groups.joined(separator: "-")
     }
 
     // MARK: - Helpers

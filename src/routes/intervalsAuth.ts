@@ -1,30 +1,37 @@
 // intervals.icu OAuth — the user-facing "Connect with intervals.icu" flow.
 //
-// Two routes, mounted at /auth/intervals:
+// Three routes, mounted at /auth/intervals:
 //   POST /start    (app-JWT) → mint a single-use state mapped to the caller,
 //                  return the intervals.icu authorize URL for the app to open
 //                  in ASWebAuthenticationSession.
 //   GET  /callback (public)  → intervals.icu redirects the user's browser here
 //                  with ?code&state. We resolve state→user, exchange the code
 //                  for a bearer token (server-side, with the client secret),
-//                  store it, and bounce back to the app via the tresfort://
-//                  scheme so the web-auth session closes.
+//                  encrypt it as pending, and return a fresh completion secret
+//                  to the app via the tresfort:// scheme.
+//   POST /finish   (original app session + completion secret) → activate once.
 //
 // The client SECRET never leaves the Worker — the token exchange is the only
 // place it's used. The client ID is non-sensitive (it rides in authorize URLs)
 // and lives in wrangler.jsonc vars.
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { Env, HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import {
   consumeIntervalsOAuthAttempt,
   createIntervalsOAuthState,
-  setUserIntervalsOAuth,
+  createIntervalsOAuthCompletion,
+  finishIntervalsOAuth,
   reconcileIntervalsConnection,
-  writeAudit,
 } from '../db';
 
 export const intervalsAuthRoutes = new Hono<HonoEnv>();
+intervalsAuthRoutes.use('*', async (c, next) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  await next();
+});
 
 /** Scopes we request. WRITE on ACTIVITY so log_activity can create (and
  *  delete) the endurance sessions it routes to intervals.icu; WRITE on
@@ -61,7 +68,7 @@ intervalsAuthRoutes.post('/start', requireAppJwt, async (c) => {
   }
   const userId = c.get('userId');
   let state: string;
-  try { state = await createIntervalsOAuthState(c.env.DB, userId); }
+  try { state = await createIntervalsOAuthState(c.env.DB, userId, undefined, c.get('appSessionId')); }
   catch (error) {
     if (error instanceof Error && error.message === 'intervals_connection_changed') {
       return c.json({ error: 'connection_changed' }, 409);
@@ -89,12 +96,12 @@ intervalsAuthRoutes.get('/callback', async (c) => {
 
   // Resolve + consume the state (single-use, expiring) → the connecting user.
   const attempt = await consumeIntervalsOAuthAttempt(c.env.DB, state);
-  if (!attempt) return c.redirect(appReturn(false, 'bad_state'), 302);
+  if (!attempt?.app_session_id) return c.redirect(appReturn(false, 'bad_state'), 302);
   const userId = attempt.user_id;
 
   const clientId = c.env.INTERVALS_OAUTH_CLIENT_ID;
   const clientSecret = c.env.INTERVALS_OAUTH_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
+  if (!clientId || !clientSecret || !c.env.CREDENTIAL_ENCRYPTION_KEY) {
     return c.redirect(appReturn(false, 'oauth_not_configured'), 302);
   }
 
@@ -148,20 +155,30 @@ intervalsAuthRoutes.get('/callback', async (c) => {
       ? Date.now() + body.expires_in * 1000
       : null;
 
-  const receipt = await setUserIntervalsOAuth(
-    c.env.DB, userId, accessToken, refreshToken, expiresAt, athleteId,
-    attempt.credential_generation,
-  );
-  if (receipt === null) return c.redirect(appReturn(false, 'connection_changed'), 302);
-  // Mirror the API-key path's audit row so the connect is visible/reversible.
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'set_intervals_creds',
-    { connected: true, via: 'oauth' },
-    'connected',
-    'ios',
-  );
-  c.executionCtx.waitUntil(reconcileIntervalsConnection(c.env.DB, c.env, userId, receipt.credential_generation));
-  return c.redirect(appReturn(true, undefined, receipt.credential_generation, receipt.activity_sync_after), 302);
+  let completion: string;
+  try {
+    completion = await createIntervalsOAuthCompletion(c.env.DB, userId, attempt.app_session_id,
+      attempt.credential_generation, { accessToken, refreshToken, expiresAt, athleteId }, c.env.CREDENTIAL_ENCRYPTION_KEY);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'intervals_connection_changed') {
+      return c.redirect(appReturn(false, 'connection_changed'), 302);
+    }
+    throw error;
+  }
+  return c.redirect(`tresfort://intervals-connected?completion=${encodeURIComponent(completion)}`, 302);
+});
+
+// The browser callback cannot activate a connection. Only the original app
+// session, holding the secret delivered to the returning app, can finish it.
+intervalsAuthRoutes.post('/finish', bodyLimit({ maxSize: 1024 }), requireAppJwt, async (c) => {
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body) ||
+      Object.keys(body).some(key => key !== 'completion') || !('completion' in body) || typeof body.completion !== 'string') {
+    return c.json({ error: 'invalid_completion' }, 400);
+  }
+  const receipt = await finishIntervalsOAuth(c.env.DB,c.get('userId'),c.get('appSessionId'),body.completion,c.env.CREDENTIAL_ENCRYPTION_KEY);
+  if (!receipt) return c.json({ error: 'invalid_completion' }, 400);
+  c.executionCtx.waitUntil(reconcileIntervalsConnection(c.env.DB,c.env,c.get('userId'),receipt.credential_generation));
+  c.header('Cache-Control', 'no-store');
+  return c.json({ connected: true, ...receipt });
 });

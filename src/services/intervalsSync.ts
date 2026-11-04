@@ -1,3 +1,4 @@
+import { openCredential, sealCredential } from '../credentials';
 // Internal provider reconciliation. Public callers use the db.ts facade.
 import { deviceNameSQL, withActivityAttribution } from '../dataAttribution';
 import { thresholdSettingsSQL } from './athleteThresholds';
@@ -156,7 +157,7 @@ interface IntervalsSyncDependencies {
   findOwnerRow(db: D1Database, ownerAppleSub: string | undefined): Promise<User | null>;
   userHasTouchedIntervalsCreds(db: D1Database, userId: string): Promise<boolean>;
   seedOwnerIntervalsCredsFromEnv(db: D1Database, apiKey: string | null | undefined,
-    athleteId: string | null | undefined, ownerAppleSub: string | undefined): Promise<IntervalsUserCreds[]>;
+    athleteId: string | null | undefined, ownerAppleSub: string | undefined, encryptionKey: string | undefined): Promise<IntervalsUserCreds[]>;
   ensureOwnerUser(db: D1Database, ownerAppleSub: string | undefined): Promise<User | null>;
   getIntervalsConnectionStatus(db: D1Database, userId: string): Promise<IntervalsConnectionStatus>;
   getUserTimezone(db: D1Database, userId: string): Promise<string | null>;
@@ -461,11 +462,13 @@ export function createIntervalsSyncService({
         env.INTERVALS_ICU_API_KEY,
         env.INTERVALS_ICU_ATHLETE_ID,
         env.OWNER_APPLE_SUB,
+        env.CREDENTIAL_ENCRYPTION_KEY,
       );
       creds = await getUserIntervalsCreds(db, userId);
     }
     if (!creds.athlete_id || (!creds.api_key && !creds.access_token)) return null;
-    return { apiKey: creds.api_key, accessToken: creds.access_token, athleteId: creds.athlete_id };
+    return { apiKey: await openCredential(creds.api_key, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-api-key'),
+      accessToken: await openCredential(creds.access_token, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-access-token'), athleteId: creds.athlete_id };
   }
 
   // ── intervals.icu auth-failure recovery ──────────────────────────────────
@@ -643,7 +646,7 @@ export function createIntervalsSyncService({
       )
       .first<{ current_credential: number }>();
     if (!row) return { status: 'superseded' };
-    const refreshToken = credential.refreshToken;
+    const refreshToken = (await openCredential(credential.refreshToken, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-refresh-token'))!;
 
     const f: Fetcher = fetcher ?? ((input, init) => globalThis.fetch(input, init));
     let res: { ok: boolean; status: number; json: () => Promise<unknown> };
@@ -668,10 +671,12 @@ export function createIntervalsSyncService({
     } catch {
       return { status: 'unavailable' };
     }
-    const accessToken = typeof body.access_token === 'string' ? body.access_token : null;
+    const accessToken = typeof body.access_token === 'string' && body.access_token
+      ? await sealCredential(body.access_token, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-access-token') : null;
     if (!accessToken) return { status: 'unavailable' };
     // Keep the old refresh token if the response rotates none; honour expiry if given.
-    const newRefresh = typeof body.refresh_token === 'string' ? body.refresh_token : refreshToken;
+    const newRefresh = typeof body.refresh_token === 'string'
+      ? await sealCredential(body.refresh_token, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-refresh-token') : credential.refreshToken;
     const expiresAt =
       typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
         ? now() + body.expires_in * 1000
@@ -699,7 +704,7 @@ export function createIntervalsSyncService({
         userId,
         credential.generation,
         credential.accessToken,
-        refreshToken,
+        credential.refreshToken,
         credential.expiresAt,
         credential.athleteId,
         attempts.eventsAttempt,
@@ -746,7 +751,8 @@ export function createIntervalsSyncService({
   }> {
     let effectiveCredential = credential;
     let result = await run(
-      effectiveCredential?.kind === 'oauth' ? effectiveCredential.accessToken : null,
+      effectiveCredential?.kind === 'oauth'
+        ? await openCredential(effectiveCredential.accessToken, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-access-token') : null,
     );
     if (!isIntervalsAuthError(result)) {
       return { result, reauthRequired: false, superseded: false, effectiveCredential };
@@ -765,7 +771,7 @@ export function createIntervalsSyncService({
       }
       if (refreshed.status === 'refreshed') {
         effectiveCredential = refreshed.credential;
-        result = await run(effectiveCredential.accessToken);
+        result = await run(await openCredential(effectiveCredential.accessToken, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-access-token'));
       }
       if (!isIntervalsAuthError(result)) {
         return { result, reauthRequired: false, superseded: false, effectiveCredential };
@@ -851,6 +857,7 @@ export function createIntervalsSyncService({
           env.INTERVALS_ICU_API_KEY,
           env.INTERVALS_ICU_ATHLETE_ID,
           deps.ownerSub ?? env.OWNER_APPLE_SUB,
+          env.CREDENTIAL_ENCRYPTION_KEY,
         );
         creds = await getUserIntervalsCreds(db, userId);
       }
@@ -869,6 +876,7 @@ export function createIntervalsSyncService({
         env.INTERVALS_ICU_API_KEY,
         env.INTERVALS_ICU_ATHLETE_ID,
         deps.ownerSub ?? env.OWNER_APPLE_SUB,
+        env.CREDENTIAL_ENCRYPTION_KEY,
       );
       if (seeded.length === 0) {
         // No user has creds AND env is unset → dormant no-op for everyone.
@@ -946,8 +954,8 @@ export function createIntervalsSyncService({
       initialCredential,
       attempts,
       deps.fetcher,
-      (token) =>
-        fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays, accessToken: token }),
+      async (token) =>
+        fetchPlannedEvents(await openCredential(apiKey, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-api-key'), athleteId, { ...deps, today, windowDays, accessToken: token }),
     );
     if (superseded) {
       return { status: 'superseded', synced: 0, detail: 'superseded' };
@@ -1258,6 +1266,7 @@ export function createIntervalsSyncService({
           env.INTERVALS_ICU_API_KEY,
           env.INTERVALS_ICU_ATHLETE_ID,
           deps.ownerSub ?? env.OWNER_APPLE_SUB,
+          env.CREDENTIAL_ENCRYPTION_KEY,
         );
         creds = await getUserIntervalsCreds(db, userId);
       }
@@ -1276,6 +1285,7 @@ export function createIntervalsSyncService({
         env.INTERVALS_ICU_API_KEY,
         env.INTERVALS_ICU_ATHLETE_ID,
         deps.ownerSub ?? env.OWNER_APPLE_SUB,
+        env.CREDENTIAL_ENCRYPTION_KEY,
       );
       if (seeded.length === 0) {
         return { status: 'disabled', synced: 0, detail: 'disabled' };
@@ -1350,8 +1360,8 @@ export function createIntervalsSyncService({
       initialCredential,
       attempts,
       deps.fetcher,
-      (token) =>
-        fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays, accessToken: token }),
+      async (token) =>
+        fetchCompletedActivities(await openCredential(apiKey, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-api-key'), athleteId, { ...deps, today, pastDays, accessToken: token }),
     );
     if (superseded) {
       return { status: 'superseded', synced: 0, detail: 'superseded' };

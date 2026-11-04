@@ -90,6 +90,12 @@ struct APIClient {
         try await post("auth/renew", body: [:], jwt: jwt)
     }
 
+    func revokeAppSession(jwt: String) async throws {
+        struct Receipt: Decodable { let ok: Bool }
+        let receipt: Receipt = try await post("auth/logout", body: [:], jwt: jwt)
+        guard receipt.ok else { throw APIError.decoding("invalid sign-out acknowledgement") }
+    }
+
     /// Permanently delete the authenticated account. The Profile UI owns the
     /// destructive confirmation; AuthModel clears local account state only
     /// after this response is acknowledged.
@@ -774,6 +780,7 @@ protocol AuthAPI {
         fullName: String?
     ) async throws -> AuthResponse
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse
+    func revokeAppSession(jwt: String) async throws
     func deleteAccount(
         jwt: String,
         idempotencyKey: String
@@ -782,6 +789,11 @@ protocol AuthAPI {
 }
 
 extension APIClient: AuthAPI {}
+
+extension AuthAPI {
+    // Existing test doubles fail closed unless they explicitly model revocation.
+    func revokeAppSession(jwt: String) async throws { throw URLError(.unsupportedURL) }
+}
 
 /// Only the calls required to settle a set intent and the shared state-sync
 /// pull are injectable. The rest of SyncModel continues using APIClient

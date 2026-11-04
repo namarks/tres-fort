@@ -98,7 +98,7 @@ import {
   setGroupDisplayName,
   setUserDisplayName,
   setUserIntervalsCreds,
-  setUserMcpPassphrase,
+  createCoachConnectCode,
   setHealthActivitySharing,
   softDeleteActivity,
   reviveDiscardedSession,
@@ -2056,7 +2056,7 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
   // iOS form posting "" instead of null on the clear path.
   const apiKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : null;
   const athleteId = typeof rawId === 'string' && rawId.length > 0 ? rawId : null;
-  const result = await setUserIntervalsCreds(c.env.DB, userId, apiKey, athleteId);
+  const result = await setUserIntervalsCreds(c.env.DB, userId, c.env.CREDENTIAL_ENCRYPTION_KEY, apiKey, athleteId);
   // Audit the change without recording the API key itself (only the
   // outcome). actor='ios' distinguishes this REST mutation from MCP audits.
   await writeAudit(
@@ -2088,29 +2088,18 @@ apiRoutes.post('/me/integrations/intervals/sync', async (c) => {
   ));
 });
 
-// ---- MCP passphrase (M3 multi-tenant) -----------------------------------
-// Set THIS user's personal passphrase used to connect a Claude MCP session
-// via OAuth (/oauth/authorize). Self-service: a signed-in user provisions
-// their own passphrase; it is PBKDF2-hashed and never returned. The owner can
-// also use the OWNER_AUTH_PASSPHRASE env path and does not need this.
+// ---- Single-use coach connect codes (legacy endpoint path) -------------
+// Signed-in members receive a server-generated 256-bit code, valid for ten
+// minutes and one authorization. The database stores only its digest.
 apiRoutes.post('/me/mcp-passphrase', async (c) => {
-  let b: { passphrase?: unknown };
-  try {
-    b = await c.req.json<{ passphrase?: unknown }>();
-  } catch {
-    return c.json({ error: 'invalid_json' }, 400);
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) {
+    return c.json({ error: 'server_generated_code_required' }, 400);
   }
-  const passphrase = typeof b.passphrase === 'string' ? b.passphrase : '';
-  if (passphrase.length < 8) return c.json({ error: 'passphrase_too_short' }, 400);
-  const res = await setUserMcpPassphrase(c.env.DB, c.get('userId'), passphrase, c.env.OWNER_AUTH_PASSPHRASE);
-  if ('error' in res) {
-    // Already in use by another user — accepting it would bind their MCP
-    // session to that account (cross-user access). 409, no audit-as-ok.
-    await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, res.error, 'ios');
-    return c.json({ error: res.error }, 409);
-  }
-  await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, 'ok', 'ios');
-  return c.json({ ok: true });
+  const result = await createCoachConnectCode(c.env.DB, c.get('userId'));
+  await writeAudit(c.env.DB, c.get('userId'), 'create_coach_connect_code', {}, 'ok', 'ios');
+  c.header('Cache-Control', 'no-store');
+  return c.json(result);
 });
 
 // Caller-scoped coach grants. Listing exposes only opaque family and client

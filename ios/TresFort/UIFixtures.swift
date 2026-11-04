@@ -719,6 +719,8 @@ private struct UIFixtureServer {
             status = known ? 200 : 201
             response = ["ok": true, "destination": "intervals.icu", "deduplicated": known, "activity_id": id]
         case ("POST", "/api/me/mcp-passphrase"):
+            response = ["code": String(repeating: "C", count: 43)]
+        case ("POST", "/auth/logout"):
             response = ["ok": true]
         case ("GET", "/api/me/group-safety"):
             response = ["blocks": safetyBlocked ? [["user_id": safetyPeerID, "created_at": revision]] : [],

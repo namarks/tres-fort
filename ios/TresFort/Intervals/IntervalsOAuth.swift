@@ -8,8 +8,9 @@ import UIKit
 // ASWebAuthenticationSession → the user logs in to intervals.icu and approves
 // → intervals redirects to our Worker callback, which (server-side) exchanges
 // the code for a bearer token and bounces back to `tresfort://intervals-
-// connected?ok=1`. ASWebAuthenticationSession intercepts that scheme and hands
-// us the URL, so the app never sees the token — it lives only on the Worker.
+// connected?completion=...`. The original app session submits that secret to
+// /finish before the Worker activates the connection. Provider tokens stay on
+// the Worker; the browser return alone cannot acknowledge a connection.
 
 extension APIClient {
     /// Begin the OAuth flow; returns the intervals.icu authorize URL the app
@@ -23,26 +24,34 @@ extension APIClient {
         }
         return url
     }
+    func finishIntervalsOAuth(completion: String, jwt: String) async throws -> IntervalsOAuthResult {
+        try await post("auth/intervals/finish", body: ["completion": completion], jwt: jwt)
+    }
+
 }
 
-struct IntervalsOAuthResult: Equatable {
+struct IntervalsOAuthResult: Decodable, Equatable {
     let connected: Bool
     var credentialGeneration: Int? = nil
     var activitySyncAfter: Int? = nil
+    var completion: String? = nil
+    enum CodingKeys: String, CodingKey {
+        case connected
+        case credentialGeneration = "credential_generation"
+        case activitySyncAfter = "activity_sync_after"
+    }
 
     static func parse(_ url: URL) throws -> Self {
         guard url.scheme == "tresfort", url.host == "intervals-connected" else {
             throw APIError.decoding("invalid intervals callback")
         }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        guard items.first(where: { $0.name == "ok" })?.value == "1" else {
-            throw APIError.http(0, "intervals connection was not accepted")
+        guard items.count == 1, items[0].name == "completion", let secret = items[0].value,
+              secret.count == 43,
+              secret.allSatisfy({ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-".contains($0) }) else {
+            throw APIError.decoding("invalid intervals completion")
         }
-        let generation = items.first(where: { $0.name == "generation" })?.value.flatMap(Int.init)
-        let syncAfter = items.first(where: { $0.name == "sync_after" })?.value.flatMap(Int.init)
-        return Self(connected: true,
-                    credentialGeneration: generation.flatMap { $0 >= 0 ? $0 : nil },
-                    activitySyncAfter: syncAfter)
+        return Self(connected: false, completion: secret)
     }
 }
 

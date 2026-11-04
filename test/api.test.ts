@@ -1,3 +1,4 @@
+import { openCredential } from '../src/credentials';
 import { env, applyD1Migrations, fetchMock, SELF } from 'cloudflare:test';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -1850,7 +1851,8 @@ describe('PATCH /api/me/integrations/intervals', () => {
     )
       .bind(userId)
       .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
-    expect(row!.intervals_api_key).toBe('live-key-1');
+    expect(row!.intervals_api_key).toMatch(/^sealed:v1:/);
+    expect(await openCredential(row!.intervals_api_key, env.CREDENTIAL_ENCRYPTION_KEY, userId, 'intervals-api-key')).toBe('live-key-1');
     expect(row!.intervals_athlete_id).toBe('i-1');
     // Audit row recorded with actor='ios' (not 'mcp').
     const audit = await env.DB.prepare(

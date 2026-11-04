@@ -31,6 +31,11 @@ private final class AuthAPIStub: AuthAPI {
     var renewalHandler: ((String) async throws -> SessionRenewalResponse)?
     var deletionHandler: ((String, String) async throws -> AccountDeletionResponse)?
     var exportHandler: ((String) async throws -> AccountExportFile)?
+    var revocationHandler: ((String) async throws -> Void)?
+    func revokeAppSession(jwt: String) async throws {
+        if let revocationHandler { try await revocationHandler(jwt) }
+        else { throw URLError(.notConnectedToInternet) }
+    }
     private(set) var renewalCalls = 0
     private(set) var appleAuthCalls: [AppleAuthCall] = []
     private(set) var deletionCalls = 0
@@ -109,6 +114,44 @@ private actor AsyncLatch {
 
 @MainActor
 final class AuthModelTests: XCTestCase {
+    func testSignOutWaitsForRevocationAndRetainsSessionOnFailure() async {
+        let token = sessionToken(for: "member"), api = AuthAPIStub(), store = MemoryTokenStore()
+        store.token = token
+        let auth = AuthModel(api: api, tokenStore: store, defaults: defaults())
+        await auth.signOutOnServer()
+        XCTAssertEqual(store.token, token)
+        XCTAssertEqual(auth.jwt, token)
+        XCTAssertNotNil(auth.signOutError)
+        api.revocationHandler = { supplied in XCTAssertEqual(supplied, token) }
+        await auth.signOutOnServer()
+        XCTAssertNil(store.token)
+        XCTAssertEqual(auth.phase, .signedOut)
+    }
+
+    func testLateSignOutAcknowledgementDoesNotClearReplacementSession() async {
+        let token = sessionToken(for: "member"), replacement = sessionToken(for: "other")
+        let api = AuthAPIStub(), store = MemoryTokenStore(token)
+        let auth = AuthModel(api: api, tokenStore: store, defaults: defaults())
+        api.revocationHandler = { _ in
+            auth.signOut()
+            store.save(replacement)
+            auth.jwt = replacement
+            auth.userID = "other"
+        }
+        await auth.signOutOnServer()
+        XCTAssertEqual(auth.jwt, replacement)
+        XCTAssertEqual(store.token, replacement)
+    }
+
+    func testIntervalsRedirectRequiresCompletionAndDoesNotAcknowledgeConnection() throws {
+        XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1")!))
+        let secret = String(repeating: "a", count: 43)
+        let pending = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?completion=\(secret)")!)
+        XCTAssertFalse(pending.connected)
+        XCTAssertEqual(pending.completion, secret)
+        XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?completion=\(secret)&completion=\(secret)")!))
+    }
+
     private func defaults() -> LocalPersistence {
         let name = "AuthModelTests.\(UUID().uuidString)"
         let defaults = LocalPersistence(suiteName: name)!
@@ -1790,11 +1833,12 @@ final class AuthModelTests: XCTestCase {
                 XCTAssertEqual(token, pauseDuringSave ? renewedToken : oldToken)
                 if !pauseDuringSave { await started.open(); await release.wait() }
                 return profile
-            }, coachCodeWriter: { code, token in
+            }, coachCodeIssuer: { token in
                 XCTAssertEqual(token, oldToken)
                 saveCalls += 1
-                savedCode = code
+                savedCode = String(repeating: "a", count: 43)
                 if pauseDuringSave { await started.open(); await release.wait() }
+                return savedCode!
             })
             let generating = Task { try await group.generateCoachConnectCode() }
             await started.wait()
@@ -1820,9 +1864,10 @@ final class AuthModelTests: XCTestCase {
                 let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in
                     if !pauseDuringSave { await started.open(); await release.wait() }
                     return profile
-                }, coachCodeWriter: { _, _ in
+                }, coachCodeIssuer: { _ in
                     saveCalls += 1
                     if pauseDuringSave { await started.open(); await release.wait() }
+                    return String(repeating: "a", count: 43)
                 })
                 let generating = Task { try await group.generateCoachConnectCode() }
                 await started.wait()
@@ -2614,12 +2659,14 @@ extension AuthModelTests {
         XCTAssertFalse(late); XCTAssertEqual(group.intervalsStatus?.connected, false)
     }
 
-    func testIntervalsOAuthParserSeparatesAcceptedImportFailureFromAuthorizationFailure() throws {
-        let result = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&sync=retry")!)
-        XCTAssertTrue(result.connected); XCTAssertNil(result.credentialGeneration)
+    func testIntervalsOAuthAcknowledgementDecodesSeparatelyFromBrowserReturn() throws {
+        let receipt = try JSONDecoder().decode(IntervalsOAuthResult.self, from: Data(#"{"connected":true,"credential_generation":7,"activity_sync_after":42}"#.utf8))
+        XCTAssertTrue(receipt.connected)
+        XCTAssertEqual(receipt.credentialGeneration, 7)
+        XCTAssertEqual(receipt.activitySyncAfter, 42)
+        XCTAssertNil(receipt.completion)
         XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?error=bad_state")!))
-        XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "https://untrusted.example?ok=1")!))
-        XCTAssertNil(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1")!).credentialGeneration)
+        XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "https://untrusted.example?completion=secret")!))
     }
 }
 
@@ -2660,7 +2707,7 @@ extension AuthModelTests {
         await group.retryIntervalsSync()
         XCTAssertEqual(writes, 1); XCTAssertEqual(imports, 1)
         XCTAssertEqual(group.intervalsStatus?.sync_pending, false)
-        let callback = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&generation=7")!)
+        let callback = try JSONDecoder().decode(IntervalsOAuthResult.self, from: Data(#"{"connected":true,"credential_generation":7}"#.utf8))
         XCTAssertEqual(callback.credentialGeneration, 7)
     }
 }
@@ -2680,7 +2727,7 @@ extension AuthModelTests {
         try await group.setIntervalsCredentials(apiKey: "unchanged-synthetic", athleteID: "athlete-a")
         XCTAssertEqual(reads, 2); XCTAssertEqual(notifications, 1)
         XCTAssertEqual(group.intervalsStatus?.last_synced_at, 2)
-        let callback = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&generation=7&sync_after=42")!)
+        let callback = try JSONDecoder().decode(IntervalsOAuthResult.self, from: Data(#"{"connected":true,"credential_generation":7,"activity_sync_after":42}"#.utf8))
         XCTAssertEqual(callback.activitySyncAfter, 42)
     }
     func testReviewDeletionCleanupRetryPreservesPersonalLegacyData() {

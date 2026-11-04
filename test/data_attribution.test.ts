@@ -84,7 +84,7 @@ describe('Garmin attribution', () => {
 
   it('advances the delta cursor on a device-only correction and leaves identical resyncs unchanged', async () => {
     const owner = await upsertUser(env.DB,'sync-attribution',null,'Rider');
-    await setUserIntervalsCreds(env.DB,owner.id,'synthetic-api-key','athlete');
+    await setUserIntervalsCreds(env.DB,owner.id,env.CREDENTIAL_ENCRYPTION_KEY, 'synthetic-api-key','athlete');
     const sync = (device: string) => syncExternalActivities(env.DB,env,{userId:owner.id,today:today(),fetcher:async () => ({ok:true,status:200,json:async () => [{id:'a',type:'Run',name:'Run',start_date_local:`${today()}T06:00:00`,moving_time:1800,device_name:device}]})});
     expect((await sync('Garmin Edge 530')).status).toBe('ok');
     const before = (await getRecentActivities(env.DB,owner.id))[0]!;

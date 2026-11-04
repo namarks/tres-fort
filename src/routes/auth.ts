@@ -25,6 +25,7 @@ import {
   isOwnerDeletionTombstoned,
   markAppleGrantExchangeUncertain,
   redeemInvite,
+  revokeAppSession,
   upsertUserUnlessDeletedOwner,
 } from '../db';
 
@@ -424,9 +425,16 @@ export function createAuthRoutes(
         authTimeSeconds: authTimeSec,
         appReview: c.get('appReview'),
         client: c.get('appClient'),
+        sessionId: c.get('appSessionId'),
       },
     );
     return c.json({ jwt });
+  });
+
+  routes.post('/logout', requireAppJwt, async (c) => {
+    await revokeAppSession(c.env.DB, c.get('userId'), c.get('appSessionId'), c.get('appSessionExpiresAt'));
+    c.header('Cache-Control', 'no-store');
+    return c.json({ ok: true });
   });
 
   // POST /auth/dev  { secret }  -> { jwt, user }

@@ -94,4 +94,43 @@ final class WorkoutMetadataTests: XCTestCase {
         XCTAssertNil(PlannedActivity.existing(named: "Tennis", in: plan))
         XCTAssertNil(PlannedActivity.existing(named: "", in: plan))
     }
+
+    func testANewRunFromAWeekdayIsAWorkoutWithOneOutdoorRun() {
+        func slot(_ id: String, _ exerciseID: String) -> TemplateExercise {
+            TemplateExercise(id: id, exercise_id: exerciseID, exercise_name: exerciseID,
+                exercise_unit: "min", order_index: 0, target_sets: 1, target_reps: 30,
+                target_reps_max: nil, target_rpe: nil, rest_seconds: 0,
+                target_weight: nil, cues: nil, exercise_modality: "cardio",
+                exercise_laterality: nil, exercise_load_mode: nil, exercise_demo_slug: nil,
+                target_duration_s: 1800, is_warmup: 0)
+        }
+        let intervals = Workout(id: "intervals", name: "Intervals", day_label: nil, order_index: 0,
+                                exercises: [slot("run-slot", RunPlan.exerciseID)])
+        let tempo = Workout(id: "tempo", name: "Tempo run", day_label: nil, order_index: 1,
+                            exercises: [slot("tempo-run", RunPlan.exerciseID), slot("plank", "plank")])
+        let soccer = Workout(id: "soccer", name: "Soccer", day_label: nil, order_index: 2, exercises: [])
+        let plan = PlanTree(id: "p", name: "Library", version: 4, workouts: [intervals, tempo, soccer], meta: nil)
+
+        XCTAssertEqual(PlannedRunCreation.name("  "), "Run")
+        XCTAssertEqual(PlannedRunCreation.name(" Long run "), "Long run")
+
+        XCTAssertTrue(PlannedRunCreation.isRun(intervals))
+        XCTAssertFalse(PlannedRunCreation.isRun(tempo), "A run with other exercises is a workout")
+        XCTAssertFalse(PlannedRunCreation.isRun(soccer), "An activity has no run to plan")
+
+        XCTAssertEqual(PlannedRunCreation.match(named: "intervals ", in: plan), .run(intervals))
+        XCTAssertEqual(PlannedRunCreation.match(named: "Tempo run", in: plan), .taken(tempo))
+        XCTAssertEqual(PlannedRunCreation.match(named: "Soccer", in: plan), .taken(soccer))
+        XCTAssertEqual(PlannedRunCreation.match(named: "Easy run", in: plan), .available)
+        XCTAssertEqual(PlannedRunCreation.match(named: "Easy run", in: nil), .available)
+
+        XCTAssertEqual(PlannedRunCreation.runSlot(in: intervals)?.id, "run-slot")
+        XCTAssertEqual(PlannedRunCreation.runSlot(in: tempo)?.id, "tempo-run")
+        XCTAssertNil(PlannedRunCreation.runSlot(in: soccer))
+        XCTAssertNil(PlannedRunCreation.runSlot(in: nil))
+
+        XCTAssertEqual(WeekdayPlanSheet.detail(for: intervals), "Run")
+        XCTAssertEqual(WeekdayPlanSheet.detail(for: soccer), "Activity")
+        XCTAssertEqual(WeekdayPlanSheet.detail(for: tempo), "2 exercises")
+    }
 }

@@ -111,6 +111,44 @@ enum PlannedActivity {
     }
 }
 
+/// A run planned on a weekday: a saved workout holding one outdoor run, made
+/// from the weekday sheet and planned step by step right after, so a member
+/// sets up intervals or an easy run without the coach.
+enum PlannedRunCreation {
+    /// Ideas offered when making one. Any name works.
+    static let suggestions = ["Easy run", "Intervals", "Tempo run", "Long run"]
+    static let defaultName = "Run"
+
+    enum Match: Equatable {
+        /// No workout has the name, so a new run is made.
+        case available
+        /// A run with this name exists; it goes on the weekday instead of a copy.
+        case run(Workout)
+        /// A workout that isn't a run has the name; pick another.
+        case taken(Workout)
+    }
+
+    static func name(_ typed: String) -> String {
+        let clean = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? defaultName : clean
+    }
+
+    static func match(named name: String, in plan: PlanTree?) -> Match {
+        guard let workout = PlannedActivity.existing(named: name, in: plan) else { return .available }
+        return isRun(workout) ? .run(workout) : .taken(workout)
+    }
+
+    /// Only runs: one or more outdoor run slots and nothing else.
+    static func isRun(_ workout: Workout) -> Bool {
+        !workout.exercises.isEmpty && workout.exercises.allSatisfy(\.isOutdoorRun)
+    }
+
+    /// The slot whose steps the editor opens on.
+    static func runSlot(in workout: Workout?) -> TemplateExercise? {
+        workout?.exercises.first(where: \.isOutdoorRun)
+    }
+}
+
 /// The repeating week at the top of the Plan tab: what each weekday holds.
 /// Tapping any day, rest days too, opens that day to change it.
 struct PlanWeekSummary: View {

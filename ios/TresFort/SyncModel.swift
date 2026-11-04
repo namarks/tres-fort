@@ -440,6 +440,23 @@ final class SyncModel: ObservableObject {
         return outcome
     }
 
+    /// Rates how hard a workout was, 1 to 10, or clears the rating with nil
+    /// (docs/plans/sport-activities P2), then pulls the rescored workout.
+    /// Nil when saved, else a message for the member.
+    func rateActivityEffort(activityID: String, effort: Int?) async -> String? {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else {
+            return "Sign in again, then rate it."
+        }
+        do {
+            _ = try await APIClient().rateActivityEffort(activityID: activityID, effort: effort, jwt: jwt)
+        } catch {
+            if (error as? APIError)?.httpStatus == 401, isCurrentBearer(jwt) { auth.requireReauthentication() }
+            return "Couldn't save your rating. Check your connection and try again."
+        }
+        if canInitiateBoundFeatureAction { await loadAfterMutation() }
+        return nil
+    }
+
     private var currentJWT: String? {
         guard let accountID, auth.userID == accountID else { return nil }
         return auth.featureJWT

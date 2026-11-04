@@ -664,8 +664,12 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
     /// exists; older Workers omit all three.
     var effective_load: Double? = nil
     var effective_intensity: Double? = nil
-    /// provider / power / power_summary / heart_rate / heart_rate_average / pace.
+    /// provider / power / power_summary / heart_rate / heart_rate_average /
+    /// pace, or effort: an estimate from the member's rating.
     var load_method: String? = nil
+    /// The member's own 1 to 10 "How hard was it?" (migration 0066,
+    /// `EffortScale`). Older Workers omit it.
+    var effort: Int? = nil
     /// What it was: soccer, tennis, swim, … (migration 0064, `Sports`).
     /// Older Workers omit it.
     var sport: String? = nil
@@ -749,7 +753,8 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
     }
 
     /// How the load was found, in a word or two: "power", "heart rate",
-    /// "avg heart rate", "pace", or "intervals.icu" for its own load.
+    /// "avg heart rate", "pace", "effort estimate" from the member's rating,
+    /// or "intervals.icu" for its own load.
     var loadMethodLabel: String? {
         guard shownLoad != nil else { return nil }
         switch load_method {
@@ -757,6 +762,7 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
         case "heart_rate": return "heart rate"
         case "heart_rate_average": return "avg heart rate"
         case "pace": return "pace"
+        case "effort": return "effort estimate"
         default: return source == "intervals" ? "intervals.icu" : nil
         }
     }

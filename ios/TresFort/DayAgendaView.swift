@@ -478,7 +478,10 @@ struct DayAgendaView: View {
             // not a count of sets.
             if let runSlot {
                 PlannedRunRecordView(slot: runSlot, run: run, routeAccess: sync.activityRouteAccess,
-                                     deleteRun: deleteRecordedRun)
+                                     deleteRun: deleteRecordedRun,
+                                     rateEffort: { id, effort in
+                                         await sync.rateActivityEffort(activityID: id, effort: effort)
+                                     })
             }
             if let session = realSession {
                 let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
@@ -627,7 +630,8 @@ struct DayAgendaView: View {
     // COMPLETED endurance activities (rides/runs) for this date, shown as
     // "workouts completed" with the same basic stats the intervals.icu app
     // shows: duration, power, heart rate, distance, elevation, load.
-    // READ-ONLY — recorded upstream, never editable here.
+    // Recorded upstream; the member can only rate how hard one was when
+    // nothing measured scores it (sport-activities P2).
 
     @ViewBuilder private var completedActivitiesSection: some View {
         // The run a planned run workout records shows in that record instead.
@@ -700,6 +704,11 @@ struct DayAgendaView: View {
             }
             if !routeSegments.isEmpty {
                 ActivityRouteThumbnail(segments: routeSegments)
+            }
+            if a.offersEffortRating {
+                EffortRatingControl(activity: a) { effort in
+                    await sync.rateActivityEffort(activityID: a.id, effort: effort)
+                }
             }
             if let recordedRunID {
                 RecordedRunDeleteButton(recordingID: recordedRunID, delete: deleteRecordedRun)

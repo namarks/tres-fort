@@ -8,6 +8,7 @@ import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
+import { isEffort } from '../trainingLoad';
 import { coachGroupSummary, coachWorkouts } from '../exerciseGroupViews';
 import { resolvedScheduleNames } from '../planViews';
 import { positiveSetTonnage } from '../metrics';
@@ -66,6 +67,7 @@ import {
   logEnduranceActivity,
   logSet,
   softDeleteActivity,
+  setActivityEffort,
   slotWeightUnit,
   logWorkoutComplete,
   nextWorkoutOrderIndex,
@@ -1137,6 +1139,38 @@ const TOOLS: Record<string, Tool> = {
           : `Deleted intervals.icu activity ${r.intervals_activity_id} (activity_id ${r.activity_id}).`
         : null,
   },
+  rate_activity: {
+    description:
+      'Record how hard a completed activity was, as the member told you: `effort` 1 to 10 (1 very easy, ' +
+      '3 moderate, 5 hard, 7 very hard, about how an hour at threshold feels, 10 all out), or null to clear ' +
+      'it. Pass the `id` from get_recent_activities. Use it only when the member gives a rating; never guess ' +
+      'one. A workout with no heart-rate, power, pace or provider load is then scored from the rating ' +
+      '(load_method "effort", an estimate: one hour at 7 is 100); a measured load always wins. The member ' +
+      'can rate the same workout in the app.',
+    inputSchema: obj(
+      {
+        id: { type: 'string', description: 'activity id from get_recent_activities' },
+        effort: { type: ['integer', 'null'], minimum: 1, maximum: 10, description: '1-10, or null to clear' },
+      },
+      ['id', 'effort'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const invalid = invalidFields(a, { id: isNonEmptyString, effort: (v) => v === null || isEffort(v) });
+      if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
+      const row = await setActivityEffort(env.DB, userId, (a.id as string).trim(), a.effort as number | null);
+      if (!row) return { error: 'not_found' };
+      return {
+        ok: true,
+        id: row.id,
+        date: row.date,
+        sport: row.sport ?? null,
+        effort: row.effort,
+        load: row.effective_load,
+        load_method: row.load_method,
+      };
+    },
+  },
   log_workout_complete: {
     description: 'Mark a session complete, optionally with perceived fatigue (1-10) and notes.',
     inputSchema: obj(
@@ -1817,7 +1851,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_recent_activities: {
     description:
-      'Get COMPLETED activities (rides, runs, swims and other sports from intervals.icu, Apple Health, .fit files and the run recorder) with their actuals. `sport` names what it was (soccer, tennis, swim, …; `kind` is the coarse family): duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `training_load` is the figure from the provider; `load` (with `load_intensity` and `load_method`: provider, power, power_summary, heart_rate, heart_rate_average or pace) is the load Tres Fort shows, computed from the member thresholds when the provider has none, and null when there is no usable data. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
+      'Get COMPLETED activities (rides, runs, swims and other sports from intervals.icu, Apple Health, .fit files and the run recorder) with their actuals. `sport` names what it was (soccer, tennis, swim, …; `kind` is the coarse family): duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `training_load` is the figure from the provider; `load` (with `load_intensity` and `load_method`: provider, power, power_summary, heart_rate, heart_rate_average, pace or effort) is the load Tres Fort shows, computed from the member thresholds when the provider has none, else estimated from the member’s own 1-10 `effort` rating (see rate_activity), and null when there is no usable data. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
     inputSchema: obj(
       {
         range: { type: 'integer', minimum: 1, maximum: 365, description: 'days back (default 30)' },
@@ -1852,6 +1886,7 @@ const TOOLS: Record<string, Tool> = {
           load: x.effective_load,
           load_intensity: x.effective_intensity,
           load_method: x.load_method,
+          effort: x.effort ?? null,
           calories: x.calories,
           elevation_gain_m: x.elevation_gain_m,
         })),

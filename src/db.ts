@@ -9002,7 +9002,7 @@ export type {
   RecordedRunUploadResult,
 } from './services/intervalsActivityWrite';
 export { MAX_RECORDING_BYTES, recordingFormat } from './services/intervalsActivityWrite';
-export { refreshActivityLoads } from './services/activityLoad';
+export { refreshActivityLoads, setActivityEffort } from './services/activityLoad';
 
 /** Add a threshold, then recompute the member's activity loads. A retry of
  * an already stored threshold recomputes too, so a refresh that failed after

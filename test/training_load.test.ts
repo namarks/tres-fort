@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   averageHeartRateLoad,
   coveredSeconds,
+  effortLoad,
+  isEffort,
   heartRateStreamLoad,
   heartRateStreamSummary,
   heartRateSummaryLoad,
@@ -210,5 +212,40 @@ describe('stored stream summaries', () => {
     expect(selectLoad({ ...base, hr_summary: { rms_bpm: 160, seconds: 3600 } }, thresholds))
       .toEqual({ load: 100, intensity: 100, method: 'heart_rate' });
     expect(selectLoad({ ...base, hr_summary: null }, thresholds)?.method).toBe('pace');
+  });
+});
+
+// The member's "How hard was it?" (docs/plans/sport-activities P2).
+describe('effort estimate', () => {
+  it('scores one hour at effort 7 as 100 and grows in a straight line', () => {
+    expect(effortLoad(7, 3600)).toEqual({ load: 100, intensity: null, method: 'effort' });
+    expect(effortLoad(10, 3600)?.load).toBe(143);
+    expect(effortLoad(1, 3600)?.load).toBe(14);
+    // A 90-minute match at 6: 1.5 × 6/7 × 100.
+    expect(effortLoad(6, 5400)?.load).toBe(129);
+    expect(effortLoad(7, 1800)?.load).toBe(50);
+  });
+
+  it('accepts only whole ratings from 1 to 10 and a real duration', () => {
+    for (const bad of [0, 11, 6.5, -3, Number.NaN, '7', null, undefined]) {
+      expect(isEffort(bad)).toBe(false);
+      expect(effortLoad(bad as any, 3600)).toBeNull();
+    }
+    expect(isEffort(1) && isEffort(10)).toBe(true);
+    expect(effortLoad(7, 0)).toBeNull();
+    expect(effortLoad(7, null)).toBeNull();
+  });
+
+  it('is the last resort: every measured load wins over it', () => {
+    const all = { ftp_w: 250, threshold_hr: 160, threshold_pace_s_per_km: 300 };
+    const base = { moving_time_sec: 3600, effort: 9 };
+    expect(selectLoad({ ...base, provider_load: 40 }, all)?.method).toBe('provider');
+    expect(selectLoad({ ...base, weighted_avg_watts: 200 }, all)?.method).toBe('power_summary');
+    expect(selectLoad({ ...base, distance_m: 10000 }, all)?.method).toBe('pace');
+    expect(selectLoad({ ...base, average_hr: 140 }, all)?.method).toBe('heart_rate_average');
+    // With nothing measured (or no threshold to measure it by), the rating scores it.
+    expect(selectLoad({ ...base, average_hr: 140 }, {})).toEqual({ load: 129, intensity: null, method: 'effort' });
+    expect(selectLoad({ moving_time_sec: null, elapsed_time_sec: 1800, effort: 7 }, {})?.load).toBe(50);
+    expect(selectLoad({ moving_time_sec: 3600 }, all)).toBeNull();
   });
 });

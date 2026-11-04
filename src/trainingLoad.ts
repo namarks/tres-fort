@@ -6,6 +6,7 @@
 //   power:       load = hours × (NP / FTP)² × 100          (NP = normalized power)
 //   heart rate:  load = Σ seconds × (HR / threshold HR)² / 3600 × 100
 //   pace:        load = hours × (threshold pace / pace)² × 100
+//   effort:      load = hours × effort / 7 × 100            (member's 1–10 rating)
 //
 // Heart-rate load is Tres Fort's own figure, not intervals.icu's TRIMP-based
 // one; a provider's load is preferred whenever the source supplies it. Sparse
@@ -19,7 +20,8 @@ export type LoadMethod =
   | 'power_summary'
   | 'heart_rate'
   | 'heart_rate_average'
-  | 'pace';
+  | 'pace'
+  | 'effort';
 
 /** One sample: `t` seconds from the workout start (ascending), `v` the value. */
 export interface Sample {
@@ -57,6 +59,10 @@ export interface LoadInput {
   stream_np_w?: number | null;
   /** A heart-rate stream reduced by `heartRateStreamSummary`. */
   hr_summary?: HeartRateStreamSummary | null;
+  /** The whole session, for an effort estimate when moving time is unknown. */
+  elapsed_time_sec?: number | null;
+  /** The member's own "How hard was it?" (EFFORT_SCALE), the last resort. */
+  effort?: number | null;
 }
 
 /**
@@ -262,10 +268,36 @@ export function paceLoad(distanceM: number | null | undefined, movingSec: number
 }
 
 /**
+ * The member's "How hard was it?" scale (sport-activities P2): 1 to 10, so
+ * one tap answers it, worded in the app as a category-ratio (CR-10) scale
+ * from 1 "very easy" to 10 "all out" (`EffortRating.swift`). Effort 7 ("very
+ * hard") is what one hour at threshold feels like, so an hour at effort 7
+ * scores 100 like an hour at threshold heart rate, power or pace.
+ */
+export const EFFORT_SCALE = { min: 1, max: 10, threshold: 7 } as const;
+
+/** A whole number from 1 to 10, the only ratings stored. */
+export function isEffort(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= EFFORT_SCALE.min && v <= EFFORT_SCALE.max;
+}
+
+/** Session-effort load (Foster's session RPE, rescaled): minutes × effort,
+ * anchored so one hour at effort 7 is 100. It rises in a straight line with
+ * the rating, as session RPE does, rather than with its square, because a
+ * rating is not a measured ratio to threshold. Intensity stays unknown. An
+ * estimate: every measured method wins over it. */
+export function effortLoad(effort: number | null | undefined, seconds: number | null | undefined): LoadResult | null {
+  if (!isEffort(effort) || !positive(seconds)) return null;
+  return result((seconds / 3600) * (effort / EFFORT_SCALE.threshold) * 100, null, 'effort');
+}
+
+/**
  * The best available load, in this order: the provider's own figure, a power
  * stream (or its stored normalized power), the source's normalized power, a
- * heart-rate stream (or its stored summary), pace, average heart rate. Each method runs only when its threshold is set. Null means no
- * usable data: callers show the load as unknown, never as zero.
+ * heart-rate stream (or its stored summary), pace, average heart rate, and
+ * last the member's effort rating. Each measured method runs only when its
+ * threshold is set; the rating needs none. Null means no usable data:
+ * callers show the load as unknown, never as zero.
  */
 export function selectLoad(input: LoadInput, thresholds: ThresholdSet): LoadResult | null {
   if (typeof input.provider_load === 'number' && Number.isFinite(input.provider_load) && input.provider_load >= 0) {
@@ -286,5 +318,6 @@ export function selectLoad(input: LoadInput, thresholds: ThresholdSet): LoadResu
     ?? heartRateSummaryLoad(input.hr_summary, thresholds.threshold_hr)
     ?? paceLoad(input.distance_m, moving, thresholds.threshold_pace_s_per_km)
     ?? averageHeartRateLoad(input.average_hr, moving, thresholds.threshold_hr)
+    ?? effortLoad(input.effort, moving ?? (positive(input.elapsed_time_sec) ? input.elapsed_time_sec : null))
   );
 }

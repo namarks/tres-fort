@@ -1,6 +1,6 @@
 # Real training load for endurance workouts
 
-Slug: endurance-training-load · Status: active · Updated: 2026-11-02 · Theme: connected-training
+Slug: endurance-training-load · Status: gated · Updated: 2026-11-04 · Theme: connected-training
 
 ## Goal
 
@@ -129,11 +129,12 @@ provider connection.
 - [ ] **P5 — Garmin activity files**
   - With Garmin's Starter API approval, receive activity files directly and
     run them through the same engine.
-- [ ] **P6 — Effort fallback**
+- [x] **P6 — Effort fallback**
   - A one-tap "How hard was it?" (1 to 10) on imported workouts with no usable
     data gives a session-RPE load, labeled as an estimate.
-  - Proposed to be delivered for every sport, not only runs, rides and swims,
-    by [sport-activities P2](../sport-activities/plan.md).
+  - Delivered for every sport, not only runs, rides and swims, by
+    [sport-activities P2](../sport-activities/plan.md): migration `0066`,
+    `load_method='effort'`, one hour at effort 7 is 100.
 - [x] **P7 — Starting values from intervals.icu**
   - Every activity intervals.icu sends carries the sport settings it was
     scored with (`icu_ftp` in watts, `lthr` in bpm, `threshold_pace` in metres
@@ -165,12 +166,11 @@ provider connection.
 
 ## Next step
 
-**Now (@agent):** P6, a labeled effort estimate for workouts with no usable data, is
-the remaining agent phase; P5 waits on Garmin's Starter API approval. P0 to P4
-and P7 are in the repository. Migrations `0059` to `0062` are in production:
-`0061` and `0062` were applied on 2026-11-02 with the Worker from main
-`cf2f3fa` (version `1e8a4319`). P7's suggestions need a later Worker deploy
-and app build, each with the owner's separate go-ahead.
+**Now (@owner):** P5 waits on Garmin's Starter API approval
+(`external:garmin-starter-api-approval`); every other phase is in the
+repository. P6 shipped as sport-activities P2, whose migration `0066`, Worker
+deploy and app build each need the owner's separate go-ahead. Migrations
+`0059` to `0064` are in production.
 
 ## Notes / open questions
 

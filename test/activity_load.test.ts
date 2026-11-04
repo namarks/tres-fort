@@ -439,3 +439,163 @@ describe('heart-rate load for any sport', () => {
     expect(lift).toMatchObject({ sport: 'strength', effective_load: null, load_method: null });
   });
 });
+
+// The member's own "How hard was it?" (migration 0066,
+// docs/plans/sport-activities P2).
+describe('effort rating', () => {
+  const soccer = (over: Record<string, unknown> = {}) => ({
+    kind: 'other', name: 'Soccer', moving_time_sec: 5400, elapsed_time_sec: 5400,
+    distance_m: null, average_hr: null, raw: JSON.stringify({ hk_activity_type: 41 }), ...over,
+  });
+  const rate = (jwt: string, id: string, body: unknown) =>
+    SELF.fetch(`${BASE}/api/activities/${encodeURIComponent(id)}/effort`, {
+      method: 'PUT', headers: headers(jwt), body: JSON.stringify(body),
+    });
+  const effortRow = (id: string) =>
+    env.DB.prepare('SELECT effort, effective_load, effective_intensity, load_method, synced_at FROM external_activities WHERE id=?1')
+      .bind(id).first<any>();
+
+  it('scores a workout with no data from the rating, labeled effort, and clears back to unknown', async () => {
+    const u = await makeUser('effort');
+    const match = await pushHealthRun(u.jwt, soccer());
+    expect(match).toMatchObject({ sport: 'soccer', effective_load: null, load_method: null, effort: null });
+
+    const r = await rate(u.jwt, match.id, { effort: 6 });
+    expect(r.status).toBe(200);
+    // 90 minutes at 6: 1.5 × 6/7 × 100.
+    expect((await r.json<any>()).activity).toMatchObject({ effort: 6, effective_load: 129, effective_intensity: null, load_method: 'effort' });
+    const rated = await effortRow(match.id);
+    expect(rated.synced_at).toBeGreaterThan(match.synced_at);
+
+    // Installed apps receive it through the state delta.
+    const state = await (await SELF.fetch(`${BASE}/api/state?activities_since=${match.synced_at}`, { headers: headers(u.jwt) })).json<any>();
+    expect(state.external_activities.find((a: any) => a.id === match.id)).toMatchObject({ effort: 6, effective_load: 129, load_method: 'effort' });
+
+    // The same rating again changes nothing.
+    await rate(u.jwt, match.id, { effort: 6 });
+    expect((await effortRow(match.id)).synced_at).toBe(rated.synced_at);
+
+    // Clearing it returns the load to unknown, never zero.
+    expect((await rate(u.jwt, match.id, { effort: null })).status).toBe(200);
+    expect(await effortRow(match.id)).toMatchObject({ effort: null, effective_load: null, load_method: null });
+  });
+
+  it('keeps a measured load over the rating, and uses the rating once that load goes away', async () => {
+    const u = await makeUser('effort-measured');
+    const id = await setThreshold(u.jwt, 'run', 'threshold_hr', 150);
+    const match = await pushHealthRun(u.jwt, soccer({ average_hr: 150, moving_time_sec: 3600, elapsed_time_sec: 3600 }));
+    expect(match).toMatchObject({ effective_load: 100, load_method: 'heart_rate_average' });
+    await rate(u.jwt, match.id, { effort: 9 });
+    expect(await effortRow(match.id)).toMatchObject({ effort: 9, effective_load: 100, load_method: 'heart_rate_average' });
+    await SELF.fetch(`${BASE}/api/me/thresholds/${id}`, { method: 'DELETE', headers: headers(u.jwt) });
+    expect(await effortRow(match.id)).toMatchObject({ effort: 9, effective_load: 129, load_method: 'effort' });
+  });
+
+  it("keeps the rating when the source sends the workout again, and never overrides a provider's load", async () => {
+    const u = await makeUser('effort-resend');
+    const swimId = crypto.randomUUID();
+    const swim = await pushHealthRun(u.jwt, soccer({ id: swimId, kind: 'swim', name: 'Swim', raw: JSON.stringify({ hk_activity_type: 46 }) }));
+    await rate(u.jwt, swim.id, { effort: 7 });
+    // Apple Health revises the swim: same workout, new totals.
+    await pushHealthRun(u.jwt, soccer({ id: swimId, kind: 'swim', name: 'Swim', moving_time_sec: 3600, elapsed_time_sec: 3600, raw: JSON.stringify({ hk_activity_type: 46 }) }));
+    expect(await effortRow(swim.id)).toMatchObject({ effort: 7, effective_load: 100, load_method: 'effort' });
+
+    const ride = await insertIntervalsRow(u.id);
+    await rate(u.jwt, ride, { effort: 3 });
+    expect(await effortRow(ride)).toMatchObject({ effort: 3, effective_load: 72, load_method: 'provider' });
+  });
+
+  it('follows the workout when another source takes it over as the shown copy', async () => {
+    const u = await makeUser('effort-dedup');
+    const start = Date.parse('2026-10-24T12:14:00Z');
+    const pushed = await pushHealthRun(u.jwt, soccer({ kind: 'run', name: 'Run', start_date_local_ms: start }));
+    await rate(u.jwt, pushed.id, { effort: 8 });
+
+    // intervals.icu then delivers the same run with no load: the Apple Health
+    // copy is hidden, and the shown copy takes its rating.
+    const intervalsId = `intervals:activity:${u.id}:effort-dup`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,name,moving_time_sec,
+         start_date_local_ms,synced_at)
+       VALUES (?1,?2,'intervals','effort-dup','2026-10-24','run','Run',5400,?3,1)`,
+    ).bind(intervalsId, u.id, start).run();
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    await refreshActivityLoads(env.DB, u.id);
+    expect(await effortRow(intervalsId)).toMatchObject({ effort: 8, effective_load: 171, load_method: 'effort' });
+
+    // Clearing it on the shown copy clears the hidden one too, so it stays clear.
+    await rate(u.jwt, intervalsId, { effort: null });
+    await refreshActivityLoads(env.DB, u.id);
+    expect(await effortRow(intervalsId)).toMatchObject({ effort: null, effective_load: null });
+    expect(await effortRow(pushed.id)).toMatchObject({ effort: null, effective_load: null });
+
+    // A hidden copy itself can't be rated.
+    expect((await rate(u.jwt, pushed.id, { effort: 5 })).status).toBe(404);
+  });
+
+  it('keeps a rating given before another copy arrived when that copy is later restored', async () => {
+    const u = await makeUser('effort-late-copy');
+    const start = Date.parse('2026-10-24T12:14:00Z');
+    const intervalsId = `intervals:activity:${u.id}:effort-first`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,name,moving_time_sec,
+         start_date_local_ms,synced_at)
+       VALUES (?1,?2,'intervals','effort-first','2026-10-24','run','Run',5400,?3,1)`,
+    ).bind(intervalsId, u.id, start).run();
+    await rate(u.jwt, intervalsId, { effort: 6 });
+
+    // The Apple Health copy arrives afterwards and is hidden behind it; it
+    // takes the rating with it.
+    const pushed = await pushHealthRun(u.jwt, soccer({ kind: 'run', name: 'Run', start_date_local_ms: start }));
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    await refreshActivityLoads(env.DB, u.id);
+    const hidden = await env.DB.prepare('SELECT deleted_at, duplicate_of, effort FROM external_activities WHERE id=?1')
+      .bind(pushed.id).first<any>();
+    expect(hidden).toMatchObject({ duplicate_of: intervalsId, effort: 6 });
+    expect(hidden.deleted_at).not.toBeNull();
+
+    // The intervals.icu run goes away; the restored copy keeps the rating and its load.
+    await env.DB.prepare('UPDATE external_activities SET deleted_at=?2 WHERE id=?1').bind(intervalsId, Date.now()).run();
+    await dedupeHealthKitAgainstIntervals(env.DB, u.id);
+    await refreshActivityLoads(env.DB, u.id);
+    expect(await env.DB.prepare('SELECT deleted_at, effort, effective_load, load_method FROM external_activities WHERE id=?1')
+      .bind(pushed.id).first<any>()).toMatchObject({ deleted_at: null, effort: 6, effective_load: 129, load_method: 'effort' });
+  });
+
+  it('rejects bad ratings and other members’ workouts', async () => {
+    const a = await makeUser('effort-a');
+    const b = await makeUser('effort-b');
+    const theirs = await pushHealthRun(b.jwt, soccer());
+    expect((await rate(a.jwt, theirs.id, { effort: 5 })).status).toBe(404);
+    for (const body of [{}, { effort: 0 }, { effort: 11 }, { effort: 6.5 }, { effort: '7' }]) {
+      const r = await rate(b.jwt, theirs.id, body);
+      expect(r.status).toBe(400);
+      expect(await r.json()).toMatchObject({ error: 'invalid_fields', fields: ['effort'] });
+    }
+    expect(await effortRow(theirs.id)).toMatchObject({ effort: null });
+    // The column itself refuses anything but a whole 1 to 10.
+    await expect(env.DB.prepare('UPDATE external_activities SET effort = 6.5 WHERE id = ?1').bind(theirs.id).run()).rejects.toThrow();
+    await expect(env.DB.prepare("UPDATE external_activities SET load_method = 'guess' WHERE id = ?1").bind(theirs.id).run()).rejects.toThrow();
+  });
+
+  it('lets the coach record a rating the member gives and reports it', async () => {
+    const owner = await ownerJwt();
+    const today = new Date().toISOString().slice(0, 10);
+    const match = await pushHealthRun(owner.jwt, soccer({ date: today, start_date_local_ms: Date.parse(`${today}T07:00:00Z`) }));
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const r = await SELF.fetch(`${BASE}/mcp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer test-mcp-token' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      return JSON.parse((await r.json<any>()).result.content[0].text);
+    };
+    expect(await call('rate_activity', { id: match.id, effort: 11 })).toMatchObject({ error: 'invalid_fields' });
+    expect(await call('rate_activity', { id: 'nope', effort: 5 })).toMatchObject({ error: 'not_found' });
+    expect(await call('rate_activity', { id: match.id, effort: 7 })).toMatchObject({ ok: true, effort: 7, load: 150, load_method: 'effort' });
+    const audit = await env.DB.prepare("SELECT actor FROM audit_log WHERE user_id=?1 AND tool='rate_activity'").bind(owner.id).all<any>();
+    expect(audit.results.length).toBeGreaterThanOrEqual(1);
+    const recent = await call('get_recent_activities', { range: 2, limit: 200 });
+    expect(recent.activities.find((x: any) => x.id === match.id)).toMatchObject({ effort: 7, load: 150, load_method: 'effort' });
+  });
+});

@@ -8,11 +8,11 @@ import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
-import type { Sample } from '../trainingLoad';
+import { isEffort, type Sample } from '../trainingLoad';
 import { parseFit, FitParseError, type FitActivity } from '../fitFile';
 import { parseTcx, TcxParseError, type TcxRun } from '../tcxFile';
 import { asEncodedRoute } from '../activityRoute';
-import { importFitActivity, deleteFitActivity } from '../db';
+import { importFitActivity, deleteFitActivity, setActivityEffort } from '../db';
 import type { HealthKitStreams } from '../db';
 import { isGroupId } from '../exerciseGroups';
 import { isPartnerStartInput } from '../partnerTraining';
@@ -1716,6 +1716,25 @@ apiRoutes.get('/activities/:id/route', async (c) => {
   }
   if (provider.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);
   return c.json({ error: 'not_found' }, 404);
+});
+
+// PUT /api/activities/:id/effort — the member's "How hard was it?" for one of
+// their imported workouts (docs/plans/sport-activities P2). Body
+// `{ effort: 1..10 }`, or `{ effort: null }` to clear it. A workout with no
+// measured load is then scored from the rating (load_method 'effort', an
+// estimate); one with a measured load keeps it. Idempotent: the same rating
+// again changes nothing. 404 for an activity the member can't see.
+apiRoutes.put('/activities/:id/effort', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const effort = parsed.body.effort;
+  if (!('effort' in parsed.body) || (effort !== null && !isEffort(effort))) {
+    return c.json({ error: 'invalid_fields', fields: ['effort'] }, 400);
+  }
+  const activity = await setActivityEffort(c.env.DB, c.get('userId'), c.req.param('id'), effort as number | null);
+  if (!activity) return c.json({ error: 'not_found' }, 404);
+  return c.json({ activity });
 });
 
 // PUT /api/activities/healthkit/:id/route — the GPS route Apple Health saved

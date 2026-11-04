@@ -790,8 +790,15 @@ one hour at threshold is 100, with a provider's own load preferred.
 (migration `0060`) hold the load Tres Fort shows, while `training_load` stays
 the provider's figure; `refreshActivityLoads` recomputes them after Apple
 Health pushes, intervals.icu syncs and threshold changes, advancing
-`synced_at` only for changed rows. See
-[the plan](plans/endurance-training-load/plan.md).
+`synced_at` only for changed rows. A member's own 1 to 10 "How hard was it?"
+(`external_activities.effort`, migration `0066`, set through
+`PUT /api/activities/:id/effort` or the coach's `rate_activity`) scores a
+workout only when nothing measured does: `load_method='effort'`, one hour at
+effort 7 is 100, labeled an estimate. The rating is written to the row and its
+hidden duplicates; a live row without one inherits a hidden copy's, and a
+hidden copy without one inherits its live winner's. See
+[the plan](plans/endurance-training-load/plan.md) and
+[sport-activities P2](plans/sport-activities/plan.md).
 
 `GET /api/starter-workouts` returns curated equipment-matched previews, with
 excluded movement patterns removed. `POST /api/starter-workouts/:id` accepts the

@@ -108,6 +108,7 @@ export const LOAD_METHOD_LABELS: Record<string, string> = {
   heart_rate: 'from heart rate',
   heart_rate_average: 'from average heart rate',
   pace: 'from pace',
+  effort: 'estimated from your effort rating',
 };
 
 export function tripOn(date: string, trips: Trip[]): Trip | null {

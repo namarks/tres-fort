@@ -174,11 +174,11 @@ What the sources can give (to confirm against real rows in each phase):
 **Now (@agent):** P3, logging any sport by hand and keeping it in Tres Fort
 (intervals.icu an optional copy, owner's choice of 2026-11-03), with the
 effort rating among its fields. P0, P1 and P2 are in the repository; P0 and
-P1 are live on the API and the web app (see Release), and their app build
-waits for the release check. P2's migration `0066`, its Worker deploy and an
-app build each need the owner's separate go-ahead, in that order (`0066`
-before the Worker). P5, Apple Watch's effort score, waits for the owner's
-go-ahead on that Apple Health permission.
+P1 are live on the API and the web app and in TestFlight build 64 (see
+Release). P2's migration `0066`, its Worker deploy and an app build each need
+the owner's separate go-ahead, in that order (`0066` before the Worker). P5,
+Apple Watch's effort score, waits for the owner's go-ahead on that Apple
+Health permission.
 
 ## Release
 
@@ -188,8 +188,9 @@ go-ahead on that Apple Health permission.
   `7c97d561`) and `tres-fort-web` as `bd5ae050` (rollback `b3223134`).
   After the backfill, production rows named 15 sports, among them soccer
   (13), squash (12), yoga (12), hiit (121) and other (122).
-- The app build (TestFlight) follows once the release check passes on
-  `110e5f4`; App Store 1.0 stays on build 55.
+- TestFlight build 64 was uploaded from `110e5f4` after the release check
+  passed on that commit (run 41762518434), and processed as valid. It is a
+  beta build only; App Store 1.0 stays on build 55.
 
 ## Notes / open questions
 

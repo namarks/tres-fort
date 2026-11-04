@@ -295,7 +295,9 @@ extension HealthRunWorkoutEngine: HKWorkoutSessionDelegate, HKLiveWorkoutBuilder
 /// intervals.icu upload carries. The Health sync still pushes the summary;
 /// the server retires that copy once the intervals.icu activity arrives.
 enum RunRecordingHealthTag {
+    static let prefix = "tresfort:recording:"
+
     static func externalID(for recordingID: UUID) -> String {
-        "tresfort:recording:" + recordingID.uuidString.lowercased()
+        prefix + recordingID.uuidString.lowercased()
     }
 }

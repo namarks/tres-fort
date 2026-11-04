@@ -69,6 +69,12 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-sport-streams-backfill.v1.\(userID)"
     }
 
+    /// The Apple Health runs whose route was sent or found missing
+    /// (run-recorder P6(b)); cleared when Apple Health is disconnected.
+    static func healthRoutesKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-routes.v1.\(userID)"
+    }
+
     static func appleCredentialUserKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
@@ -147,6 +153,7 @@ enum AccountLocalState {
             healthResetPendingKey(userID: userID),
             healthStreamsBackfillKey(userID: userID),
             healthSportStreamsBackfillKey(userID: userID),
+            healthRoutesKey(userID: userID),
         ]
         var erased = true
         do { try StationRecordingStore.deleteAccountRecordings(accountID: userID) }

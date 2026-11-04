@@ -10,27 +10,32 @@ export interface LatLon {
 
 /** `GET /api/activities/:id/route`. */
 export interface ActivityRouteResponse {
-  /** The activity that carries the route: the recording, which can differ
-   * from the activity asked for when that is the intervals.icu copy of the
-   * run, or the intervals.icu run itself. */
+  /** The activity that carries the route, which can differ from the
+   * activity asked for when that is the intervals.icu copy of a recorded or
+   * Apple Health run. */
   activity_id: string;
-  /** A run recorded in the app, or a track intervals.icu sent. */
-  source?: 'recording' | 'intervals';
-  /** The run recorded in the app; null for a track from intervals.icu. */
+  /** A run recorded in the app, a track intervals.icu sent, or the route
+   * Apple Health saved with another app's run. */
+  source?: 'recording' | 'intervals' | 'healthkit';
+  /** The run recorded in the app; null otherwise. */
   recording_id: string | null;
   /** Null for a run recorded without GPS fixes. */
   route: unknown;
 }
 
+/** Where a run's route can come from (docs/plans/run-recorder P5 and P6). */
+const ROUTE_SOURCES = new Set(['recording', 'intervals', 'healthkit']);
+
 /**
  * The activities whose card may show a route: runs recorded in the app,
  * either the recording itself or the intervals.icu copy it was matched to,
- * and intervals.icu runs whose device kept a GPS track. The same rule as the
- * iPhone app (`mayHaveRecordedRoute`).
+ * intervals.icu runs whose device kept a GPS track, and Apple Health runs
+ * whose route the iPhone app sent. The same rule as the iPhone app
+ * (`mayHaveRoute`).
  */
 export function routableActivityIds(state: StateResponse): Set<string> {
   return new Set(state.external_activities
-    .filter((a) => a.deleted_at === null && a.kind === 'run' && (a.source === 'recording' || a.source === 'intervals'))
+    .filter((a) => a.deleted_at === null && a.kind === 'run' && ROUTE_SOURCES.has(a.source))
     .map((a) => a.id));
 }
 

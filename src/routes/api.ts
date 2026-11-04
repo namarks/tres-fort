@@ -11,6 +11,7 @@ import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
 import type { Sample } from '../trainingLoad';
 import { parseFit, FitParseError, type FitActivity } from '../fitFile';
 import { parseTcx, TcxParseError, type TcxRun } from '../tcxFile';
+import { asEncodedRoute } from '../activityRoute';
 import { importFitActivity, deleteFitActivity } from '../db';
 import type { HealthKitStreams } from '../db';
 import { isGroupId } from '../exerciseGroups';
@@ -110,6 +111,7 @@ import {
   storeRecordedRun,
   getActivityRoute,
   getIntervalsActivityRoute,
+  saveHealthKitRoute,
   deleteRecordedRun,
   deleteRecordedRunUpload,
   getRecordedRun,
@@ -1696,9 +1698,10 @@ apiRoutes.post('/activities/recordings', async (c) => {
 // activities, encoded as src/activityRoute.ts describes. The run recorded in
 // the app behind it comes first (the recording, or the intervals.icu copy of
 // one: `source: 'recording'` with its `recording_id`, and `route: null` for
-// a run recorded without GPS). Otherwise an intervals.icu activity's track
-// is read from intervals.icu (docs/plans/run-recorder P6; `source:
-// 'intervals'`, `recording_id: null`) and not stored. 404 when there is no
+// a run recorded without GPS), then the route the app sent for an Apple
+// Health run (`source: 'healthkit'`, docs/plans/run-recorder P6(b)).
+// Otherwise an intervals.icu activity's track is read from intervals.icu
+// (P6(a); `source: 'intervals'`, `recording_id: null`) and not stored. 404 when there is no
 // route; 502 when intervals.icu can't answer now, so a client tries again
 // later. Only the member's own routes are ever served.
 apiRoutes.get('/activities/:id/route', async (c) => {
@@ -1713,6 +1716,25 @@ apiRoutes.get('/activities/:id/route', async (c) => {
   }
   if (provider.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);
   return c.json({ error: 'not_found' }, 404);
+});
+
+// PUT /api/activities/healthkit/:id/route — the GPS route Apple Health saved
+// with one of the member's runs, by its Health workout id (docs/plans/
+// run-recorder P6(b)). Body: { route } in src/activityRoute.ts's encoding.
+// The app sends it after the run itself (POST /api/activities/healthkit), only
+// for runs another app recorded. 404 until the run is stored, or for a run
+// the member deleted; 422 for a workout that isn't a run or a route with no
+// valid point. A later send replaces the route.
+apiRoutes.put('/activities/healthkit/:id/route', async (c) => {
+  const id = c.req.param('id');
+  if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400);
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const route = asEncodedRoute(parsed.body.route);
+  if (!route) return c.json({ error: 'invalid_route' }, 400);
+  const saved = await saveHealthKitRoute(c.env.DB, c.get('userId'), id, route);
+  if (!saved.ok) return c.json({ error: saved.error }, saved.error === 'not_found' ? 404 : 422);
+  return c.json(saved);
 });
 
 // DELETE /api/activities/recordings/:id — delete a run recorded in the app,

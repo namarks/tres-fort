@@ -306,13 +306,14 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@owner):** Record the remaining P3 runs, now on TestFlight build 63
-(main 21f0f3f), which also carries P5: the API and `tres-fort-web` run main
-21f0f3f with migration 0063 applied, and the owner set `MAPKIT_TOKEN` on
-2026-11-04. P5 is done once deleting a recorded run is seen on the device.
-P6 needs an API Worker deploy, a website deploy for the privacy policy and
-an app build, each with the owner's go-ahead; it is done once maps of an
-intervals.icu run and of a Strava run show on the device.
+**Now (@owner):** Record the remaining P3 runs, now on TestFlight build 65
+(main 6ef2900), which also carries P5 and P6. On 2026-11-04 the API, the
+`tres-fort-web` app and the website were deployed from main 6ef2900 with
+the owner's go-ahead, together with the November security release
+(migrations 0065 and 0066); the owner set `MAPKIT_TOKEN` the same day. P5 is
+done once deleting a recorded run is seen on the device. P6 is done once
+maps of an intervals.icu run and of a Strava run show on the device, after
+allowing Health's workout-route access on build 65.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls

@@ -38,14 +38,14 @@ async function member(): Promise<{ id: string; jwt: string }> {
 const auth = (jwt: string) => ({ Authorization: `Bearer ${jwt}` });
 
 /** A Health workout as the app pushes it; its id is the HKWorkout UUID. */
-async function pushHealth(jwt: string, kind = 'run'): Promise<{ healthId: string; activityId: string }> {
+async function pushHealth(jwt: string, kind = 'run', laterMs = 0): Promise<{ healthId: string; activityId: string }> {
   const healthId = crypto.randomUUID().toUpperCase();
   const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
     method: 'POST',
     headers: { ...auth(jwt), 'content-type': 'application/json' },
     body: JSON.stringify({
       id: healthId, date: '2026-10-24', kind, name: 'Run',
-      start_date_local_ms: START_MS - 7 * 3_600_000, start_date_utc_ms: START_MS,
+      start_date_local_ms: START_MS - 7 * 3_600_000 + laterMs, start_date_utc_ms: START_MS + laterMs,
       source_timezone: 'America/Los_Angeles', moving_time_sec: 1602, distance_m: 5103.6,
     }),
   });
@@ -124,7 +124,8 @@ describe('Apple Health run routes', () => {
       .toMatchObject({ status: 200 });
     expect((await putRoute(me.jwt, 'not-a-uuid', { route: route() })).status).toBe(400);
 
-    const deleted = await pushHealth(me.jwt);
+    // A later run, so it is not an Apple Health copy of the one above.
+    const deleted = await pushHealth(me.jwt, 'run', 3_600_000);
     await env.DB.prepare('UPDATE external_activities SET deleted_at = ?2 WHERE id = ?1')
       .bind(deleted.activityId, Date.now()).run();
     expect((await putRoute(me.jwt, deleted.healthId, { route: route() })).status).toBe(404);

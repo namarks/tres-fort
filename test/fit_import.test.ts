@@ -197,7 +197,15 @@ describe('.fit imports across sources', () => {
     const del = await SELF.fetch(`${BASE}/api/activities/fit/${clientId}`, { method: 'DELETE', headers: auth(u.jwt) });
     expect(del.status).toBe(200);
     expect((await stored(activity.id)).deleted_at).not.toBeNull();
-    expect(await stored(healthId)).toMatchObject({ deleted_at: null, duplicate_of: null });
+    // The two Apple Health pushes are copies of one workout, so one comes
+    // back and the other stays hidden behind it.
+    const health = (await env.DB.prepare(
+      "SELECT id, deleted_at, duplicate_of FROM external_activities WHERE user_id = ?1 AND source = 'healthkit' ORDER BY id",
+    ).bind(u.id).all<{ id: string; deleted_at: number | null; duplicate_of: string | null }>()).results;
+    expect(health.map(r => r.id)).toContain(healthId);
+    expect(health[0]).toMatchObject({ deleted_at: null, duplicate_of: null });
+    expect(health[1]!.deleted_at).not.toBeNull();
+    expect(health[1]!.duplicate_of).toBe(health[0]!.id);
     // Deleting it again, or someone else's, finds nothing.
     expect((await SELF.fetch(`${BASE}/api/activities/fit/${clientId}`, { method: 'DELETE', headers: auth(u.jwt) })).status).toBe(404);
   });

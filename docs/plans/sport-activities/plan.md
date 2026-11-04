@@ -146,10 +146,20 @@ What the sources can give (to confirm against real rows in each phase):
 
 **Now (@agent):** P2's one-tap "How hard was it?" effort, which needs no
 new Apple Health permission; reading Apple Watch's effort score waits for the
-owner's go-ahead on that permission. P0 and P1 are in the repository;
-migration `0064`, the Worker deploy and an app build need the owner's
-separate go-ahead. The owner decided on 2026-11-03 that hand-entered
+owner's go-ahead on that permission. P0 and P1 are live on the API and the
+web app (see Release); the app build waits for the release check. The owner decided on 2026-11-03 that hand-entered
 sessions live in Tres Fort with intervals.icu as an optional copy (P3).
+
+## Release
+
+- 2026-11-04, with the owner's written go-ahead, from main `110e5f4` (P0
+  and P1): migration `0064` applied to `tres-fort-db` (nothing left
+  pending), the API Worker deployed as version `5823c2a3` (rollback
+  `7c97d561`) and `tres-fort-web` as `bd5ae050` (rollback `b3223134`).
+  After the backfill, production rows named 15 sports, among them soccer
+  (13), squash (12), yoga (12), hiit (121) and other (122).
+- The app build (TestFlight) follows once the release check passes on
+  `110e5f4`; App Store 1.0 stays on build 55.
 
 ## Notes / open questions
 

@@ -440,7 +440,7 @@ describe('heart-rate load for any sport', () => {
   });
 });
 
-// The member's own "How hard was it?" (migration 0065,
+// The member's own "How hard was it?" (migration 0066,
 // docs/plans/sport-activities P2).
 describe('effort rating', () => {
   const soccer = (over: Record<string, unknown> = {}) => ({

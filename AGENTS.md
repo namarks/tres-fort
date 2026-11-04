@@ -320,7 +320,7 @@ chat start) and a **prompt** (`coach_brief`).
   thresholds intervals.icu scored the member's latest synced workouts with;
   only the member's tap saves one (`source='intervals'`).
   A member's own 1 to 10 effort rating (`external_activities.effort`,
-  migration `0065`) scores a workout with no measured load as
+  migration `0066`) scores a workout with no measured load as
   `load_method='effort'`, labeled an estimate; any measured load wins.
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).

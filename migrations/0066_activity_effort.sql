@@ -1,4 +1,4 @@
--- Migration 0065: the member's own "How hard was it?" for an imported workout
+-- Migration 0066: the member's own "How hard was it?" for an imported workout
 -- (docs/plans/sport-activities P2, endurance-training-load P6).
 --
 -- `effort` is the member's rating on a 1 to 10 scale (src/trainingLoad.ts,
@@ -14,9 +14,9 @@ ALTER TABLE external_activities ADD COLUMN effort INTEGER
 -- wider CHECK takes every value, the old one is dropped (only its own CHECK
 -- names it: no index, trigger or view does) and the new one takes its name.
 -- Values and synced_at are unchanged, so clients see no difference.
-ALTER TABLE external_activities ADD COLUMN load_method_0065 TEXT
-  CHECK (load_method_0065 IS NULL OR load_method_0065 IN
+ALTER TABLE external_activities ADD COLUMN load_method_0066 TEXT
+  CHECK (load_method_0066 IS NULL OR load_method_0066 IN
     ('provider', 'power', 'power_summary', 'heart_rate', 'heart_rate_average', 'pace', 'effort'));
-UPDATE external_activities SET load_method_0065 = load_method WHERE load_method IS NOT NULL;
+UPDATE external_activities SET load_method_0066 = load_method WHERE load_method IS NOT NULL;
 ALTER TABLE external_activities DROP COLUMN load_method;
-ALTER TABLE external_activities RENAME COLUMN load_method_0065 TO load_method;
+ALTER TABLE external_activities RENAME COLUMN load_method_0066 TO load_method;

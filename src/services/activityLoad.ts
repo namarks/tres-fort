@@ -27,7 +27,7 @@ interface LoadRow {
   stream_np_w: number | null;
   stream_hr_rms: number | null;
   stream_hr_sec: number | null;
-  /** The member's own rating (migration 0065). */
+  /** The member's own rating (migration 0066). */
   effort: number | null;
   /** The rating that scores the row: its own, else one given to an Apple
    * Health, .fit or recorded copy since hidden as its duplicate. */

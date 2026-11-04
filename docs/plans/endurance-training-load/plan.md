@@ -133,7 +133,7 @@ provider connection.
   - A one-tap "How hard was it?" (1 to 10) on imported workouts with no usable
     data gives a session-RPE load, labeled as an estimate.
   - Delivered for every sport, not only runs, rides and swims, by
-    [sport-activities P2](../sport-activities/plan.md): migration `0065`,
+    [sport-activities P2](../sport-activities/plan.md): migration `0066`,
     `load_method='effort'`, one hour at effort 7 is 100.
 - [x] **P7 — Starting values from intervals.icu**
   - Every activity intervals.icu sends carries the sport settings it was
@@ -168,7 +168,7 @@ provider connection.
 
 **Now (@owner):** P5 waits on Garmin's Starter API approval
 (`external:garmin-starter-api-approval`); every other phase is in the
-repository. P6 shipped as sport-activities P2, whose migration `0065`, Worker
+repository. P6 shipped as sport-activities P2, whose migration `0066`, Worker
 deploy and app build each need the owner's separate go-ahead. Migrations
 `0059` to `0064` are in production.
 

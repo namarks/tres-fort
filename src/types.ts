@@ -372,7 +372,7 @@ export interface ExternalActivityRow {
   stream_np_w: number | null;
   stream_hr_rms: number | null;
   stream_hr_sec: number | null;
-  /** The member's own 1–10 "How hard was it?" (migration 0065); scores the
+  /** The member's own 1–10 "How hard was it?" (migration 0066); scores the
    * workout only when nothing measured does (load_method 'effort'). */
   effort?: number | null;
 }

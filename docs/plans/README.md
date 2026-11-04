@@ -221,7 +221,7 @@ integration or social breadth.
   entries live in Tres Fort with intervals.icu as an optional copy (owner,
   2026-11-03). P0, naming every sport (migration 0064), P1, heart-rate
   load for any sport, and P2, a one-tap effort rating when there is no data
-  (migration 0065), are in the repository; P3, logging any sport by hand,
+  (migration 0066), are in the repository; P3, logging any sport by hand,
   is next, and P5, Apple Watch's effort score, waits on a new Apple Health
   permission.
 - [WHOOP data in Tres Fort](whoop/plan.md) — **planned**; WHOOP-tracked

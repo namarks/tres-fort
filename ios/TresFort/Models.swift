@@ -667,7 +667,7 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
     /// provider / power / power_summary / heart_rate / heart_rate_average /
     /// pace, or effort: an estimate from the member's rating.
     var load_method: String? = nil
-    /// The member's own 1 to 10 "How hard was it?" (migration 0065,
+    /// The member's own 1 to 10 "How hard was it?" (migration 0066,
     /// `EffortScale`). Older Workers omit it.
     var effort: Int? = nil
     /// What it was: soccer, tennis, swim, … (migration 0064, `Sports`).

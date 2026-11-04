@@ -101,7 +101,7 @@ What the sources can give (to confirm against real rows in each phase):
     allowed Apple Health read, so no new permission is asked. Existing rows
     from other sources are rescored on their next sync or threshold change.
 - [x] **P2 — Effort when there is no data**
-  - Delivers endurance-training-load P6 for every sport. Migration `0065`
+  - Delivers endurance-training-load P6 for every sport. Migration `0066`
     adds `external_activities.effort`, the member's own 1 to 10 "How hard was
     it?", and widens `load_method` to include `effort` (SQLite can't change
     a CHECK in place, so the column is replaced; values and `synced_at` are
@@ -175,8 +175,8 @@ What the sources can give (to confirm against real rows in each phase):
 (intervals.icu an optional copy, owner's choice of 2026-11-03), with the
 effort rating among its fields. P0, P1 and P2 are in the repository; P0 and
 P1 are live on the API and the web app (see Release), and their app build
-waits for the release check. P2's migration `0065`, its Worker deploy and an
-app build each need the owner's separate go-ahead, in that order (`0065`
+waits for the release check. P2's migration `0066`, its Worker deploy and an
+app build each need the owner's separate go-ahead, in that order (`0066`
 before the Worker). P5, Apple Watch's effort score, waits for the owner's
 go-ahead on that Apple Health permission.
 

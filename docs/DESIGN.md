@@ -791,7 +791,7 @@ one hour at threshold is 100, with a provider's own load preferred.
 the provider's figure; `refreshActivityLoads` recomputes them after Apple
 Health pushes, intervals.icu syncs and threshold changes, advancing
 `synced_at` only for changed rows. A member's own 1 to 10 "How hard was it?"
-(`external_activities.effort`, migration `0065`, set through
+(`external_activities.effort`, migration `0066`, set through
 `PUT /api/activities/:id/effort` or the coach's `rate_activity`) scores a
 workout only when nothing measured does: `load_method='effort'`, one hour at
 effort 7 is 100, labeled an estimate. The rating is written to the row and its

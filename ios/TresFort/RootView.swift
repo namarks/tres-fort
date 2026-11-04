@@ -152,9 +152,11 @@ struct RootView: View {
                             .buttonStyle(.borderedProminent)
                             .frame(minHeight: 48)
                             .accessibilityIdentifier("onboarding.resolve.retry")
-                            Button("Sign out") { model.signOut() }
+                            Button("Sign out") { Task { await model.signOutOnServer() } }
+                                .disabled(model.signingOut)
                                 .frame(minHeight: 44)
                                 .accessibilityIdentifier("onboarding.resolve.signOut")
+                            if let error = model.signOutError { Text(error).foregroundStyle(.red) }
                         } else {
                             ProgressView("Looking for your existing workouts…")
                                 .tint(Theme.text)

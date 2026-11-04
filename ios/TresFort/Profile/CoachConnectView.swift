@@ -190,7 +190,7 @@ struct CoachConnectView: View {
                 .disabled(generating)
                 .accessibilityIdentifier("coach.generate-code")
                 if let error { Text(error).font(.footnote).foregroundStyle(Theme.danger) }
-                Text("Keep this code private. A new code does not disconnect linked apps. Manage AI access in Profile to disconnect them.")
+                Text("This code expires in 10 minutes and works once. Keep it private. A new code does not disconnect linked apps. Manage AI access in Profile to disconnect them.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             DisclosureGroup("Data and access") { sharingDetails }

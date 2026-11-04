@@ -1,3 +1,4 @@
+import { sealCredential } from '../src/credentials';
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -436,7 +437,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       userId: member.id,
       fetcher: async () => new Response('upstream', { status: 500 }),
     });
-    await setUserIntervalsCreds(env.DB, member.id, null, null);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     await syncExternalActivities(env.DB, testEnv(), {
       userId: member.id,
       fetcher: emptySuccess,
@@ -446,6 +447,8 @@ describe('P4 shared success stamps and credential lifecycle', () => {
 
   it('resets stamps and attempts on generation changes while preserving same identity', async () => {
     const member = await connectedMember('identity', { events: 10, activities: 20 });
+    await env.DB.prepare('UPDATE users SET intervals_api_key=?1 WHERE id=?2')
+      .bind(await sealCredential(member.apiKey, env.CREDENTIAL_ENCRYPTION_KEY, member.id, 'intervals-api-key'), member.id).run();
     await env.DB.prepare(
       `UPDATE users SET intervals_events_sync_attempt = 7,
                         intervals_activities_sync_attempt = 8
@@ -454,15 +457,15 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       .bind(member.id)
       .run();
 
-    await setUserIntervalsCreds(env.DB, member.id, member.apiKey, member.athleteId);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, member.apiKey, member.athleteId);
     expect(await freshness(member.id)).toEqual({ events: 10, activities: 20 });
     expect(await syncAttempts(member.id)).toEqual({ events: 7, activities: 8 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(0);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(0);
 
-    await setUserIntervalsCreds(env.DB, member.id, 'replacement-key', member.athleteId);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, 'replacement-key', member.athleteId);
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
     expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(1);
 
     await env.DB.prepare(
       `UPDATE users SET intervals_events_sync_attempt = 3,
@@ -471,9 +474,9 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     )
       .bind(member.id)
       .run();
-    await setUserIntervalsCreds(env.DB, member.id, 'replacement-key', member.athleteId);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, 'replacement-key', member.athleteId);
     expect(await syncAttempts(member.id)).toEqual({ events: 3, activities: 4 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(1);
 
     await env.DB.prepare(
       `UPDATE users SET intervals_events_synced_at = 30,
@@ -482,13 +485,13 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     )
       .bind(member.id)
       .run();
-    await setUserIntervalsCreds(env.DB, member.id, null, null);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
     expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(2);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(2);
 
-    await setUserIntervalsCreds(env.DB, member.id, null, null);
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(3);
+    await setUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(3);
   });
 
   it('keeps every event cache byte unchanged when replacement or disconnect wins first', async () => {
@@ -510,7 +513,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
         await setUserIntervalsCreds(
           env.DB,
           member.id,
-          action === 'replace' ? `new-${member.apiKey}` : null,
+          env.CREDENTIAL_ENCRYPTION_KEY, action === 'replace' ? `new-${member.apiKey}` : null,
           action === 'replace' ? member.athleteId : null,
         );
         return new Response(
@@ -532,7 +535,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       expect(result.status).toBe('superseded');
       expect(await externalRows('external_events', member.id)).toEqual(cacheBefore);
       expect(await freshness(member.id)).toEqual({ events: null, activities: null });
-      expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject(
+      expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject(
         action === 'replace'
           ? { api_key: `new-${member.apiKey}`, athlete_id: member.athleteId }
           : { api_key: null, athlete_id: null },
@@ -586,9 +589,9 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       INTERVALS_ICU_ATHLETE_ID: 'legacy-owner-athlete',
     };
     const fetcher: Fetcher = async () => {
-      expect((await getUserIntervalsCreds(env.DB, owner.id)).credential_generation).toBe(1);
+      expect((await getUserIntervalsCreds(env.DB, owner.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(1);
       expect(await syncAttempts(owner.id)).toEqual({ events: 1, activities: 0 });
-      await setUserIntervalsCreds(env.DB, owner.id, null, null);
+      await setUserIntervalsCreds(env.DB, owner.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
       // Deliberately omit the route's later audit to model interruption in
       // that gap. Generation alone must make the disconnect durable.
       return new Response(
@@ -606,7 +609,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(result.status).toBe('superseded');
     expect(await externalRows('external_events', owner.id)).toEqual(cacheBefore);
     expect(await freshness(owner.id)).toEqual({ events: null, activities: null });
-    expect((await getUserIntervalsCreds(env.DB, owner.id)).credential_generation).toBe(2);
+    expect((await getUserIntervalsCreds(env.DB, owner.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(2);
     const interruptedAudit = await env.DB.prepare(
       "SELECT COUNT(*) AS c FROM audit_log WHERE user_id = ?1 AND tool = 'set_intervals_creds'",
     )
@@ -628,14 +631,14 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'initial-token',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'initial-token',
       'refresh-token',
       null,
       member.athleteId,
     );
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
     expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(1);
 
     await env.DB.prepare(
       `UPDATE users SET intervals_events_synced_at = 30,
@@ -649,7 +652,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'initial-token',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'initial-token',
       'refresh-token',
       null,
       member.athleteId,
@@ -675,22 +678,22 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     // Events advances because the post-refresh provider reconcile succeeded;
     // the unrelated activities freshness survives the token rotation.
     expect(await freshness(member.id)).toEqual({ events: 31, activities: 40 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).access_token).toBe(
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).access_token).toBe(
       'rotated-token',
     );
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(1);
     expect(await syncAttempts(member.id)).toEqual({ events: 6, activities: 6 });
 
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'callback-replacement',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'callback-replacement',
       'callback-refresh',
       null,
       member.athleteId,
     );
     expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(2);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).credential_generation).toBe(2);
   });
 
   it('does not stamp a refreshed OAuth completion after that identity is replaced', async () => {
@@ -698,7 +701,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'initial-token',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'initial-token',
       'refresh-token',
       null,
       member.athleteId,
@@ -729,7 +732,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       await setUserIntervalsOAuth(
         env.DB,
         member.id,
-        'replacement-token',
+        env.CREDENTIAL_ENCRYPTION_KEY, 'replacement-token',
         'replacement-refresh',
         null,
         member.athleteId,
@@ -752,7 +755,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(result.status).toBe('superseded');
     expect(await externalRows('external_events', member.id)).toEqual(cacheBefore);
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
-    expect((await getUserIntervalsCreds(env.DB, member.id)).access_token).toBe(
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).access_token).toBe(
       'replacement-token',
     );
   });
@@ -762,7 +765,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'expired-token',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'expired-token',
       'old-refresh',
       null,
       member.athleteId,
@@ -774,7 +777,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
         await setUserIntervalsOAuth(
           env.DB,
           member.id,
-          'callback-replacement',
+          env.CREDENTIAL_ENCRYPTION_KEY, 'callback-replacement',
           'callback-refresh',
           null,
           member.athleteId,
@@ -795,7 +798,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(result.status).toBe('superseded');
     expect(providerCalls).toBe(1);
     expect(await externalRows('external_events', member.id)).toEqual(before);
-    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       access_token: 'callback-replacement',
       credential_generation: 2,
     });
@@ -812,7 +815,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     await setUserIntervalsOAuth(
       env.DB,
       member.id,
-      'oauth-before-dedup',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'oauth-before-dedup',
       'refresh-before-dedup',
       null,
       member.athleteId,
@@ -875,7 +878,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       await setUserIntervalsOAuth(
         env.DB,
         member.id,
-        'oauth-after-dedup',
+        env.CREDENTIAL_ENCRYPTION_KEY, 'oauth-after-dedup',
         'refresh-after-dedup',
         null,
         member.athleteId,
@@ -892,7 +895,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(result.status).toBe('superseded');
     expect(await externalRows('external_activities', member.id)).toEqual(cacheBefore);
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
-    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       access_token: 'oauth-after-dedup',
       credential_generation: 2,
     });
@@ -910,7 +913,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       await setUserIntervalsCreds(
         env.DB,
         member.id,
-        'api-key-after-401',
+        env.CREDENTIAL_ENCRYPTION_KEY, 'api-key-after-401',
         member.athleteId,
       );
       return new Response('old credential rejected', { status: 401 });
@@ -923,7 +926,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
 
     expect(result.status).toBe('superseded');
     expect(await externalRows('external_events', member.id)).toEqual(cacheBefore);
-    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       api_key: 'api-key-after-401',
       athlete_id: member.athleteId,
       credential_generation: 1,
@@ -952,7 +955,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       status: 'fetch_failed',
       detail: 'http:401:reauth_required',
     });
-    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       api_key: null,
       access_token: null,
       athlete_id: null,
@@ -1003,7 +1006,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       },
     });
     await started;
-    await setUserIntervalsCreds(env.DB, newFirst.id, 'new-first-key', newFirst.athleteId);
+    await setUserIntervalsCreds(env.DB, newFirst.id, env.CREDENTIAL_ENCRYPTION_KEY, 'new-first-key', newFirst.athleteId);
     const newResult = await syncExternalEvents(env.DB, testEnv(), {
       userId: newFirst.id,
       today: '2036-05-18',
@@ -1028,7 +1031,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       fetcher: jsonSuccess([plannedEvent('ordered', 'old result')]),
     });
     const oldCache = await externalRows('external_events', oldFirst.id);
-    await setUserIntervalsCreds(env.DB, oldFirst.id, 'old-first-new-key', oldFirst.athleteId);
+    await setUserIntervalsCreds(env.DB, oldFirst.id, env.CREDENTIAL_ENCRYPTION_KEY, 'old-first-new-key', oldFirst.athleteId);
     expect(await externalRows('external_events', oldFirst.id)).toEqual(oldCache);
     expect(await freshness(oldFirst.id)).toEqual({ events: null, activities: null });
     const finalResult = await syncExternalEvents(env.DB, testEnv(), {
@@ -1051,29 +1054,29 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     await setUserIntervalsOAuth(
       env.DB,
       callbackFirst.id,
-      'callback-token',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'callback-token',
       'callback-refresh',
       null,
       callbackFirst.athleteId,
     );
-    await setUserIntervalsCreds(env.DB, callbackFirst.id, null, null);
-    expect(await getUserIntervalsCreds(env.DB, callbackFirst.id)).toMatchObject({
+    await setUserIntervalsCreds(env.DB, callbackFirst.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
+    expect(await getUserIntervalsCreds(env.DB, callbackFirst.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       access_token: null,
       athlete_id: null,
       credential_generation: 2,
     });
 
     const disconnectFirst = await connectedMember('disconnect-first');
-    await setUserIntervalsCreds(env.DB, disconnectFirst.id, null, null);
+    await setUserIntervalsCreds(env.DB, disconnectFirst.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
     await setUserIntervalsOAuth(
       env.DB,
       disconnectFirst.id,
-      'later-callback-token',
+      env.CREDENTIAL_ENCRYPTION_KEY, 'later-callback-token',
       'later-callback-refresh',
       null,
       disconnectFirst.athleteId,
     );
-    expect(await getUserIntervalsCreds(env.DB, disconnectFirst.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, disconnectFirst.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       access_token: 'later-callback-token',
       athlete_id: disconnectFirst.athleteId,
       credential_generation: 2,
@@ -1107,7 +1110,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(events.status).toBe('disabled');
     expect(activities.status).toBe('disabled');
     expect(fetcher).not.toHaveBeenCalled();
-    expect(await getUserIntervalsCreds(env.DB, memberId)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, memberId, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       api_key: null,
       access_token: null,
       athlete_id: null,
@@ -1435,7 +1438,7 @@ describe('P4.5 same-generation attempt ordering', () => {
 
     expect(newer.status).toBe('ok');
     expect((await older).status).toBe('superseded');
-    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       api_key: member.apiKey,
       credential_generation: 0,
       auth_error_at: null,
@@ -1481,7 +1484,7 @@ describe('P4.5 same-generation attempt ordering', () => {
 
       expect(newer.status).toBe('ok');
       expect((await older).status).toBe('superseded');
-      expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+      expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
         api_key: member.apiKey,
         credential_generation: 0,
         auth_error_at: null,
@@ -1532,7 +1535,7 @@ describe('P4.5 same-generation attempt ordering', () => {
 
     expect((await older).status).toBe('superseded');
     expect(await authAuditCount(member.id)).toBe(0);
-    expect((await getUserIntervalsCreds(env.DB, member.id)).api_key).toBe(member.apiKey);
+    expect((await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).api_key).toBe(member.apiKey);
     releaseNew();
     expect((await newer).status).toBe('ok');
   });
@@ -1544,7 +1547,7 @@ describe('P4.5 same-generation attempt ordering', () => {
         await setUserIntervalsOAuth(
           env.DB,
           member.id,
-          'expired-token',
+          env.CREDENTIAL_ENCRYPTION_KEY, 'expired-token',
           'refresh-token',
           123,
           member.athleteId,
@@ -1623,7 +1626,7 @@ describe('P4.5 same-generation attempt ordering', () => {
         }
         expect(oldProviderCalls).toBe(1);
         expect(newProviderCalls).toBe(2);
-        expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+        expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
           access_token: newestToken,
           credential_generation: 1,
           auth_error_at: null,
@@ -1668,7 +1671,7 @@ describe('P4.5 same-generation attempt ordering', () => {
     });
     expect((await older).status).toBe('superseded');
     expect(await authAuditCount(member.id)).toBe(1);
-    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+    expect(await getUserIntervalsCreds(env.DB, member.id, env.CREDENTIAL_ENCRYPTION_KEY)).toMatchObject({
       api_key: null,
       athlete_id: null,
       credential_generation: 1,

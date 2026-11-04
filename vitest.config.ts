@@ -25,6 +25,7 @@ export default defineWorkersConfig(async () => {
             bindings: {
               TEST_MIGRATIONS: migrations,
               APP_JWT_SECRET: 'test-secret',
+              CREDENTIAL_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
               MCP_STATIC_TOKEN: 'test-mcp-token',
               DEV_AUTH_SECRET: 'test-dev',
               OWNER_AUTH_PASSPHRASE: 'test-pass',

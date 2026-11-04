@@ -5,10 +5,12 @@ import { sign, verify } from 'hono/jwt';
 import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { APP_REVIEW_SUB } from './appReview';
+import { credentialDigest, randomSecret } from './credentials';
 import type { AppClient, HonoEnv } from './types';
 import {
   accountDeletionContinuationMatches,
   setUserTimezoneIfChanged,
+  isAppSessionRevoked,
 } from './db';
 
 const APPLE_ISS = 'https://appleid.apple.com';
@@ -49,6 +51,7 @@ export async function issueAppJwt(
     appReview?: boolean;
     /** Marks a web sign-in so its writes are attributed to the web. */
     client?: AppClient;
+    sessionId?: string;
   } = {},
 ): Promise<string> {
   const nowSec = options.nowSeconds ?? Math.floor(Date.now() / 1000);
@@ -57,6 +60,7 @@ export async function issueAppJwt(
   return sign(
     {
       sub: userId,
+      sid: options.sessionId ?? randomSecret(),
       ...(options.appReview ? { app_review: true } : {}),
       ...(options.client === 'web' ? { client: 'web' } : {}),
       iat: nowSec,
@@ -140,6 +144,21 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   c.set('userId', principal.userId);
   c.set('appAuthTime', principal.authTime);
   c.set('appClient', principal.client);
+  // Old tokens and their renewals share a deterministic family identifier.
+  // It is derived only from signed claims, never a caller-supplied identifier.
+  if (payload.sid !== undefined && (typeof payload.sid !== 'string' || !/^(?:[A-Za-z0-9_-]{43}|[0-9a-f]{64})$/.test(payload.sid))) {
+    return c.json({ error: 'invalid_token' }, 401);
+  }
+  const sessionId = typeof payload.sid === 'string' ? payload.sid :
+    await credentialDigest(JSON.stringify(['legacy-session', principal.userId, principal.authTime, principal.client]));
+  c.set('appSessionId', sessionId);
+  c.set('appSessionExpiresAt', Math.max(Number(payload.exp) || 0,
+    principal.authTime + APP_JWT_MAX_SESSION_SECONDS) * 1000);
+  if (await isAppSessionRevoked(c.env.DB, principal.userId, sessionId) &&
+      !(isDeletionRequest && await accountDeletionContinuationMatches(c.env.DB, principal.userId,
+        c.req.header('X-Account-Deletion-Key') ?? ''))) {
+    return c.json({ error: 'invalid_token' }, 401);
+  }
   // App JWTs are stateless, so deleting an account cannot revoke one bearer
   // from a token table. Requiring the subject row on every authenticated call
   // makes all outstanding app tokens unusable immediately after DELETE /api/me

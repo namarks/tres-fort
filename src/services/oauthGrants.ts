@@ -1,6 +1,7 @@
 // Internal grant lifecycle service. Routes and MCP import the db.ts facade.
 
 import type { User } from '../types';
+import { oauthTokenDigest } from '../credentials';
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
 // ---- OAuth grant transitions --------------------------------------------
@@ -188,8 +189,8 @@ export function createOAuthGrantService(
             AND changes() = 1
          RETURNING expires_at`,
       ).bind(
-        redemption.access_token,
-        redemption.refresh_token,
+        await oauthTokenDigest(redemption.access_token),
+        await oauthTokenDigest(redemption.refresh_token),
         redemption.access_expires_at,
         tokenCreatedAt,
         principal.id,
@@ -266,6 +267,9 @@ export function createOAuthGrantService(
       : await findOwnerRow(db, rotation.owner_apple_sub);
     if (!principal) return null;
 
+    // Match either legacy storage or its digest inside the atomic write so
+    // credential backfill cannot invalidate an in-flight refresh.
+    const presentedDigest = await oauthTokenDigest(rotation.presented_refresh_token);
     const refreshedAt = now();
     const tokenCreatedAt = Math.floor(refreshedAt / 1000);
     const legacy = rotation.user_id === null;
@@ -282,7 +286,7 @@ export function createOAuthGrantService(
                      ELSE MAX(t.created_at * 1000, p.activated_at) + ?11 END
            FROM oauth_tokens t
            LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-          WHERE t.refresh_token = ?4
+          WHERE (t.refresh_token = ?12 OR (t.refresh_token = ?4 AND t.refresh_token NOT LIKE 'sha256:%'))
             AND p.id = 1
             AND t.client_id = ?5
             AND t.expires_at = ?6
@@ -305,6 +309,7 @@ export function createOAuthGrantService(
         legacy ? 1 : 0,
         OAUTH_GRANT_INACTIVITY_MS,
         OAUTH_GRANT_ABSOLUTE_MS,
+        presentedDigest,
       ),
       db.prepare(
         `UPDATE oauth_grants
@@ -333,7 +338,7 @@ export function createOAuthGrantService(
               grant_id = ?12
          FROM oauth_grants g
          LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-        WHERE oauth_tokens.refresh_token = ?6
+        WHERE (oauth_tokens.refresh_token = ?15 OR (oauth_tokens.refresh_token = ?6 AND oauth_tokens.refresh_token NOT LIKE 'sha256:%'))
           AND oauth_tokens.client_id = ?7
           AND oauth_tokens.expires_at = ?8
           AND (oauth_tokens.user_id = ?9 OR (?10 = 1 AND oauth_tokens.user_id IS NULL))
@@ -356,8 +361,8 @@ export function createOAuthGrantService(
               )
         RETURNING expires_at`,
     ).bind(
-      rotation.access_token,
-      rotation.refresh_token,
+      await oauthTokenDigest(rotation.access_token),
+      await oauthTokenDigest(rotation.refresh_token),
       rotation.access_expires_at,
       tokenCreatedAt,
       principal.id,
@@ -370,6 +375,7 @@ export function createOAuthGrantService(
       grantId,
       rotation.consumed_refresh_sha256,
       OAUTH_GRANT_INACTIVITY_MS,
+      presentedDigest,
     ),
       db.prepare(
         `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
@@ -608,6 +614,7 @@ export function createOAuthGrantService(
                AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
           )`,
       ).bind(userId, isOwner ? 1 : 0),
+      db.prepare('DELETE FROM coach_connect_codes WHERE user_id=?1').bind(userId),
       // Stop approved-but-not-yet-exchanged connections as well as tokens.
       db.prepare(`DELETE FROM oauth_codes
         WHERE user_id = ?1 OR (?2 = 1 AND user_id IS NULL)`)

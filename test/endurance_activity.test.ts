@@ -338,7 +338,7 @@ describe('MCP log_activity endurance route', () => {
     const res = await call('log_activity', { type: 'walk', date: DATE, duration_minutes: 30 });
     expect(res).toMatchObject({ error: 'intervals_write_forbidden', status: 403 });
     expect(res.message).toMatch(/Reconnect intervals.icu/);
-    const creds = await getUserIntervalsCreds(env.DB, userId);
+    const creds = await getUserIntervalsCreds(env.DB, userId, env.CREDENTIAL_ENCRYPTION_KEY);
     expect(creds.athlete_id).toBe(ATHLETE);
     expect(creds.api_key).not.toBeNull();
   });

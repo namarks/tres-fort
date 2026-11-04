@@ -203,21 +203,30 @@ owner; an OAuth access token maps to the user it was bound to at
 
 **Auth.**
 - `/api/*` — app JWT (HS256, `APP_JWT_SECRET`), issued by `/auth/apple` after
-  verifying Apple's identity token against Apple JWKS. Middleware
-  `requireAppJwt` sets `userId` on the Hono context.
+  verifying Apple's identity token against Apple JWKS. A stable `sid` survives
+  renewal; `POST /auth/logout` revokes that session family in D1. Legacy JWT
+  families derive from signed user/auth-time/client claims. Middleware
+  `requireAppJwt` checks revocation and sets `userId` on the Hono context.
 - `/mcp` — dual: static bearer (`MCP_STATIC_TOKEN`, for Claude Code/curl)
   **and** OAuth 2.1 (claude.ai/desktop connectors). Both flow through
   `validateBearer` in `src/oauth.ts`. Static bearer → owner; OAuth token → the
-  user bound at `/oauth/authorize` (the owner via `OWNER_AUTH_PASSPHRASE`, or
-  any user via their personal MCP passphrase — PBKDF2, per-user salt — set
-  through `POST /api/me/mcp-passphrase`; pre-M3 tokens → owner). The 401 always
+  user bound at `/oauth/authorize` through authenticated mobile approval or a
+  server-generated 256-bit, ten-minute, single-use code from
+  `POST /api/me/mcp-passphrase` with `{}`. Reusable member/owner passphrases
+  no longer authorize public consent. OAuth bearer/refresh values are stored
+  as SHA-256 digests; pre-M3 tokens still resolve to owner. The 401 always
   advertises RFC 9728 metadata so the OAuth path is non-breaking.
 - `/auth/intervals` — OAuth 2.0 authorization-code connect flow for
   intervals.icu (`src/routes/intervalsAuth.ts`). CSRF is a single-use,
   expiring `state` param (server-minted, resolved back to the connecting
   user on callback); the code is exchanged server-side with the
   `client_secret` — **not** PKCE (no `code_challenge`/`code_verifier`).
-  Stores per-user credentials in the `users` row; `src/intervals.ts` is
+  Callback credentials stay encrypted and pending until `/finish` receives a
+  fresh browser-returned completion secret from the same app session that
+  started the flow. Per-user credentials use AES-GCM in `users`, with
+  member/purpose-bound additional data and `CREDENTIAL_ENCRYPTION_KEY` held
+  outside D1. Migration 0065 and its explicit backfill/enforcement procedure
+  are required; see `docs/audits/security-2026-11-release.md`. `src/intervals.ts` is
   dormant (returns `{ok:false, reason:'disabled'}`) when no credentials are
   set.
 - `POST /auth/dev` exists **only** when `DEV_AUTH_SECRET` is set (local + the

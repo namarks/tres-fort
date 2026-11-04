@@ -107,9 +107,9 @@ describe('OAuth state: single-use + expiry', () => {
 describe('setUserIntervalsOAuth + mutual exclusivity with the API key', () => {
   it('stores the bearer token + athlete id, clears any api key, reports connected', async () => {
     const a = await devJwt();
-    await setUserIntervalsCreds(env.DB, a.id, 'old-key', 'i111'); // start on the API-key path
-    await setUserIntervalsOAuth(env.DB, a.id, 'tok', 'refresh', null, 'i777');
-    const creds = await getUserIntervalsCreds(env.DB, a.id);
+    await setUserIntervalsCreds(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, 'old-key', 'i111'); // start on the API-key path
+    await setUserIntervalsOAuth(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, 'tok', 'refresh', null, 'i777');
+    const creds = await getUserIntervalsCreds(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY);
     expect(creds.access_token).toBe('tok');
     expect(creds.athlete_id).toBe('i777');
     expect(creds.api_key).toBeNull(); // OAuth cleared the API key
@@ -120,9 +120,9 @@ describe('setUserIntervalsOAuth + mutual exclusivity with the API key', () => {
 
   it('disconnect (setUserIntervalsCreds null) clears BOTH schemes', async () => {
     const a = await devJwt();
-    await setUserIntervalsOAuth(env.DB, a.id, 'tok', null, null, 'i777');
-    await setUserIntervalsCreds(env.DB, a.id, null, null);
-    const creds = await getUserIntervalsCreds(env.DB, a.id);
+    await setUserIntervalsOAuth(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, 'tok', null, null, 'i777');
+    await setUserIntervalsCreds(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, null, null);
+    const creds = await getUserIntervalsCreds(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY);
     expect(creds.access_token).toBeNull();
     expect(creds.api_key).toBeNull();
     expect(creds.athlete_id).toBeNull();
@@ -132,7 +132,7 @@ describe('setUserIntervalsOAuth + mutual exclusivity with the API key', () => {
 describe('sync uses the stored OAuth token end-to-end', () => {
   it('an OAuth-connected user syncs with a Bearer header', async () => {
     const a = await devJwt();
-    await setUserIntervalsOAuth(env.DB, a.id, 'sync-tok', null, null, 'i555');
+    await setUserIntervalsOAuth(env.DB, a.id, env.CREDENTIAL_ENCRYPTION_KEY, 'sync-tok', null, null, 'i555');
     const cap = capturingFetcher();
     await syncExternalEvents(env.DB, env, { userId: a.id, fetcher: cap.fetcher, today: TODAY });
     expect(cap.auth()).toBe('Bearer sync-tok');

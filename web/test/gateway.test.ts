@@ -155,6 +155,31 @@ describe('Sign in with Apple', () => {
     expect(response.status).toBe(404);
     expect(apiFetch).not.toHaveBeenCalled();
   });
+
+  it.each([200,401])('revokes the server session before clearing the cookie (API status %s)', async status => {
+    const { env, apiFetch } = makeEnv(() => Response.json({ ok:true },{ status }));
+    const response = await handle(new Request(`${ORIGIN}/auth/signout`, {
+      method:'POST',headers:{ origin:ORIGIN,cookie:`${SESSION_COOKIE}=${WEB_JWT}` },
+    }),env);
+    expect(response.status).toBe(204);
+    expect(cookieValue(response,SESSION_COOKIE)).toBe('');
+    const request = apiFetch.mock.calls[0]![0];
+    expect(new URL(request.url).pathname).toBe('/auth/logout');
+    expect(request.method).toBe('POST');
+    expect(request.headers.get('Authorization')).toBe(`Bearer ${WEB_JWT}`);
+  });
+
+  it.each(['network','refusal','missing-ack'])('retains the session when revocation fails: %s', async failure => {
+    const { env } = makeEnv(() => {
+      if (failure === 'network') throw new Error('offline');
+      return Response.json({}, { status:failure === 'refusal' ? 503 : 200 });
+    });
+    const response = await handle(new Request(`${ORIGIN}/auth/signout`, {
+      method:'POST',headers:{ origin:ORIGIN,cookie:`${SESSION_COOKIE}=${WEB_JWT}` },
+    }),env);
+    expect(response.status).toBe(502);
+    expect(cookieValue(response,SESSION_COOKIE)).toBeUndefined();
+  });
 });
 
 describe('API forwarding', () => {

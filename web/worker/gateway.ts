@@ -194,8 +194,22 @@ async function devSignIn(request: Request, env: GatewayEnv): Promise<Response> {
   });
 }
 
-function signOut(request: Request, env: GatewayEnv): Response {
+async function signOut(request: Request, env: GatewayEnv): Promise<Response> {
   if (!isSameOrigin(request, env)) return json({ error: 'forbidden' }, 403);
+  const token = readCookie(request, SESSION_COOKIE);
+  if (token) {
+    try {
+      const revoked = await env.API.fetch(new Request(`${API_ORIGIN}/auth/logout`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      }));
+      // A rejected bearer is already unusable. An outage is not a successful
+      // revocation; retain the cookie so the member can retry.
+      if (revoked.status !== 401) {
+        const body = await revoked.json().catch(() => null) as { ok?: unknown } | null;
+        if (!revoked.ok || body?.ok !== true) return json({ error: 'signout_failed' }, 502);
+      }
+    } catch { return json({ error: 'signout_failed' }, 502); }
+  }
   return new Response(null, {
     status: 204,
     headers: { 'set-cookie': cookie(SESSION_COOKIE, '', 0, 'Lax'), 'cache-control': 'no-store' },

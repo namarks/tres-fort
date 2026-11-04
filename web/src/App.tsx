@@ -216,7 +216,10 @@ function Planner({ me, state, reload, onSignedOut }: {
         </nav>
         <div className="account">
           <span className="muted">{me.display_name ?? me.email ?? 'Signed in'}</span>
-          <button type="button" className="ghost" onClick={async () => { await signOut(); onSignedOut(); }}>Sign out</button>
+          <button type="button" className="ghost" onClick={async () => {
+            try { await signOut(); onSignedOut(); }
+            catch { setNotice({ kind: 'error', text: 'Couldn’t sign out. Please try again.' }); }
+          }}>Sign out</button>
         </div>
       </header>
       {notice && (

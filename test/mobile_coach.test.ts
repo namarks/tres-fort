@@ -1,3 +1,4 @@
+import { oauthTokenDigest } from '../src/credentials';
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { issueAppJwt } from '../src/auth';
@@ -80,7 +81,7 @@ describe('mobile coach approval', () => {
     const token = await exchange(code, r);
     expect(token.status).toBe(200);
     const { access_token } = await token.json<{ access_token: string }>();
-    expect(await env.DB.prepare('SELECT user_id FROM oauth_tokens WHERE access_token = ?1').bind(access_token).first('user_id')).toBe(MEMBER);
+    expect(await env.DB.prepare('SELECT user_id FROM oauth_tokens WHERE access_token = ?1').bind(await oauthTokenDigest(access_token)).first('user_id')).toBe(MEMBER);
     expect((await exchange(code, r)).status).toBe(400);
     expect((await decision(r.id, { decision: 'allow' })).status).toBe(410);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?1 AND tool = 'approve_coach_connection'").bind(MEMBER).first('n')).toBe(1);

@@ -9779,9 +9779,11 @@ function isHealthKitCopy(duplicateOf: string | null): boolean {
  * within ACTIVITY_DEDUP_TOLERANCE_MS on the shared clock (source instants
  * when both are known, otherwise local wall time).
  *
- * One copy stays shown: the one carrying the most data (a known start
- * instant, heart rate, distance, calories, power, elevation), then the
- * lowest id, so the choice doesn't depend on push order. The others are
+ * One copy stays shown: the one carrying the most data, then the lowest id,
+ * so the choice doesn't depend on push order. Power and heart-rate stream
+ * summaries count most, since they score the load and can't be moved to
+ * another copy; then a known start instant, heart rate, distance, calories,
+ * power and elevation. The others are
  * retired the same reversible way as cross-source duplicates (deleted_at,
  * canonical=0, duplicate_of=<the shown copy>), and come back when the shown
  * copy goes. Rows another rule manages are left alone: those hidden behind
@@ -9799,7 +9801,8 @@ export async function retireHealthKitCopies(
   const dateClause = window ? ' AND date >= ?2 AND date <= ?3' : '';
   const statement = db.prepare(
     `SELECT id, kind, date, start_date_local_ms, start_date_utc_ms, deleted_at, duplicate_of,
-            (start_date_utc_ms IS NOT NULL) + (average_hr IS NOT NULL)
+            10 * ((stream_np_w IS NOT NULL) + (stream_hr_rms IS NOT NULL))
+              + (start_date_utc_ms IS NOT NULL) + (average_hr IS NOT NULL)
               + (distance_m IS NOT NULL AND distance_m > 0) + (calories IS NOT NULL)
               + (average_watts IS NOT NULL) + (elevation_gain_m IS NOT NULL) AS richness
        FROM external_activities

@@ -190,4 +190,22 @@ describe('Apple Health copies of one workout', () => {
     expect(winner.load_method).toBe('effort');
     expect(winner.effective_load).not.toBeNull();
   });
+
+  it('keeps the copy with stream summaries, which score its load', async () => {
+    const userId = await user();
+    const power = Array.from({ length: 3600 }, (_, t) => ({ t, v: 200 }));
+    const ride = (id: string, withStreams: boolean) => copy({ id, kind: 'ride', name: 'Ride',
+      date: '2026-06-18', start_date_local_ms: Date.parse('2026-06-18T10:00:00Z'),
+      start_date_utc_ms: Date.parse('2026-06-18T17:00:00Z'), source_timezone: 'America/Los_Angeles',
+      moving_time_sec: 3600, elapsed_time_sec: 3600, average_watts: 200,
+      ...(withStreams ? { streams: { power } } : {}) });
+    // The plain copy has the lower id, so only the summary can win it.
+    await upsertHealthKitActivity(env.DB, userId, ride('00000000-0000-4000-8000-0000000000B1', false));
+    await upsertHealthKitActivity(env.DB, userId, ride('FFFFFFFF-0000-4000-8000-0000000000B2', true));
+
+    const live = shown(await rows(userId));
+    expect(live).toHaveLength(1);
+    expect(live[0]!.external_id).toBe('FFFFFFFF-0000-4000-8000-0000000000B2');
+    expect(live[0]!.stream_np_w).not.toBeNull();
+  });
 });

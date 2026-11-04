@@ -140,6 +140,24 @@ describe('SEC-02: server-issued coach codes', () => {
 });
 
 describe('SEC-03: session revocation', () => {
+  it.each(['ios','web'] as const)('revokes a valid successor using an expired original %s token, only at logout', async client => {
+    const a = await member(), now = Math.floor(Date.now()/1000), day = 86400;
+    const sessionId = 's'.repeat(43), authTimeSeconds = now - 61*day;
+    const original = await issueAppJwt(a.id,env.APP_JWT_SECRET,{client,sessionId,nowSeconds:authTimeSeconds});
+    // The copied bearer was renewed before the original expired.
+    const successor = await issueAppJwt(a.id,env.APP_JWT_SECRET,{client,sessionId,authTimeSeconds,nowSeconds:now-2*day});
+    expect((await request('/api/me',successor)).status).toBe(200);
+    expect((await request('/api/me',original)).status).toBe(401);
+    expect((await request('/auth/renew',original,{})).status).toBe(401);
+    const tampered = original.slice(0,original.lastIndexOf('.')+1) + 'invalid-signature';
+    expect((await request('/auth/logout',tampered,{})).status).toBe(401);
+    expect((await request('/api/me',successor)).status).toBe(200);
+    expect((await request('/auth/logout',original,{})).status).toBe(200);
+    expect((await request('/api/me',successor)).status).toBe(401);
+    expect((await request('/auth/renew',successor,{})).status).toBe(401);
+    expect((await request('/api/me',a.jwt)).status).toBe(200);
+  });
+
   it.each([false,true])('revokes original and renewed bearers together (legacy=%s), without revoking another session', async (legacy) => {
     const a=await member(),b=await member();
     const now=Math.floor(Date.now()/1000);

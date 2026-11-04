@@ -102,6 +102,8 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   if (!token) return c.json({ error: 'missing_bearer' }, 401);
   const isDeletionRequest =
     c.req.method === 'DELETE' && new URL(c.req.url).pathname === '/api/me';
+  const isLogoutRequest =
+    c.req.method === 'POST' && new URL(c.req.url).pathname === '/auth/logout';
   let payload: AppJwtPayload;
   try {
     payload = await verify(token, c.env.APP_JWT_SECRET, 'HS256');
@@ -113,7 +115,9 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     // exact DELETE endpoint, and the high-entropy key matches that subject's
     // already-claimed intent or committed receipt. It cannot authorize an
     // initial deletion or any other feature request.
-    if (!isDeletionRequest) return c.json({ error: 'invalid_token' }, 401);
+    // An expired original may have a still-valid renewed successor. Logout
+    // may authenticate that original solely to revoke its session family.
+    if (!isDeletionRequest && !isLogoutRequest) return c.json({ error: 'invalid_token' }, 401);
     try {
       payload = await verify(token, c.env.APP_JWT_SECRET, {
         alg: 'HS256',
@@ -127,11 +131,11 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
         typeof exp !== 'number' ||
         !Number.isFinite(exp) ||
         exp > Math.floor(Date.now() / 1000) ||
-        !(await accountDeletionContinuationMatches(
+        (!isLogoutRequest && !(await accountDeletionContinuationMatches(
           c.env.DB,
           principal.userId,
           key,
-        ))
+        )))
       ) {
         return c.json({ error: 'invalid_token' }, 401);
       }

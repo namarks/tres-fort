@@ -368,13 +368,13 @@ describe('a recorded run among other copies of the same run', () => {
     expect((await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id, noGps)))).status).toBe(201);
     const recording = `recording:activity:${member.id}:${id}`;
     expect(await route(member.jwt, recording)).toEqual({
-      status: 200, body: { activity_id: recording, recording_id: id, route: null },
+      status: 200, body: { activity_id: recording, source: 'recording', recording_id: id, route: null },
     });
     const intervals = await insertActivity(member.id, 'intervals', 'i991', START_MS - 2_000);
     await dedupeHealthKitAgainstIntervals(env.DB, member.id);
     expect(await state(recording)).toMatchObject({ duplicate_of: intervals });
     expect(await route(member.jwt, intervals)).toEqual({
-      status: 200, body: { activity_id: recording, recording_id: id, route: null },
+      status: 200, body: { activity_id: recording, source: 'recording', recording_id: id, route: null },
     });
     const stranger = await memberJwt();
     expect((await route(stranger.jwt, intervals)).status).toBe(404);

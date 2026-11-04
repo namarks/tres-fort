@@ -1,4 +1,4 @@
-// A recorded run's route on the web (docs/plans/run-recorder P5). Pure: the
+// A run's route on the web (docs/plans/run-recorder P5 and P6). Pure: the
 // map itself is drawn by RouteMapView.tsx.
 import { asEncodedRoute, decodeRoute } from '../../src/activityRoute';
 import type { StateResponse } from './api';
@@ -10,18 +10,23 @@ export interface LatLon {
 
 /** `GET /api/activities/:id/route`. */
 export interface ActivityRouteResponse {
-  /** The recording that carries the route, which can differ from the
-   * activity asked for when that is the intervals.icu copy of the run. */
+  /** The activity that carries the route: the recording, which can differ
+   * from the activity asked for when that is the intervals.icu copy of the
+   * run, or the intervals.icu run itself. */
   activity_id: string;
-  recording_id: string;
+  /** A run recorded in the app, or a track intervals.icu sent. */
+  source?: 'recording' | 'intervals';
+  /** The run recorded in the app; null for a track from intervals.icu. */
+  recording_id: string | null;
   /** Null for a run recorded without GPS fixes. */
   route: unknown;
 }
 
 /**
  * The activities whose card may show a route: runs recorded in the app,
- * either the recording itself or the intervals.icu copy it was matched to.
- * The same rule as the iPhone app (`mayHaveRecordedRoute`).
+ * either the recording itself or the intervals.icu copy it was matched to,
+ * and intervals.icu runs whose device kept a GPS track. The same rule as the
+ * iPhone app (`mayHaveRecordedRoute`).
  */
 export function routableActivityIds(state: StateResponse): Set<string> {
   return new Set(state.external_activities

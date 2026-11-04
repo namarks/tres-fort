@@ -377,7 +377,7 @@ function DayDetail(props: {
   miles: boolean;
   loads: Map<string, ShownLoad | null>;
   sports: Map<string, string>;
-  /** Completed activities that may have a recorded route. */
+  /** Completed activities that may have a route. */
   routable: Set<string>;
   onEditWorkout: (id: string) => void;
   actions: ReactNode;

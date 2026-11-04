@@ -4,9 +4,10 @@ import { accentColor, drawRoute, loadMapKit, onMapKitFailure } from './mapkit';
 import { drawableSegments, routeOutline, type LatLon } from './routeMap';
 
 /**
- * A recorded run's route under its card: Apple Maps when the site has a
- * MapKit JS token, otherwise (or when the map can't load) the route's shape
- * on its own. Shows nothing for an activity without a route.
+ * A run's route under its card: Apple Maps when the site has a MapKit JS
+ * token, otherwise (or when the map can't load) the route's shape on its
+ * own. Shows nothing for an activity without a route, or while
+ * intervals.icu can't send its track.
  */
 export function RouteMap({ activityId, label }: { activityId: string; label: string }) {
   const [loaded, setLoaded] = useState<{ id: string; segments: LatLon[][] } | null>(null);

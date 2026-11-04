@@ -109,6 +109,7 @@ import {
   uploadRecordedRun,
   storeRecordedRun,
   getActivityRoute,
+  getIntervalsActivityRoute,
   deleteRecordedRun,
   deleteRecordedRunUpload,
   getRecordedRun,
@@ -1691,16 +1692,27 @@ apiRoutes.post('/activities/recordings', async (c) => {
   }, deduplicated ? 200 : 201);
 });
 
-// GET /api/activities/:id/route — the run recorded in the app behind one of
-// the member's activities (the recording, or the intervals.icu copy of one),
-// with its GPS route encoded as src/activityRoute.ts describes, or null for
-// a run recorded without GPS. 404 when there is no recording. Only the
-// member's own routes are ever served.
+// GET /api/activities/:id/route — the GPS route of one of the member's
+// activities, encoded as src/activityRoute.ts describes. The run recorded in
+// the app behind it comes first (the recording, or the intervals.icu copy of
+// one: `source: 'recording'` with its `recording_id`, and `route: null` for
+// a run recorded without GPS). Otherwise an intervals.icu activity's track
+// is read from intervals.icu (docs/plans/run-recorder P6; `source:
+// 'intervals'`, `recording_id: null`) and not stored. 404 when there is no
+// route; 502 when intervals.icu can't answer now, so a client tries again
+// later. Only the member's own routes are ever served.
 apiRoutes.get('/activities/:id/route', async (c) => {
   c.header('Cache-Control', 'no-store');
-  const found = await getActivityRoute(c.env.DB, c.get('userId'), c.req.param('id'));
-  if (!found) return c.json({ error: 'not_found' }, 404);
-  return c.json(found);
+  const userId = c.get('userId');
+  const activityId = c.req.param('id');
+  const found = await getActivityRoute(c.env.DB, userId, activityId);
+  if (found) return c.json(found);
+  const provider = await getIntervalsActivityRoute(c.env.DB, c.env, userId, activityId);
+  if (provider.ok) {
+    return c.json({ activity_id: provider.activity_id, source: 'intervals', recording_id: null, route: provider.route });
+  }
+  if (provider.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);
+  return c.json({ error: 'not_found' }, 404);
 });
 
 // PUT /api/activities/:id/effort — the member's "How hard was it?" for one of

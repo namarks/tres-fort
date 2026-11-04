@@ -922,6 +922,23 @@ private struct UIFixtureServer {
             plan?["days"] = remaining
             plan?["version"] = version
             response = ["ok": true, "version": plan?["version"] ?? 1]
+        case ("PATCH", "/api/workouts/created-workout/exercises/created-slot-0") where scenario == .appStore:
+            // A run made from a weekday saves its planned steps here.
+            guard body["expected_version"] as? Int == plan?["version"] as? Int else {
+                status = 409; response = ["conflict": true, "current_version": plan?["version"] ?? 0]; break
+            }
+            guard let steps = body["run_steps"] else { throw URLError(.badServerResponse) }
+            var days = plan!["days"] as! [[String: Any]]
+            guard let dayIndex = days.firstIndex(where: { $0["id"] as? String == "created-workout" }) else {
+                throw URLError(.badServerResponse)
+            }
+            var slots = days[dayIndex]["exercises"] as! [[String: Any]]
+            slots[0]["run_steps"] = steps is NSNull ? NSNull()
+                : String(data: try JSONSerialization.data(withJSONObject: steps), encoding: .utf8)!
+            days[dayIndex]["exercises"] = slots; plan?["days"] = days
+            let version = (plan?["version"] as? Int ?? 1) + 1
+            plan?["version"] = version
+            response = ["id": "created-slot-0"]
         case ("PATCH", "/api/workouts/\(dayID)/exercises/created-slot-0") where scenario == .activationManual:
             var days = plan!["days"] as! [[String: Any]]
             var slots = days[0]["exercises"] as! [[String: Any]]
@@ -959,7 +976,8 @@ private struct UIFixtureServer {
             let creationCatalog: [[String: Any]] = AppStoreScreenshotData.catalog + [
                 ["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell"],
                 ["id": "synthetic-upper", "name": "Bench Press", "modality": "barbell"],
-                ["id": "synthetic-core", "name": "Plank", "modality": "timed"]]
+                ["id": "synthetic-core", "name": "Plank", "modality": "timed"],
+                ["id": RunPlan.exerciseID, "name": "Outdoor Run", "modality": "cardio"]]
             let selected = body["exercise_ids"] as? [String] ?? []
             let slots: [[String: Any]] = try selected.enumerated().map { index, exerciseID in
                 guard let exercise = creationCatalog.first(where: { $0["id"] as? String == exerciseID }) else {

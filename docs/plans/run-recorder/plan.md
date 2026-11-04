@@ -1,6 +1,6 @@
 # Run recorder on iPhone
 
-Slug: run-recorder · Status: active · Updated: 2026-11-02 · Theme: connected-training
+Slug: run-recorder · Status: active · Updated: 2026-11-04 · Theme: connected-training
 
 ## Goal
 
@@ -230,11 +230,46 @@ coach sees it in the same place as Garmin runs.
       never uploaded answers `intervals.status` `not_connected` or
       `not_found`.
 
+- [ ] **P6 — Maps for runs the app didn't record**
+  - The owner chose on 2026-11-04 that runs from intervals.icu and from
+    Apple Health get maps too, in the app and on the web, so Garmin runs,
+    runs recorded before P5 and runs another app such as Strava saved to
+    Health show their route like a recorded run.
+  - [x] **(a) intervals.icu runs**
+    - `GET /api/activities/:id/route` still answers with the run recorded in
+      the app behind an activity first (`source: 'recording'`). For an
+      intervals.icu activity with no recording behind it, it reads the
+      activity's `time`, `latlng` and `altitude` streams from intervals.icu
+      (`fetchActivityRouteStreams`; `data` is latitude and `data2`
+      longitude) and answers `source: 'intervals'`, `recording_id: null`.
+      `routeFromSamples` builds the segments: a missing position, the 0,0
+      placeholder or a gap over a minute ends one.
+    - The track is not stored: it stays with intervals.icu, so a run
+      deleted there or a connection removed takes its map with it. No
+      connection, no track (an indoor run, a manual entry) or a refusal
+      answers 404; a timeout, 429 or 5xx answers 502, which the app and web
+      read as "try again later". Only the member's own shown activities are
+      read.
+    - The app and web already asked for the routes of intervals.icu runs.
+      They now take a route with no recording behind it, which offers no
+      "Delete run". Builds before this one read that answer as a failed
+      read and show no map.
+    - The privacy policy says the app and web read a run's track from
+      Intervals.icu to show its map, only to the member, without keeping it.
+  - [ ] **(b) Apple Health runs**
+    - The iPhone app reads the route Apple Health saved with a run another
+      app recorded (not the recorder's own workouts, whose route Tres Fort
+      already keeps) and sends it to the server, which keeps it in
+      `activity_routes` for that Health activity, private like a recorded
+      route. The app and web then ask for Health runs' routes too. A Health
+      workout deleted from Health takes its route with it.
+
 ## Execution frontier
 
 - P3
 - P4
 - P5
+- P6
 
 ## Dependencies
 
@@ -249,15 +284,15 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@owner):** Record the remaining P3 runs on TestFlight build 60
-(main 2832d0c), which carries auto-pause, the running layout, planned runs
-and planning them in the app.
+**Now (@agent):** P6(b): send the routes Apple Health saved with runs from
+other apps.
 
-**Next (@owner):** Approve applying migration 0063 in production and
-deploying the API Worker, which P5 needs, and give the MapKit JS token as
-`tres-fort-web`'s `MAPKIT_TOKEN` when the web app is deployed. Deleting a
-recorded run (P5(d)) then needs an app build. P5 is done in the repository
-once these are verified on a device.
+**Then (@owner):** Record the remaining P3 runs, now on TestFlight build 63
+(main 21f0f3f), which also carries P5: the API and `tres-fort-web` run main
+21f0f3f with migration 0063 applied, and the owner set `MAPKIT_TOKEN` on
+2026-11-04. P5 is done once deleting a recorded run is seen on the device.
+P6(a) needs an API Worker deploy and an app build, each with the owner's
+go-ahead.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -345,6 +380,14 @@ the scene delegate is left to P3's force-quit check.
   Health workouts; `ActivityRouteTests` covers a route answer without a
   route. The HealthKit calls are compiled only; deleting the Health workout
   is first seen on a device.
+- P6(a): `test/intervals_route.test.ts` covers reading an intervals.icu
+  run's track split where the watch paused and storing nothing, 404 for a
+  run without a track or one intervals.icu no longer has, 502 when
+  intervals.icu is busy or down, and no call to intervals.icu for a deleted
+  run, another member's run or a member without a connection.
+  `test/activity_route.test.ts` covers building segments from a provider's
+  samples. `ActivityRouteTests` and `web/test/routeMap.test.ts` cover a
+  route with no recording behind it.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

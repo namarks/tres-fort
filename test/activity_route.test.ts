@@ -3,7 +3,7 @@
 // (docs/plans/run-recorder P5). Pure functions; no D1.
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_ROUTE_POINTS, decodeRoute, encodeRoute, parseStoredRoute, routePointCount, type RoutePoint,
+  MAX_ROUTE_POINTS, decodeRoute, encodeRoute, parseStoredRoute, routeFromSamples, routePointCount, type RoutePoint,
 } from '../src/activityRoute';
 import { TcxParseError, parseTcx } from '../src/tcxFile';
 
@@ -63,6 +63,33 @@ describe('route encoding', () => {
     expect(parseStoredRoute(JSON.stringify({ ...ok, dlat: [1] }))).toBeNull();
     expect(parseStoredRoute(JSON.stringify({ ...ok, alt: [1.5, null] }))).toBeNull();
     expect(parseStoredRoute(JSON.stringify({ ...ok, breaks: [0] }))).toBeNull();
+  });
+});
+
+describe('route from a provider\'s samples', () => {
+  const lat = (i: number) => 45.519 + i * 0.0001;
+  const lon = -122.6793;
+
+  it('ends a segment at a missing position, a 0,0 placeholder and a gap over a minute', () => {
+    const route = routeFromSamples(T0, {
+      offsetSec: [0, 1, 2, 3, 4, 5, 6, 70, 71],
+      lat: [lat(0), lat(1), null, lat(3), lat(4), 0, lat(6), lat(7), lat(8)],
+      lon: [lon, lon, lon, lon, lon, 0, lon, lon, lon],
+      alt: [15, 15.5, null, 16, null, 0, 17, 18, 18],
+    })!;
+    const segments = decodeRoute(route);
+    expect(segments.map((s) => s.map((p) => p.t - T0))).toEqual([[0, 1_000], [3_000, 4_000], [6_000], [70_000, 71_000]]);
+    expect(segments[0]![1]).toMatchObject({ lat: 45.5191, lon, alt: 15.5 });
+    expect(segments[1]![1]!.alt).toBeNull();
+  });
+
+  it('counts a second per sample when the provider sent no times, and is null with no positions', () => {
+    const route = routeFromSamples(T0, { offsetSec: null, lat: [lat(0), lat(1)], lon: [lon, lon], alt: null })!;
+    expect(decodeRoute(route)).toEqual([[
+      { t: T0, lat: 45.519, lon, alt: null },
+      { t: T0 + 1_000, lat: 45.5191, lon, alt: null },
+    ]]);
+    expect(routeFromSamples(T0, { offsetSec: [0, 1], lat: [null, 0], lon: [null, 0], alt: null })).toBeNull();
   });
 });
 

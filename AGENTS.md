@@ -302,7 +302,10 @@ chat start) and a **prompt** (`coach_brief`).
   `source='recording'` activity, ranked like `.fit`, with its GPS route in
   `activity_routes` (migration 0063, `src/activityRoute.ts`). Routes are
   private to the member: never in group views or coach tools. The file then
-  goes to intervals.icu only when the member has connected it. `GET /api/me/thresholds/suggestions` offers the
+  goes to intervals.icu only when the member has connected it.
+  `GET /api/activities/:id/route` also reads an intervals.icu run's track
+  from intervals.icu without storing it (`src/services/intervalsRoute.ts`).
+  `GET /api/me/thresholds/suggestions` offers the
   thresholds intervals.icu scored the member's latest synced workouts with;
   only the member's tap saves one (`source='intervals'`).
   A member's own 1 to 10 effort rating (`external_activities.effort`,

@@ -1,6 +1,6 @@
 # Planned runs with pace and heart rate targets
 
-Slug: planned-runs · Status: active · Updated: 2026-11-02 · Theme: connected-training
+Slug: planned-runs · Status: active · Updated: 2026-11-04 · Theme: connected-training
 
 ## Goal
 
@@ -187,6 +187,24 @@ intervals.icu, which stays the store of completed runs.
     and the recorder says so. A run Apple Health didn't save in full stays
     queued, since this iPhone holds the only full copy.
 
+- [x] **P8 — Make a planned run from the week**
+  - Before P8 a member made a planned run in five steps: New workout, pick
+    Outdoor Run, open the workout, tap the run, then plan it. The editor
+    itself (P5) was there; getting to it was the gap.
+  - Tapping a weekday on the Plan tab offers "New run" beside "New activity"
+    and "New workout". The member names it ("Easy run", "Intervals", "Tempo
+    run", "Long run", or "Run" when left blank) and "Plan it every Monday"
+    saves a workout holding one outdoor run, puts it on that weekday and
+    opens the P5 step editor on it. "Not now" leaves a plain run on the
+    weekday to plan later.
+  - The workout is created with the reviewed plan version and kept on a
+    retry, like a new activity, so a lost reply can't make a second one.
+    The editor saves against the version it opened with. A name already
+    used by a run reuses that run; a name used by a workout that isn't a
+    run is refused. A run reads "Run" in the weekday's list.
+  - No server change: the existing workout create, schedule and slot routes
+    do the work and keep their audit (`actor='ios'`) and version checks.
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
@@ -198,7 +216,8 @@ intervals.icu, which stays the store of completed runs.
 ## Next step
 
 **Now (@owner):** Run an interval session (P4); the first heart rate run
-is done. P6 and P7 reach the phone with the next TestFlight build.
+is done. P8 reaches the phone with the next TestFlight build after it
+merges; it needs no Worker deploy or migration.
 Run-recorder P3's real runs can use the same build.
 
 Released on 2026-10-31 with the owner's go-ahead: migration 0058 was applied
@@ -243,6 +262,11 @@ migration, since P5 saves through the existing slot route.
   including after recovery, a plain or refused run marking nothing, and
   the intervals.icu not-connected cases, including a route Health dropped. `RunRecordingTests` covers the uploader letting go
   only of runs Apple Health saved.
+- P8: `WorkoutMetadataTests` covers the run's default name, telling a
+  run from a workout or activity, reusing a run by name and refusing a
+  name another workout has, and the weekday's "Run" label.
+  `WeeklyScheduleJourneyTests` (nightly UI suite) makes a run from Monday,
+  plans a repeat in the step editor and sees it on the weekday.
 - P5: `RunPlanEditingTests` covers saving steps in the plan's format and
   reading them back, the draft's add, move, edit and remove operations,
   repeat defaults, the server's limits and each step problem, and pace and

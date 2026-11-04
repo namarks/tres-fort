@@ -143,6 +143,44 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         waitForExpectations(timeout: UITestWait.screen)
     }
 
+    /// A planned run is made from the day itself: name it, and its step
+    /// editor opens next, so intervals need neither the coach nor a trip
+    /// through the workout editor.
+    func testTappingADayMakesANewRunAndOpensItsSteps() {
+        let app = launch()
+        app.tabBars.buttons["Plan"].tap()
+        let monday = app.buttons["plan.week.mon"]
+        XCTAssertTrue(monday.waitForExistence(timeout: UITestWait.screen))
+        monday.tap()
+        let sheet = app.navigationBars["Monday"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: UITestWait.screen))
+        app.buttons["weekday.newRun"].tap()
+        let idea = app.buttons["newRun.idea.Intervals"]
+        XCTAssertTrue(idea.waitForExistence(timeout: UITestWait.screen))
+        idea.tap()
+        let save = app.buttons["newRun.save"]
+        XCTAssertEqual(save.label, "Plan it every Monday")
+        save.tap()
+
+        XCTAssertTrue(app.navigationBars["Plan run"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.buttons["runPlan.cancel"].label.contains("Not now"))
+        app.buttons["runPlan.addRepeat"].tap()
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "plan-new-run-steps"; screenshot.lifetime = .keepAlways; add(screenshot)
+        app.buttons["runPlan.save"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.navigationBars["Plan run"])
+        waitForExpectations(timeout: UITestWait.screen)
+        expectation(for: NSPredicate(format: "label CONTAINS 'Intervals'"), evaluatedWith: monday)
+        waitForExpectations(timeout: UITestWait.screen)
+
+        monday.tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: UITestWait.screen))
+        let run = app.buttons["weekday.choice.created-workout"]
+        XCTAssertTrue(run.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(run.isSelected)
+        XCTAssertTrue(run.label.contains("Run"), run.label)
+    }
+
     func testFailedSaveRetainsDraftAndAllowsExplicitRetry() {
         assertFailedSaveCanRetry(failure: "request")
     }

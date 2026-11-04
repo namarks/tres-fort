@@ -205,22 +205,25 @@ integration or social breadth.
   through the iPhone. P0's wrist layouts are in the repository. Paused
   until a member who runs with an Apple Watch can test P1 onward.
 - [Real training load for endurance workouts](endurance-training-load/plan.md) —
-  **active**; members set FTP, threshold heart rate and threshold pace in the
+  **gated**; members set FTP, threshold heart rate and threshold pace in the
   app, and one Worker load engine gives every run, ride and swim a labeled
   power, heart-rate or pace load from Apple Health, the recorder, `.fit`
   uploads and later Garmin, keeping intervals.icu's figure when it has one.
   P0's thresholds store and engine, P1's loads on imported workouts, P2's
   thresholds screen and load display, P3's Apple Health heart-rate and
-  power streams, P4's `.fit` file import and P7's suggestions from
-  intervals.icu are in the repository; P6 is next and P5 waits on Garmin.
+  power streams, P4's `.fit` file import, P6's effort estimate (built as
+  sport-activities P2) and P7's suggestions from intervals.icu are in the
+  repository; P5 waits on Garmin.
 - [Capture every sport properly](sport-activities/plan.md) — **active**;
   soccer, tennis, climbing, swims and every other sport land as that sport
   from Apple Health, intervals.icu, `.fit` files or hand entry, with
   heart-rate or effort load and swim detail (pool, lengths, strokes). Hand
   entries live in Tres Fort with intervals.icu as an optional copy (owner,
-  2026-11-03). P0, naming every sport (migration 0064), and P1, heart-rate
-  load for any sport, are in the repository; P2, effort when there is no
-  data, is next.
+  2026-11-03). P0, naming every sport (migration 0064), P1, heart-rate
+  load for any sport, and P2, a one-tap effort rating when there is no data
+  (migration 0065), are in the repository; P3, logging any sport by hand,
+  is next, and P5, Apple Watch's effort score, waits on a new Apple Health
+  permission.
 - [WHOOP data in Tres Fort](whoop/plan.md) — **planned**; WHOOP-tracked
   workouts arrive once with a load, first through Apple Health and later
   through a direct WHOOP connection, with daily recovery, HRV and sleep as a

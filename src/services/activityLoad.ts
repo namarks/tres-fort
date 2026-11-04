@@ -8,6 +8,7 @@
 import { selectLoad, type LoadMethod, type ThresholdSet } from '../trainingLoad';
 import { listAthleteThresholds, thresholdsOn, type AthleteThreshold, type ThresholdSport } from './athleteThresholds';
 import { heartRateThresholdFor } from '../sports';
+import type { ExternalActivityRow } from '../types';
 
 interface LoadRow {
   id: string;
@@ -17,6 +18,7 @@ interface LoadRow {
   /** Migration 0064; null on rows the backfill never saw. */
   sport: string | null;
   moving_time_sec: number | null;
+  elapsed_time_sec: number | null;
   distance_m: number | null;
   average_hr: number | null;
   weighted_avg_watts: number | null;
@@ -25,6 +27,11 @@ interface LoadRow {
   stream_np_w: number | null;
   stream_hr_rms: number | null;
   stream_hr_sec: number | null;
+  /** The member's own rating (migration 0065). */
+  effort: number | null;
+  /** The rating that scores the row: its own, else one given to an Apple
+   * Health, .fit or recorded copy since hidden as its duplicate. */
+  effort_in: number | null;
   effective_load: number | null;
   effective_intensity: number | null;
   load_method: LoadMethod | null;
@@ -50,10 +57,12 @@ export function thresholdSetFor(
   return hr ? { threshold_hr: hr } : {};
 }
 
-export function effectiveLoadFor(
-  row: Omit<LoadRow, 'id' | 'deleted_at' | 'effective_load' | 'effective_intensity' | 'load_method' | 'sport'> & { sport?: string | null },
-  thresholds: readonly AthleteThreshold[],
-) {
+type LoadInputRow = Omit<
+  LoadRow,
+  'id' | 'deleted_at' | 'effective_load' | 'effective_intensity' | 'load_method' | 'sport' | 'elapsed_time_sec' | 'effort' | 'effort_in'
+> & { sport?: string | null; elapsed_time_sec?: number | null; effort?: number | null };
+
+export function effectiveLoadFor(row: LoadInputRow, thresholds: readonly AthleteThreshold[]) {
   const set = thresholdSetFor(row.kind, row.sport, thresholds, row.date);
   return selectLoad(
     {
@@ -68,6 +77,8 @@ export function effectiveLoadFor(
         row.stream_hr_rms !== null && row.stream_hr_sec !== null
           ? { rms_bpm: row.stream_hr_rms, seconds: row.stream_hr_sec }
           : null,
+      elapsed_time_sec: row.elapsed_time_sec ?? null,
+      effort: row.effort ?? null,
     },
     set,
   );
@@ -92,6 +103,12 @@ const thresholdFingerprintSql = (userParam: string) =>
  * member's threshold set, so a calculation overtaken by a sync, a HealthKit
  * revision or a threshold change is never stored; the pass then retries with
  * fresh data. Returns the number of rows updated.
+ *
+ * A member's effort rating follows the workout across dedup: a live row with
+ * no rating of its own takes the newest rating on a row hidden as its
+ * duplicate (rated before another source's copy arrived), and keeps it, so
+ * the app shows the rating its load came from. `setActivityEffort` rates a
+ * row and its hidden copies together, so clearing it never brings it back.
  */
 export async function refreshActivityLoads(
   db: D1Database,
@@ -109,29 +126,41 @@ export async function refreshActivityLoads(
       listAthleteThresholds(db, userId),
       db
         .prepare(
-          `SELECT id, deleted_at, date, kind, sport, moving_time_sec, distance_m, average_hr, weighted_avg_watts,
-                  training_load, intensity, stream_np_w, stream_hr_rms, stream_hr_sec,
-                  effective_load, effective_intensity, load_method
-             FROM external_activities
-            WHERE user_id = ?1
-              AND (deleted_at IS NULL OR (source IN ('healthkit', 'fit', 'recording') AND duplicate_of IS NOT NULL))
-              AND date >= ?2 AND date <= ?3`,
+          `WITH rated AS (
+             SELECT duplicate_of AS winner, effort,
+                    ROW_NUMBER() OVER (PARTITION BY duplicate_of ORDER BY synced_at DESC, id) AS rn
+               FROM external_activities
+              WHERE user_id = ?1 AND duplicate_of IS NOT NULL AND effort IS NOT NULL
+           )
+           SELECT e.id, e.deleted_at, e.date, e.kind, e.sport, e.moving_time_sec, e.elapsed_time_sec, e.distance_m,
+                  e.average_hr, e.weighted_avg_watts, e.training_load, e.intensity,
+                  e.stream_np_w, e.stream_hr_rms, e.stream_hr_sec, e.effort,
+                  CASE WHEN e.effort IS NULL AND e.deleted_at IS NULL THEN r.effort ELSE e.effort END AS effort_in,
+                  e.effective_load, e.effective_intensity, e.load_method
+             FROM external_activities e
+             LEFT JOIN rated r ON r.winner = e.id AND r.rn = 1
+            WHERE e.user_id = ?1
+              AND (e.deleted_at IS NULL OR (e.source IN ('healthkit', 'fit', 'recording') AND e.duplicate_of IS NOT NULL))
+              AND e.date >= ?2 AND e.date <= ?3`,
         )
         .bind(userId, window.fromDate ?? '0000-01-01', window.toDate ?? '9999-12-31')
         .all<LoadRow>(),
     ]);
     const updates: D1PreparedStatement[] = [];
     for (const row of rows.results) {
-      const next = effectiveLoadFor(row, thresholds);
+      const next = effectiveLoadFor({ ...row, effort: row.effort_in }, thresholds);
       const load = next?.load ?? null;
       const intensity = next?.intensity ?? null;
       const method = next?.method ?? null;
-      if (row.effective_load === load && row.effective_intensity === intensity && row.load_method === method) continue;
+      if (
+        row.effective_load === load && row.effective_intensity === intensity && row.load_method === method
+        && row.effort === row.effort_in
+      ) continue;
       updates.push(
         db
           .prepare(
             `UPDATE external_activities
-                SET effective_load = ?3, effective_intensity = ?4, load_method = ?5,
+                SET effective_load = ?3, effective_intensity = ?4, load_method = ?5, effort = ?24,
                     synced_at = CASE
                       WHEN deleted_at IS NOT NULL THEN synced_at
                       WHEN ?6 > synced_at THEN ?6 ELSE synced_at + 1
@@ -141,7 +170,10 @@ export async function refreshActivityLoads(
                 AND average_hr IS ?11 AND weighted_avg_watts IS ?12
                 AND training_load IS ?13 AND intensity IS ?14
                 AND stream_np_w IS ?20 AND stream_hr_rms IS ?21 AND stream_hr_sec IS ?22
-                AND sport IS ?23
+                AND sport IS ?23 AND elapsed_time_sec IS ?25 AND effort IS ?26
+                AND (?24 IS ?26 OR EXISTS (
+                  SELECT 1 FROM external_activities d
+                   WHERE d.user_id = ?2 AND d.duplicate_of = ?1 AND d.effort IS ?24))
                 AND effective_load IS ?15 AND effective_intensity IS ?16 AND load_method IS ?17
                 AND (${thresholdFingerprintSql('?2')}) IS ?18`,
           )
@@ -155,6 +187,7 @@ export async function refreshActivityLoads(
             row.deleted_at,
             row.stream_np_w, row.stream_hr_rms, row.stream_hr_sec,
             row.sport,
+            row.effort_in, row.elapsed_time_sec, row.effort,
           ),
       );
     }
@@ -170,4 +203,54 @@ export async function refreshActivityLoads(
     if (stale === 0) break;
   }
   return written;
+}
+
+/**
+ * Rate how hard a workout was, or clear the rating with null
+ * (sport-activities P2). Only a live row the member can see is rated; the
+ * rating is written to it and to the rows hidden as its duplicates, so it
+ * survives a dedup change either way, and then the day's loads are
+ * refreshed. A rating only scores a workout with no measured load; on one
+ * with a load it is kept but unused. Null when the member has no such live
+ * activity, else the row as it now stands.
+ */
+export async function setActivityEffort(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+  effort: number | null,
+  now = Date.now(),
+): Promise<ExternalActivityRow | null> {
+  const target = await db
+    .prepare('SELECT id, date FROM external_activities WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL')
+    .bind(activityId, userId)
+    .first<{ id: string; date: string }>();
+  if (!target) return null;
+  await db
+    .prepare(
+      `UPDATE external_activities
+          SET effort = ?3,
+              synced_at = CASE
+                WHEN deleted_at IS NOT NULL THEN synced_at
+                WHEN ?4 > synced_at THEN ?4 ELSE synced_at + 1
+              END
+        WHERE user_id = ?2 AND (id = ?1 OR duplicate_of = ?1) AND effort IS NOT ?3`,
+    )
+    .bind(target.id, userId, effort, now)
+    .run();
+  // A hidden copy can sit on a neighbouring civil date (another clock).
+  const span = await db
+    .prepare(
+      `SELECT MIN(date) AS from_date, MAX(date) AS to_date FROM external_activities
+        WHERE user_id = ?2 AND (id = ?1 OR duplicate_of = ?1)`,
+    )
+    .bind(target.id, userId)
+    .first<{ from_date: string | null; to_date: string | null }>();
+  await refreshActivityLoads(
+    db, userId, { fromDate: span?.from_date ?? target.date, toDate: span?.to_date ?? target.date }, now,
+  );
+  return db
+    .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(target.id, userId)
+    .first<ExternalActivityRow>();
 }

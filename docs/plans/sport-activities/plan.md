@@ -1,6 +1,6 @@
 # Capture every sport properly
 
-Slug: sport-activities · Status: active · Updated: 2026-11-03 · Theme: connected-training
+Slug: sport-activities · Status: active · Updated: 2026-11-04 · Theme: connected-training
 
 ## Goal
 
@@ -100,14 +100,33 @@ What the sources can give (to confirm against real rows in each phase):
     samples (`healthSportStreamsBackfillKey`). Heart rate is already an
     allowed Apple Health read, so no new permission is asked. Existing rows
     from other sources are rescored on their next sync or threshold change.
-- [ ] **P2 — Effort when there is no data**
-  - Delivers endurance-training-load P6 for every sport: a "How hard was it?"
-    1 to 10 on any activity without a usable load, and Apple Watch's effort
-    score read from Apple Health when the member allows it. Either gives a
-    session-effort load labeled as an estimate (`load_method='effort'`); a
-    heart-rate, power or pace load always wins over it.
-  - The effort scale and how it maps to load (one hour at effort 7 ≈ 100 is
-    the starting proposal) are fixed in this phase with tests.
+- [x] **P2 — Effort when there is no data**
+  - Delivers endurance-training-load P6 for every sport. Migration `0065`
+    adds `external_activities.effort`, the member's own 1 to 10 "How hard was
+    it?", and widens `load_method` to include `effort` (SQLite can't change
+    a CHECK in place, so the column is replaced; values and `synced_at` are
+    unchanged).
+  - The scale is fixed in `src/trainingLoad.ts` (`EFFORT_SCALE`,
+    `effortLoad`): session effort, minutes × rating, scaled so one hour at
+    effort 7 ("very hard", about an hour at threshold) is 100; intensity
+    stays unknown. `selectLoad` uses it last, so a provider, power,
+    heart-rate or pace load always wins, and moving time falls back to
+    elapsed time. Covered by `test/training_load.test.ts`.
+  - `PUT /api/activities/:id/effort` (`setActivityEffort`) rates a live
+    workout or clears it with null, writing the row and the copies hidden as
+    its duplicates, then rescores the day. Importers never send or
+    overwrite the rating. A shown copy without a rating takes a hidden
+    copy's, so a rating given to an Apple Health workout survives
+    intervals.icu delivering the same one later. Covered by
+    `test/activity_load.test.ts` ("effort rating").
+  - The day view shows ten one-tap buttons on any workout without a measured
+    load (and keeps them once the rating scores it, to change or clear); the
+    load is labeled "effort estimate" in the app and "estimated from your
+    effort rating" on the web (`EffortRating.swift`,
+    `EffortRatingTests.swift`).
+  - The coach's `rate_activity` records a rating the member gives, and
+    `get_recent_activities` reports `effort`, so app and coach stay at
+    parity.
 - [ ] **P3 — Log any sport by hand, kept in Tres Fort**
   - The log sheet gets a searchable sport list (the member's recent and
     planned sports first) and shows each sport's fields: time and effort
@@ -132,6 +151,12 @@ What the sources can give (to confirm against real rows in each phase):
   - The day view shows a swim's distance, pace per 100, lengths, strokes
     per length, SWOLF and a stroke breakdown; Activity history lists swims
     with distance and pace.
+- [ ] **P5 — Apple Watch's effort score**
+  - Split from P2 on 2026-11-04 because it needs a new Apple Health
+    permission. Read Apple Watch's workout effort score (iOS 18, 1 to 10)
+    from Apple Health when the member allows it, as the provider's rating
+    beside the member's own, which wins when both exist; either gives the
+    `effort` load. Needs the owner's go-ahead on the permission.
 
 ## Dependencies
 
@@ -139,17 +164,18 @@ What the sources can give (to confirm against real rows in each phase):
 |---|---|---|---|
 | P0 | coordinates_with | plan:activity-integration-integrity | Both change `external_activities` rows; dedup rules stay owned there and keep matching on `kind`. |
 | P2 | coordinates_with | plan:endurance-training-load#P6 | This phase delivers that phase for every sport; it closes there when this merges. |
-| P2 | gated_by | external:owner-new-health-permission | Reading Apple Watch's effort score is a new Apple Health permission. |
+| P5 | gated_by | external:owner-new-health-permission | Reading Apple Watch's effort score is a new Apple Health permission. |
 | P4 | gated_by | external:owner-new-health-permission | Swim stroke counts are a new Apple Health permission. |
 
 ## Next step
 
-**Now (@agent):** P2's one-tap "How hard was it?" effort, which needs no
-new Apple Health permission; reading Apple Watch's effort score waits for the
-owner's go-ahead on that permission. P0 and P1 are in the repository;
-migration `0064`, the Worker deploy and an app build need the owner's
-separate go-ahead. The owner decided on 2026-11-03 that hand-entered
-sessions live in Tres Fort with intervals.icu as an optional copy (P3).
+**Now (@agent):** P3, logging any sport by hand and keeping it in Tres Fort
+(intervals.icu an optional copy, owner's choice of 2026-11-03), with the
+effort rating among its fields. P0, P1 and P2 are in the repository; P0 and
+P1 are in production (migration `0064`, 2026-11-04). P2's migration `0065`,
+its Worker deploy and an app build each need the owner's separate go-ahead,
+in that order (`0065` before the Worker). P5, Apple Watch's effort score,
+waits for the owner's go-ahead on that Apple Health permission.
 
 ## Notes / open questions
 
@@ -162,6 +188,11 @@ sessions live in Tres Fort with intervals.icu as an optional copy (P3).
   permissions change the App Store privacy answers for the next version.
 - Older app builds keep sending `kind` only; the Worker derives `sport` from
   the HealthKit type in `raw`, so they still get named sports.
+- Older app builds can't rate a workout, and show a rated workout's load
+  without the "effort estimate" label (an intervals.icu one as
+  "intervals.icu").
+- The rating is the member's own and stays out of the group feed, which
+  lists only the provider's load.
 - intervals.icu's swim and per-length fields are checked against the owner's
   own synced rows before P4 relies on them; anything missing stays unknown,
   never estimated.

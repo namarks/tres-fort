@@ -264,7 +264,7 @@ intervals.icu activities whose `external_id` Tres Fort set. Current tools:
 `get_today_workout`, `get_current_session`,
 `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
-`correct_set`, `delete_set`, `log_activity`, `delete_activity`, `log_workout_complete`,
+`correct_set`, `delete_set`, `log_activity`, `delete_activity`, `rate_activity`, `log_workout_complete`,
 `discard_workout`, `add_note`,
 `update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_workout`,
 `update_workout`, `delete_workout`, `delete_exercise`, `adjust_today`, `set_schedule`,
@@ -305,6 +305,9 @@ chat start) and a **prompt** (`coach_brief`).
   goes to intervals.icu only when the member has connected it. `GET /api/me/thresholds/suggestions` offers the
   thresholds intervals.icu scored the member's latest synced workouts with;
   only the member's tap saves one (`source='intervals'`).
+  A member's own 1 to 10 effort rating (`external_activities.effort`,
+  migration `0065`) scores a workout with no measured load as
+  `load_method='effort'`, labeled an estimate; any measured load wins.
   Missing data stays unknown; never fabricate a load. See
   [the plan](docs/plans/endurance-training-load/plan.md).
 - `external_activities.sport` (migration `0064`) names what a workout was

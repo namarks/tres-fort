@@ -15,6 +15,9 @@ struct RunPlanEditorView: View {
     let dayID: String
     let slot: TemplateExercise
     let expectedVersion: Int
+    /// Set when the run was just made from a weekday: saving or "Not now"
+    /// closes the whole flow instead of going back a screen.
+    var onFinished: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft: RunPlanDraft
@@ -26,11 +29,13 @@ struct RunPlanEditorView: View {
     private let unreadable: Bool
     private let unit = RunDistanceUnit.preferred()
 
-    init(sync: SyncModel, dayID: String, slot: TemplateExercise, expectedVersion: Int) {
+    init(sync: SyncModel, dayID: String, slot: TemplateExercise, expectedVersion: Int,
+         onFinished: (() -> Void)? = nil) {
         _sync = ObservedObject(wrappedValue: sync)
         self.dayID = dayID
         self.slot = slot
         self.expectedVersion = expectedVersion
+        self.onFinished = onFinished
         let plan = slot.runPlan
         original = plan
         unreadable = slot.run_steps != nil && plan == nil
@@ -96,7 +101,10 @@ struct RunPlanEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Cancel") { dismiss() }.foregroundStyle(Theme.muted)
+                Button(onFinished == nil ? "Cancel" : "Not now") { finish() }
+                    .foregroundStyle(Theme.muted)
+                    .disabled(working)
+                    .accessibilityIdentifier("runPlan.cancel")
             }
             if !unreadable {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -191,8 +199,12 @@ struct RunPlanEditorView: View {
             let saved = await sync.updateRunSteps(dayID: dayID, teID: slot.id, steps: plan,
                                                   expectedVersion: expectedVersion)
             working = false
-            if saved { dismiss() }
+            if saved { finish() }
         }
+    }
+
+    private func finish() {
+        if let onFinished { onFinished() } else { dismiss() }
     }
 }
 

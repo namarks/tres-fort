@@ -2,8 +2,9 @@ import SwiftUI
 
 /// One weekday of the repeating week, opened by tapping it on the Plan tab.
 /// Pick rest or any saved workout, or make something new for that day: an
-/// activity such as a soccer match, or a workout with exercises. Only this
-/// weekday changes; dates already assigned stay as they are.
+/// activity such as a soccer match, a planned run, or a workout with
+/// exercises. Only this weekday changes; dates already assigned stay as they
+/// are.
 struct WeekdayPlanSheet: View {
     @ObservedObject var sync: SyncModel
     let weekdayKey: String
@@ -12,6 +13,7 @@ struct WeekdayPlanSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var saving = false
     @State private var addingActivity = false
+    @State private var addingRun = false
     @State private var creatingWorkout = false
     @State private var createdWorkoutID: String?
 
@@ -40,6 +42,11 @@ struct WeekdayPlanSheet: View {
                                systemImage: "sportscourt")
                     }
                     .accessibilityIdentifier("weekday.newActivity")
+                    Button { addingRun = true } label: {
+                        newRow("New run", detail: "Warm-up, intervals, pace or heart rate targets",
+                               systemImage: "figure.run")
+                    }
+                    .accessibilityIdentifier("weekday.newRun")
                     Button { creatingWorkout = true } label: {
                         newRow("New workout", detail: "Pick exercises to log set by set",
                                systemImage: "dumbbell")
@@ -76,6 +83,9 @@ struct WeekdayPlanSheet: View {
             .navigationDestination(isPresented: $addingActivity) {
                 NewActivityView(sync: sync, weekdayKey: weekdayKey) { dismiss() }
             }
+            .navigationDestination(isPresented: $addingRun) {
+                NewPlannedRunView(sync: sync, weekdayKey: weekdayKey) { dismiss() }
+            }
         }
         // The workout gets its weekday once its creator closes, so the
         // schedule write never races the targets being edited there.
@@ -87,6 +97,7 @@ struct WeekdayPlanSheet: View {
 
     static func detail(for workout: Workout) -> String {
         if PlannedActivity.isActivity(workout) { return "Activity" }
+        if PlannedRunCreation.isRun(workout) { return "Run" }
         let count = workout.exercises.count
         return "\(count) exercise\(count == 1 ? "" : "s")"
     }

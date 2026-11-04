@@ -2,7 +2,7 @@ import CoreLocation
 import XCTest
 @testable import TresFort
 
-/// Recorded run routes as the app reads them (docs/plans/run-recorder P5):
+/// Run routes as the app reads them (docs/plans/run-recorder P5 and P6):
 /// the server's compact encoding, the map framing, and the in-memory store.
 @MainActor
 final class ActivityRouteTests: XCTestCase {
@@ -34,6 +34,22 @@ final class ActivityRouteTests: XCTestCase {
         let response = try decode(#"{"activity_id":"recording:activity:u:r2","recording_id":"r2","route":null}"#)
         XCTAssertEqual(response.recording_id, "r2")
         XCTAssertNil(response.route)
+    }
+
+    func testATrackFromIntervalsHasNoRecordingBehindIt() throws {
+        let response = try decode(Self.json.replacingOccurrences(
+            of: #""activity_id":"recording:activity:u:r1","recording_id":"r1","#,
+            with: #""activity_id":"intervals:activity:u:i9","source":"intervals","recording_id":null,"#))
+        XCTAssertEqual(response.source, "intervals")
+        XCTAssertNil(response.recording_id)
+        XCTAssertEqual(response.route?.drawableSegments.map(\.count), [3, 2])
+        let copy = ExternalActivity(
+            id: "intervals:activity:u:i9", source: "intervals", external_id: "i9", date: "2026-11-01", kind: "run",
+            name: nil, moving_time_sec: 60, elapsed_time_sec: nil, distance_m: 100, average_watts: nil,
+            weighted_avg_watts: nil, average_hr: nil, max_hr: nil, training_load: nil, intensity: nil,
+            calories: nil, elevation_gain_m: nil, synced_at: 1, deleted_at: nil)
+        // Nothing the app recorded, so nothing for "Delete run" to delete.
+        XCTAssertNil(copy.recordedRunID(routeRecordingID: response.recording_id))
     }
 
     func testOnlyLinesWithTwoPointsAreDrawnAndMismatchedArraysDrawNothing() throws {

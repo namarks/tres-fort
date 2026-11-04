@@ -2,8 +2,8 @@ import Foundation
 import MapKit
 import SwiftUI
 
-/// A recorded run's GPS route as `GET /api/activities/:id/route` serves it
-/// (src/activityRoute.ts, docs/plans/run-recorder P5). Times are delta-coded
+/// A run's GPS route as `GET /api/activities/:id/route` serves it
+/// (src/activityRoute.ts, docs/plans/run-recorder P5 and P6). Times are delta-coded
 /// milliseconds and coordinates delta-coded micro-degrees: point i is the sum
 /// of entries 0...i. `breaks` lists the first index of each segment after the
 /// first; the recorder starts a new segment after a pause.
@@ -47,17 +47,24 @@ struct EncodedActivityRoute: Decodable, Equatable {
 }
 
 struct ActivityRouteResponse: Decodable, Equatable {
-    /// The recording behind the activity, which can differ from the activity
-    /// asked for when that is the intervals.icu copy of the run.
+    /// The activity the route belongs to: the recording behind the activity,
+    /// which can differ from the activity asked for when that is the
+    /// intervals.icu copy of the run, or the intervals.icu run itself.
     let activity_id: String
-    let recording_id: String
+    /// "recording" for a run recorded in the app, "intervals" for a track
+    /// intervals.icu sent. Nil from a server that predates P6.
+    let source: String?
+    /// The run recorded in the app behind the activity; nil for a track from
+    /// intervals.icu, which the app didn't record.
+    let recording_id: String?
     /// Nil for a run recorded without GPS fixes.
     let route: EncodedActivityRoute?
 }
 
 extension APIClient {
-    /// `GET /api/activities/:id/route`. Nil when no run recorded in the app
-    /// is behind the activity.
+    /// `GET /api/activities/:id/route`. Nil when the activity has no route.
+    /// A route intervals.icu can't send right now is an error, so it is
+    /// asked for again later.
     func activityRoute(activityID: String, jwt: String) async throws -> ActivityRouteResponse? {
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let id = activityID.addingPercentEncoding(withAllowedCharacters: allowed) ?? activityID
@@ -77,10 +84,10 @@ struct ActivityRouteAccess: Equatable {
     let jwt: String
 }
 
-/// In-memory routes for this process, per account. A route never changes
-/// once stored, so it is fetched once. "No route" is remembered for a few
-/// minutes only, since the intervals.icu copy of a run can sync before the
-/// run it duplicates is matched to it.
+/// In-memory routes for this process, per account. A route doesn't change,
+/// so it is fetched once. "No route" is remembered for a few minutes only,
+/// since the intervals.icu copy of a run can sync before the run it
+/// duplicates is matched to it.
 @MainActor
 final class ActivityRouteStore {
     static let shared = ActivityRouteStore()
@@ -130,7 +137,7 @@ final class ActivityRouteStore {
     /// Drops the routes of a recording the member deleted, under every
     /// activity that showed it, so a card doesn't keep drawing it.
     func forget(recordingID: String) {
-        let deleted = routes.filter { $0.value.recording_id.caseInsensitiveCompare(recordingID) == .orderedSame }
+        let deleted = routes.filter { $0.value.recording_id?.caseInsensitiveCompare(recordingID) == .orderedSame }
         for activityID in deleted.keys {
             routes[activityID] = nil
             missing[activityID] = now()
@@ -214,8 +221,9 @@ struct ActivityRouteThumbnail: View {
 }
 
 extension ExternalActivity {
-    /// Only runs recorded in the app have a route, shown either as the
-    /// recording itself or as the intervals.icu copy it was matched to.
+    /// Runs recorded in the app have a route, shown either as the recording
+    /// itself or as the intervals.icu copy it was matched to, and so do
+    /// intervals.icu runs whose device kept a GPS track.
     var mayHaveRecordedRoute: Bool {
         kind == "run" && (source == "recording" || source == "intervals")
     }
@@ -224,8 +232,8 @@ extension ExternalActivity {
 /// Reads a run's route when its card appears and hands the drawable
 /// segments to `content`: none until the route arrives, and none for an
 /// activity that can't have one. `content` also gets the recording behind
-/// the route, which is how the intervals.icu copy of a run recorded in the
-/// app is known to be one.
+/// the route, if any, which is how the intervals.icu copy of a run recorded
+/// in the app is known to be one.
 struct WithActivityRoute<Content: View>: View {
     let activity: ExternalActivity?
     let access: ActivityRouteAccess?

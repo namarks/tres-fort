@@ -10,6 +10,7 @@ import type { TcxRun } from './tcxFile';
 import { encodeRoute, parseStoredRoute, routePointCount, type EncodedRoute } from './activityRoute';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
+import { createIntervalsRouteService } from './services/intervalsRoute';
 import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
   type PartnerWorkoutInput, type PartnerStartInput, type PartnerSlot } from './partnerTraining';
 import { validWorkoutTags, normalizeWorkoutTags, validArchivedAt } from './workoutMetadata';
@@ -8967,6 +8968,8 @@ export const {
 } = createIntervalsActivityWriteService({
   resolveIntervalsCredential, syncExternalActivities,
 });
+export const { getIntervalsActivityRoute } = createIntervalsRouteService({ resolveIntervalsCredential });
+export type { IntervalsRouteResult } from './services/intervalsRoute';
 
 /** HealthKit encodes the device-local wall clock as UTC-like epoch ms. */
 export function healthKitDateMatchesStart(date: string, startMs: number | null): boolean {
@@ -9431,6 +9434,7 @@ export async function storeRecordedRun(
 export interface StoredActivityRoute {
   /** The recording behind the activity. */
   activity_id: string;
+  source: 'recording';
   recording_id: string;
   /** Null for a run recorded without GPS fixes. */
   route: EncodedRoute | null;
@@ -9464,6 +9468,7 @@ export async function getActivityRoute(
   if (!row) return null;
   return {
     activity_id: row.activity_id,
+    source: 'recording',
     recording_id: row.recording_id,
     route: row.route === null ? null : parseStoredRoute(row.route),
   };

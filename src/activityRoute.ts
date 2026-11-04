@@ -1,7 +1,8 @@
 // GPS routes of runs recorded in the app (docs/plans/run-recorder P5,
-// migration 0063). Pure: no D1. A route is kept as parallel arrays of small
-// integers, each the change from the point before, so a long run stays far
-// below D1's 2 MB row limit while keeping every recorded fix.
+// migration 0063), and of runs whose track a provider sends (P6). Pure: no
+// D1. A route is kept as parallel arrays of small integers, each the change
+// from the point before, so a long run stays far below D1's 2 MB row limit
+// while keeping every recorded fix.
 
 export interface RoutePoint {
   /** Epoch milliseconds. */
@@ -93,6 +94,52 @@ export function encodeRoute(segments: readonly (readonly RoutePoint[])[]): Encod
     }
   }
   return route;
+}
+
+/** A gap between two samples longer than this starts a new segment, as a
+ * pause does in a run recorded in the app. */
+export const SAMPLE_GAP_MS = 60_000;
+
+/** A provider's GPS samples, index for index (docs/plans/run-recorder P6). */
+export interface RouteSamples {
+  /** Seconds after the start; null when the provider sent no times, which
+   * then count one second per sample. */
+  offsetSec: readonly (number | null)[] | null;
+  lat: readonly (number | null)[];
+  lon: readonly (number | null)[];
+  /** Meters. */
+  alt: readonly (number | null)[] | null;
+}
+
+/**
+ * The route of samples taken from `startMs` on. A missing position (or the
+ * 0,0 placeholder some devices write before a fix) or a gap longer than
+ * SAMPLE_GAP_MS ends a segment. Null when no position is left.
+ */
+export function routeFromSamples(startMs: number, samples: RouteSamples): EncodedRoute | null {
+  const segments: RoutePoint[][] = [];
+  let current: RoutePoint[] = [];
+  const end = () => {
+    if (current.length > 0) segments.push(current);
+    current = [];
+  };
+  const start = Number.isSafeInteger(startMs) && startMs >= 0 ? startMs : 0;
+  for (let i = 0; i < samples.lat.length; i++) {
+    const lat = samples.lat[i];
+    const lon = samples.lon[i];
+    const offset = samples.offsetSec ? samples.offsetSec[i] : i;
+    if (lat == null || lon == null || offset == null || (lat === 0 && lon === 0)) {
+      end();
+      continue;
+    }
+    const t = start + Math.round(offset * 1000);
+    const previous = current[current.length - 1];
+    if (previous && t - previous.t > SAMPLE_GAP_MS) end();
+    const alt = samples.alt?.[i];
+    current.push({ t, lat, lon, alt: alt == null ? null : alt });
+  }
+  end();
+  return encodeRoute(segments);
 }
 
 /** The points of each segment, in order. */

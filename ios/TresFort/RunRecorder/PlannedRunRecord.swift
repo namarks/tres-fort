@@ -145,6 +145,8 @@ struct PlannedRunRecordView: View {
     var routeAccess: ActivityRouteAccess? = nil
     /// Deletes a run recorded in the app; nil hides "Delete run".
     var deleteRun: ((_ recordingID: String) async -> Void)? = nil
+    /// Saves a "How hard was it?" rating (sport-activities P2); nil hides it.
+    var rateEffort: ((_ activityID: String, _ effort: Int?) async -> String?)? = nil
     @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
     private var unit: RunDistanceUnit { RunDistanceUnit(rawValue: unitRaw) ?? .miles }
 
@@ -195,6 +197,11 @@ struct PlannedRunRecordView: View {
                 }
                 if !routeSegments.isEmpty {
                     ActivityRouteThumbnail(segments: routeSegments)
+                }
+                if let rateEffort, run.offersEffortRating {
+                    EffortRatingControl(activity: run) { effort in
+                        await rateEffort(run.id, effort)
+                    }
                 }
                 if let recordedRunID, let deleteRun {
                     RecordedRunDeleteButton(recordingID: recordedRunID, delete: deleteRun)

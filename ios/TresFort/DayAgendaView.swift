@@ -478,7 +478,10 @@ struct DayAgendaView: View {
             // not a count of sets.
             if let runSlot {
                 PlannedRunRecordView(slot: runSlot, run: run, routeAccess: sync.activityRouteAccess,
-                                     deleteRun: deleteRecordedRun)
+                                     deleteRun: deleteRecordedRun,
+                                     rateEffort: { id, effort in
+                                         await sync.rateActivityEffort(activityID: id, effort: effort)
+                                     })
             }
             if let session = realSession {
                 let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)

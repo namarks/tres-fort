@@ -121,7 +121,8 @@ What the sources can give (to confirm against real rows in each phase):
     a restore when the shown copy goes away. Covered by
     `test/activity_load.test.ts` ("effort rating").
   - The day view shows ten one-tap buttons on any workout without a measured
-    load (and keeps them once the rating scores it, to change or clear); the
+    load, a planned run's record included (and keeps them once the rating
+    scores it, to change or clear); the
     load is labeled "effort estimate" in the app and "estimated from your
     effort rating" on the web (`EffortRating.swift`,
     `EffortRatingTests.swift`).

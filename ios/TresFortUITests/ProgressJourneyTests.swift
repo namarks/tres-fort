@@ -65,7 +65,20 @@ final class ProgressJourneyTests: XCTestCase {
         capture("Activity history — workout record", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(soccer, in: app)
-        XCTAssertTrue(app.staticTexts["LOGGED ACTIVITIES"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.descendants(matching: .any)["dayAgenda.logged.synthetic-soccer"]
+            .waitForExistence(timeout: UITestWait.screen), "A logged activity opens on its own")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        // Yoga shares Sep 5 with the workout listed above it. Tapping it opens
+        // the yoga, not the workout above it.
+        let yoga = app.descendants(matching: .any)["activityHistory.entry.logged:synthetic-yoga"]
+        XCTAssertTrue(yoga.waitForExistence(timeout: UITestWait.screen))
+        XCTAssertLessThan(workout.frame.minY, yoga.frame.minY, "On one date, the workout lists first")
+        tap(yoga, in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["dayAgenda.logged.synthetic-yoga"]
+            .waitForExistence(timeout: UITestWait.screen), "The tapped row opens, not the one above it")
+        XCTAssertFalse(app.staticTexts["Exercises"].exists, "The workout above it does not open")
+        capture("Activity history — activity sharing a date with a workout", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
         tap(side.buttons["Progress"], in: app)

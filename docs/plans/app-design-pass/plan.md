@@ -1,6 +1,6 @@
 # App design pass
 
-Slug: app-design-pass · Status: active · Updated: 2026-11-03 · Theme: member-experience
+Slug: app-design-pass · Status: active · Updated: 2026-11-06 · Theme: member-experience
 
 ## Goal
 
@@ -114,9 +114,12 @@ it the place to look at past workouts and runs, which P8 addresses.
     logged by hand, such as soccer. A finished run workout shows once, as its
     run. Filter chips (All, Workouts, Runs, Rides, Swims, Walks, Other) list
     only the kinds the member has done.
-  - Tapping an entry opens that date's record, the same one the calendar
-    opens: the logged sets, a recorded run's route map and its delete, logged
-    activities and their notes.
+  - Tapping a workout opens that date's record, the same one the calendar
+    opens, with the logged sets. Tapping a run, ride or logged activity opens
+    that activity on its own: its stats, route map, charts and delete, or its
+    notes. Each row pushes its own navigation value; rows on one date used to
+    share one, so on the owner's iPhone (build 66) a tap highlighted and
+    opened the entry above the one tapped.
   - Progress keeps the consistency, strength, endurance and weight cards
     unchanged. Copy that pointed to Progress → Weight now says Activity →
     Progress → Weight, the privacy page included.

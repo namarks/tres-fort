@@ -59,6 +59,9 @@ struct ActivityHistory {
         /// Recorded in the app, so its record has a route map.
         let hasRoute: Bool
         let inProgress: Bool
+        /// What tapping the entry opens: one activity on its own, or the
+        /// whole date's record for a workout (nil).
+        let focus: DayAgendaFocus?
     }
 
     struct Month: Identifiable, Equatable {
@@ -114,7 +117,7 @@ struct ActivityHistory {
             out.append((Entry(id: "workout:" + session.id, date: session.date, kind: .workout,
                               category: .workouts, title: title, glyph: "dumbbell.fill",
                               details: details, attribution: nil, hasRoute: false,
-                              inProgress: inProgress), 0))
+                              inProgress: inProgress, focus: nil), 0))
         }
 
         for activity in liveActivities {
@@ -130,7 +133,8 @@ struct ActivityHistory {
                               category: Category.forKind(activity.kind), title: activity.displayTitle,
                               glyph: activity.glyph, details: details,
                               attribution: activity.source_attribution,
-                              hasRoute: activity.source == "recording", inProgress: false), 1))
+                              hasRoute: activity.source == "recording", inProgress: false,
+                              focus: .activity(activity.id)), 1))
         }
 
         for row in logged where row.deleted_at == nil && row.date <= today && !isHidden(row.date) {
@@ -145,7 +149,8 @@ struct ActivityHistory {
                               category: Category.forKind(row.type),
                               title: (title?.isEmpty == false ? title! : label),
                               glyph: PendingActivity.glyph(for: row.type), details: details,
-                              attribution: nil, hasRoute: false, inProgress: false), 2))
+                              attribution: nil, hasRoute: false, inProgress: false,
+                              focus: .logged(row.id)), 2))
         }
 
         // Newest date first; on one date, the workout, then activities, then

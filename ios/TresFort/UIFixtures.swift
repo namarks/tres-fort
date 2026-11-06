@@ -427,6 +427,11 @@ private struct UIFixtureServer {
               ProcessInfo.processInfo.environment["TRESFORT_UI_PROGRESS_EMPTY"] != "1" else { return [] }
         return [["id": "synthetic-soccer", "user_id": syntheticUserID, "date": "2026-09-07", "type": "other",
                  "title": "Soccer", "duration_minutes": 90, "notes": NSNull(), "logged_at": revision,
+                 "source": "ios", "deleted_at": NSNull(), "updated_at": revision],
+                // Shares its date with a finished workout, so History has two
+                // rows on one day and each must open itself.
+                ["id": "synthetic-yoga", "user_id": syntheticUserID, "date": "2026-09-05", "type": "yoga",
+                 "title": "Yoga", "duration_minutes": 30, "notes": NSNull(), "logged_at": revision,
                  "source": "ios", "deleted_at": NSNull(), "updated_at": revision]]
     }
 

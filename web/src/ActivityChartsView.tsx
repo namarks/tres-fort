@@ -76,7 +76,9 @@ function SeriesChart({ charts, series, index, onPoint, onLeave }: {
       <figcaption>
         <span className="chart-title">{series.title}</span>
         <span className="chart-value">
-          {reading !== null ? series.format(reading) : mean !== null ? `avg ${series.format(mean)}` : ''}
+          {index !== null
+            ? (reading !== null ? series.format(reading) : '–')
+            : (mean !== null ? `avg ${series.format(mean)}` : '')}
         </span>
       </figcaption>
       <div className="chart-body">

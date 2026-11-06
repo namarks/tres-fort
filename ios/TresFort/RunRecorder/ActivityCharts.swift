@@ -116,6 +116,9 @@ struct ActivityChartSeries: Equatable {
     }
 
     let axis: Axis
+    /// Every point's position on the axis, one per sample of the activity,
+    /// whether or not a series has a value there. A point's `id` indexes it.
+    let xs: [Double]
     /// The whole activity's span on the axis, shared by every chart so the
     /// same position is the same point in all of them, even where one
     /// series starts late or ends early.
@@ -151,6 +154,7 @@ struct ActivityChartSeries: Equatable {
         let xs: [Double] = (0..<n).map { i in
             byDistance ? (distances[i]! / unit.meters) : s.t[i] / 60
         }
+        self.xs = xs
         let lo = xs.min() ?? 0
         let hi = xs.max() ?? 0
         xDomain = lo...(hi > lo ? hi : lo + 1)
@@ -206,9 +210,16 @@ struct ActivityChartSeries: Equatable {
         return values.map { $0.map { min(max($0, lo), hi) } }
     }
 
-    /// The point nearest `x`, for the scrub read-out.
-    static func nearest(_ points: [Point], to x: Double) -> Point? {
-        points.min { abs($0.x - x) < abs($1.x - x) }
+    /// The sample nearest `x` on the shared axis, for the scrub read-out.
+    /// Every chart reads this one sample, so none borrows a value from
+    /// another part of the activity where its own series has a gap.
+    static func nearestIndex(_ xs: [Double], to x: Double) -> Int? {
+        xs.indices.min { abs(xs[$0] - x) < abs(xs[$1] - x) }
+    }
+
+    /// A series' value at sample `index`, or nil where it has none.
+    static func point(_ points: [Point], at index: Int) -> Point? {
+        points.first { $0.id == index }
     }
 
     var xUnitLabel: String {
@@ -271,6 +282,10 @@ struct ActivityChartsView: View {
     let series: ActivityChartSeries
     @State private var selectedX: Double?
 
+    private var selectedIndex: Int? {
+        selectedX.flatMap { ActivityChartSeries.nearestIndex(series.xs, to: $0) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if !series.pace.isEmpty {
@@ -293,7 +308,7 @@ struct ActivityChartsView: View {
                       axisLabel: { "\(Int($0.rounded()))" })
                     .accessibilityIdentifier("activity.chart.elevation")
             }
-            Text(selectedX.map { "At \(series.xText($0))" } ?? "Touch a chart to read a point.")
+            Text(selectedIndex.map { "At \(series.xText(series.xs[$0]))" } ?? "Touch a chart to read a point.")
                 .font(.caption)
                 .foregroundStyle(Theme.dim)
         }
@@ -308,7 +323,8 @@ struct ActivityChartsView: View {
                        average overall: Double? = nil,
                        value: @escaping (Double) -> String,
                        axisLabel: @escaping (Double) -> String) -> some View {
-        let reading = selectedX.flatMap { ActivityChartSeries.nearest(points, to: $0) }
+        let index = selectedIndex
+        let reading = index.flatMap { ActivityChartSeries.point(points, at: $0) }
         let average = overall ?? points.map(\.y).reduce(0, +) / Double(max(1, points.count))
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
@@ -316,7 +332,7 @@ struct ActivityChartsView: View {
                     .font(Theme.mono(9, .bold)).tracking(1)
                     .foregroundStyle(Theme.dim)
                 Spacer()
-                Text(reading.map { value($0.y) } ?? "avg \(value(average))")
+                Text(index == nil ? "avg \(value(average))" : reading.map { value($0.y) } ?? "–")
                     .font(Theme.mono(13, .bold))
                     .foregroundStyle(Theme.text)
             }
@@ -329,9 +345,11 @@ struct ActivityChartsView: View {
                         .lineStyle(StrokeStyle(lineWidth: 2))
                         .interpolationMethod(.monotone)
                 }
-                if let reading {
-                    RuleMark(x: .value(series.xUnitLabel, reading.x))
+                if let index {
+                    RuleMark(x: .value(series.xUnitLabel, series.xs[index]))
                         .foregroundStyle(Theme.muted)
+                }
+                if let reading {
                     PointMark(x: .value(series.xUnitLabel, reading.x), y: .value(title, reading.y))
                         .foregroundStyle(color)
                 }

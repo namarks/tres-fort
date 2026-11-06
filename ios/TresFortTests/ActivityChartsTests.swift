@@ -94,7 +94,19 @@ final class ActivityChartsTests: XCTestCase {
 
     func testTheReadOutFindsTheNearestPoint() throws {
         let series = try XCTUnwrap(ActivityChartSeries(streams: try decode().streams, kind: "run", unit: .kilometers))
-        XCTAssertEqual(ActivityChartSeries.nearest(series.heartRate, to: 0.031)?.y, 141)
+        let index = try XCTUnwrap(ActivityChartSeries.nearestIndex(series.xs, to: 0.031))
+        XCTAssertEqual(index, 1)
+        XCTAssertEqual(ActivityChartSeries.point(series.heartRate, at: index)?.y, 141)
+    }
+
+    func testTheReadOutShowsNothingWhereASeriesHasAGap() throws {
+        // Heart rate is missing at 0.075 km; the read-out must not borrow
+        // the neighboring 143 or 150 bpm.
+        let series = try XCTUnwrap(ActivityChartSeries(streams: try decode().streams, kind: "run", unit: .kilometers))
+        let index = try XCTUnwrap(ActivityChartSeries.nearestIndex(series.xs, to: 0.074))
+        XCTAssertEqual(index, 4)
+        XCTAssertNil(ActivityChartSeries.point(series.heartRate, at: index))
+        XCTAssertEqual(ActivityChartSeries.point(series.elevation, at: index)?.y, 12)
     }
 
     func testTheStoreReadsOncePerAccountAndRemembersNothingToChartBriefly() async throws {

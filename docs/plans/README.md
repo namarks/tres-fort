@@ -192,7 +192,8 @@ integration or social breadth.
   rate and elevation charts for a run in the app and on the web, from
   intervals.icu streams read live or the route Tres Fort keeps, with a
   private heart-rate series kept for recorded and Apple Health runs. P0's
-  chart series endpoint and P1's charts in the app are in the repository.
+  chart series endpoint, P1's charts in the app and P2's charts on the web
+  are in the repository.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach or the member plans runs with steps and pace or
   heart rate targets in the Tres Fort plan, and the recorder follows them

@@ -60,9 +60,12 @@ group views or coach tools.
     (`ActivityStreamsStore`); "nothing to chart" is remembered for ten
     minutes and a failed read is tried again. A chart with no data is left
     out.
-- [ ] **P2 — Charts on the web**
-  - The same three charts under the web run's route map, as inline SVG with
-    a hover read-out, following the Ink palette.
+- [x] **P2 — Charts on the web**
+  - The same charts under each completed activity in the web day panel
+    (`web/src/ActivityChartsView.tsx`, pure series and paths in
+    `web/src/activityCharts.ts`), as inline SVG in the Ink palette for light
+    and dark. Pointing at or touching any chart reads all of them at that
+    point; with no pointer each shows its average.
 - [ ] **P3 — Heart rate for recorded and Apple Health runs**
   - A new migration adds a private per-activity heart-rate series table in
     a compact delta encoding, filled from the recorder's TCX upload, `.fit`
@@ -76,7 +79,7 @@ group views or coach tools.
 
 ## Execution frontier
 
-- P2
+- P3
 
 ## Dependencies
 
@@ -90,9 +93,11 @@ series, so it can follow P1 or run beside it.
 
 ## Next step
 
-**Now (@agent):** Build P2, the charts on the web. P0 reaches production
-with the next API deploy and P1 with the next TestFlight build, each on the
-owner's written go-ahead.
+**Now (@agent):** Build P3, the heart-rate series for recorded and Apple
+Health runs, after the run summary work's migration lands. P0 reaches
+production with the next API deploy, P1 with the next TestFlight build and
+P2 with the next `tres-fort-web` deploy, each on the owner's written
+go-ahead.
 
 ## Verification evidence
 
@@ -108,6 +113,11 @@ owner's written go-ahead.
   points, speed for a ride, heart-rate-only activities over moving time,
   the percentile clamp, the scrub read-out, the per-account store and which
   activities ask for series.
+- P2: `web/test/activityCharts.test.ts` covers kilometers and miles, speed
+  for a ride, heart rate over moving time, nothing to draw, line breaks and
+  reversed pace, the percentile clamp, the read-out and which activities
+  are charted. A browser render with mocked series was checked in light and
+  dark.
 
 ## Notes / open questions
 

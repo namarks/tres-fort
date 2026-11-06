@@ -9,6 +9,7 @@ import type {
 } from '../../src/types';
 import type { CatalogExercise } from './editing';
 import type { ActivityRouteResponse } from './routeMap';
+import type { ActivityStreamsResponse } from './activityCharts';
 
 /** The plan tree as GET /api/state returns it, with parsed plan meta. */
 export type StatePlan = PlanTree & {
@@ -81,6 +82,17 @@ export const fetchExercises = () => getJson<CatalogExercise[]>('/api/exercises')
 export async function fetchActivityRoute(activityId: string): Promise<ActivityRouteResponse | null> {
   try {
     return await getJson<ActivityRouteResponse>(`/api/activities/${encodeURIComponent(activityId)}/route`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** An activity's pace, heart rate and elevation series, or null when it has
+ * nothing to chart. The member's own only. */
+export async function fetchActivityStreams(activityId: string): Promise<ActivityStreamsResponse | null> {
+  try {
+    return await getJson<ActivityStreamsResponse>(`/api/activities/${encodeURIComponent(activityId)}/streams`);
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;

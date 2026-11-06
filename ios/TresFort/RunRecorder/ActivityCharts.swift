@@ -116,6 +116,10 @@ struct ActivityChartSeries: Equatable {
     }
 
     let axis: Axis
+    /// The whole activity's span on the axis, shared by every chart so the
+    /// same position is the same point in all of them, even where one
+    /// series starts late or ends early.
+    let xDomain: ClosedRange<Double>
     /// Seconds per mile or kilometer; for a ride, mph or km/h.
     let pace: [Point]
     let paceIsSpeed: Bool
@@ -144,6 +148,9 @@ struct ActivityChartSeries: Equatable {
         let xs: [Double] = (0..<n).map { i in
             byDistance ? (distances[i]! / unit.meters) : s.t[i] / 60
         }
+        let lo = xs.min() ?? 0
+        let hi = xs.max() ?? 0
+        xDomain = lo...(hi > lo ? hi : lo + 1)
 
         paceIsSpeed = kind == "ride"
         let paceValues: [Double?] = (0..<n).map { i in
@@ -319,6 +326,7 @@ struct ActivityChartsView: View {
                 }
             }
             .chartLegend(.hidden)
+            .chartXScale(domain: series.xDomain)
             .chartXSelection(value: $selectedX)
             .chartYScale(domain: .automatic(includesZero: false, reversed: reversed))
             .chartXAxis {

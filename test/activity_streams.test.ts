@@ -83,14 +83,20 @@ describe('buildActivityStreams', () => {
     expect(s.heart_rate).toHaveLength(60);
   });
 
-  it('ignores impossible heart rates and GPS jumps', () => {
+  it('ignores impossible heart rates', () => {
     const track = steady(120, 3);
-    track[60] = { ...track[60]!, d: track[60]!.d! + 5000 };
     const hr = track.map((s) => ({ t: s.t, v: s.t < 60 ? 300 : 140 }));
     const s = buildActivityStreams(track, hr)!;
     expect(s.heart_rate!.slice(0, 12).every((v) => v === null)).toBe(true);
     expect(s.heart_rate!.slice(13).every((v) => v === 140)).toBe(true);
-    expect(s.speed_mps!.some((v) => v === null)).toBe(true);
+  });
+
+  it('skips a one-sample GPS jump instead of carrying it to the end', () => {
+    const track = steady(600, 3);
+    track[60] = { ...track[60]!, d: track[60]!.d! + 5000 };
+    const s = buildActivityStreams(track)!;
+    expect(s.total_distance_m).toBe(1800);
+    expect(s.speed_mps!.every((v) => v !== null && Math.abs(v - 3) < 0.05)).toBe(true);
   });
 
   it('is null for a blip too short to chart', () => {

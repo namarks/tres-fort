@@ -33,6 +33,16 @@ final class ActivityChartsTests: XCTestCase {
         XCTAssertEqual(series.climb, 7)
     }
 
+    func testEveryChartSharesTheWholeActivitysAxis() throws {
+        // Heart rate missing at the start must not stretch its chart.
+        let text = Self.json.replacingOccurrences(of: "\"heart_rate\":[140,141,142,143,null,",
+                                                  with: "\"heart_rate\":[null,null,null,null,null,")
+        let series = try XCTUnwrap(ActivityChartSeries(streams: try decode(text).streams, kind: "run", unit: .kilometers))
+        XCTAssertEqual(series.heartRate.first?.x ?? 0, 0.09, accuracy: 1e-9)
+        XCTAssertEqual(series.xDomain.lowerBound, 0.015, accuracy: 1e-9)
+        XCTAssertEqual(series.xDomain.upperBound, 0.205, accuracy: 1e-9)
+    }
+
     func testStandingStillAndMissingPointsBreakTheLine() throws {
         let series = try XCTUnwrap(ActivityChartSeries(streams: try decode().streams, kind: "run", unit: .miles))
         // 0.2 m/s is standing still and null is no data: the pace line

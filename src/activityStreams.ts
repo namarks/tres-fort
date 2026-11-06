@@ -268,13 +268,19 @@ export function buildActivityStreams(
   const count = Math.max(1, Math.ceil(clock.total / width));
 
   // Distance at the end of each bucket, and the moving time it was reached:
-  // the last known value at or before it.
+  // the last accepted value at or before it. A reading that goes backwards,
+  // or forwards faster than a person moves since the last accepted one, is a
+  // glitch and is skipped, so one bad sample can't hold the distance up for
+  // the rest of the activity.
   const lastD = new Array<number | null>(count).fill(null);
   const lastM = new Array<number>(count).fill(0);
+  let accepted: { d: number; m: number } | null = null;
   for (const s of track) {
     if (s.d === null) continue;
     const m = clock.moving(s.t);
     if (m === null) continue;
+    if (accepted && (s.d < accepted.d || s.d - accepted.d > MAX_SPEED_MPS * Math.max(1, m - accepted.m))) continue;
+    accepted = { d: s.d, m };
     const b = Math.min(count - 1, Math.floor(m / width));
     if (lastD[b] === null || s.d >= lastD[b]!) {
       lastD[b] = s.d;

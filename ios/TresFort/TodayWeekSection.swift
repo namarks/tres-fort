@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Today's look ahead: Monday–Sunday weeks in the calendar's own day cells,
-/// opening on the current week and paging sideways into the next few, then
+/// Today's look ahead: the visible week as a fort (`WeekFortView`), then
+/// Monday–Sunday weeks in the calendar's own day cells, opening on the
+/// current week and paging sideways into the next few, then
 /// the next few days that carry a workout or planned ride, and the route to
 /// the full calendar. Tapping a day opens the same date sheet the calendar
 /// uses, so assigning or replacing a workout works from here too.
@@ -52,6 +53,11 @@ struct TodayWeekSection: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("today.calendar")
+            }
+            if !weeks.isEmpty {
+                // The week on screen as a fort: trained days rise in orange.
+                WeekFortView(title: Self.title(forWeek: page, days: weeks[page]),
+                             days: WeekFort.days(for: weeks[page], sync: sync))
             }
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {

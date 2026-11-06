@@ -128,7 +128,7 @@ struct WorkoutPrimaryButtonStyle: ButtonStyle {
     enum Size { case regular, large }
     var size: Size = .regular
     /// Still available but not the loudest thing on screen (logging during
-    /// rest, stopping a timed set): accent outline instead of an accent fill.
+    /// rest, stopping a timed set): signal outline instead of a signal fill.
     var quiet = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
@@ -138,9 +138,9 @@ struct WorkoutPrimaryButtonStyle: ButtonStyle {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: size == .large ? 58 : 48)
-            .foregroundStyle(!isEnabled ? Theme.muted : quiet ? Theme.accent : Theme.onAccent)
-            .background(isEnabled && !quiet ? Theme.accent : Theme.surface2)
-            .overlay(shape.strokeBorder(Theme.accent.opacity(isEnabled && quiet ? 0.6 : 0), lineWidth: 1))
+            .foregroundStyle(!isEnabled ? Theme.muted : quiet ? Theme.signal : Theme.onSignal)
+            .background(isEnabled && !quiet ? Theme.signal : Theme.surface2)
+            .overlay(shape.strokeBorder(Theme.signal.opacity(isEnabled && quiet ? 0.6 : 0), lineWidth: 1))
             .clipShape(shape)
             .contentShape(shape)
             .opacity(configuration.isPressed ? 0.8 : 1)

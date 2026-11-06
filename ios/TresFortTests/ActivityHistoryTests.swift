@@ -65,6 +65,26 @@ final class ActivityHistoryTests: XCTestCase {
         XCTAssertEqual(soccer.details, ["1h 30m", "Other"])
     }
 
+    func testEntriesOnOneDateEachOpenThemselves() {
+        // A workout and a run on one date: tapping the run must open the run,
+        // not the workout listed above it.
+        let result = history(
+            sessions: [session("s1", "2026-11-02")],
+            activities: [activity("r1", "2026-11-02"), activity("r2", "2026-11-02", name: "Second run")],
+            logged: [logged("l1", "2026-11-02")],
+            sets: ["s1": 12])
+        let focus = Dictionary(uniqueKeysWithValues: result.entries.map { ($0.id, $0.focus) })
+        XCTAssertEqual(focus.count, 4)
+        XCTAssertEqual(focus["workout:s1"], .some(nil), "A workout opens its whole date")
+        XCTAssertEqual(focus["activity:r1"], .activity("r1"))
+        XCTAssertEqual(focus["activity:r2"], .activity("r2"))
+        XCTAssertEqual(focus["logged:l1"], .logged("l1"))
+        let opened = result.entries.map {
+            ActivityHistoryDay(entryID: $0.id, date: $0.date, focus: $0.focus)
+        }
+        XCTAssertEqual(Set(opened).count, opened.count, "No two rows push the same value")
+    }
+
     func testOnlyFinishedOrStartedWorkoutsUpToTodayAppearOnce() {
         let result = history(sessions: [
             session("done", "2026-11-01"),

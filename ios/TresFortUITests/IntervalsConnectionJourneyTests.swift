@@ -103,7 +103,7 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: UITestWait.screen), .completed)
 
         // Activity opens on History, which lists the run with its distance
-        // and opens that date's record.
+        // and opens that run.
         tap(app.tabBars.buttons["Activity"], in: app)
         let run = app.descendants(matching: .any).matching(NSPredicate(
             format: "identifier BEGINSWITH 'activityHistory.entry.activity:' AND label CONTAINS %@", "3.1 mi")).firstMatch
@@ -118,7 +118,9 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         history.lifetime = .keepAlways
         add(history)
         tap(run, in: app)
-        XCTAssertTrue(app.staticTexts["COMPLETED ACTIVITIES"].waitForExistence(timeout: UITestWait.screen))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH 'dayAgenda.activity.'")).firstMatch
+            .waitForExistence(timeout: UITestWait.screen), "A run opens on its own")
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
         tap(app.segmentedControls["activity.side"].buttons["Progress"], in: app)

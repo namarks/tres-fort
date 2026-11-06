@@ -16,9 +16,19 @@ import CoreLocation
 // session — that precedence lives entirely in CalendarProjection (the
 // frozen algorithm); this view only renders whatever it returns.
 
+/// One activity on a date, opened on its own from Activity → History.
+enum DayAgendaFocus: Hashable {
+    /// A run, ride, swim or other activity from a provider or the recorder.
+    case activity(String)
+    /// An activity the member logged by hand.
+    case logged(String)
+}
+
 struct DayAgendaView: View {
     @ObservedObject var sync: SyncModel
     let dateString: String
+    /// Shows only this activity instead of the whole date.
+    var focus: DayAgendaFocus? = nil
     var onStartWorkout: (() -> Void)? = nil
     @State private var showDateEditor = false
     @State private var showFreestyle = false
@@ -55,29 +65,10 @@ struct DayAgendaView: View {
             Theme.bg.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    header(proj, today: today)
-                    if let error = sync.loadError {
-                        Text(error)
-                            .font(Theme.mono(12))
-                            .foregroundStyle(Theme.danger)
-                            .accessibilityIdentifier("calendarOverrideError")
-                    }
-                    if let workoutStartError {
-                        Text(workoutStartError).font(.subheadline).foregroundStyle(Theme.muted)
-                    }
-                    todayWorkoutAction(proj, today: today)
-                    content(proj, today: today)
-                    if dateString == today, sync.canStartFreestyle {
-                        Button("Start freestyle", systemImage: "figure.strengthtraining.traditional") { showFreestyle = true }
-                            .frame(minHeight: 44).accessibilityIdentifier("calendar.startFreestyle")
-                    }
-                    // On a can_train_light=false blackout the backend projects
-                    // items: [] — so suppress the endurance cards here too, or a
-                    // blackout day would still show training to do (Codex #61 P2).
-                    if !proj.suppressesScheduleAndEndurance {
-                        loggedActivitiesSection
-                        completedActivitiesSection
-                        ridesSection
+                    if let focus {
+                        focusedEntry(focus)
+                    } else {
+                        dayContent(proj, today: today)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -109,6 +100,59 @@ struct DayAgendaView: View {
             Text("This date becomes a rest day. The saved workout and weekly schedule stay available.")
         }
         .recordedRunDeleteAlert($recordedRunDeleteOutcome)
+    }
+
+    /// The whole date: its workout or record, then logged and completed
+    /// activities and rides.
+    @ViewBuilder private func dayContent(_ proj: DayProjection, today: String) -> some View {
+        header(proj, today: today)
+        if let error = sync.loadError {
+            Text(error)
+                .font(Theme.mono(12))
+                .foregroundStyle(Theme.danger)
+                .accessibilityIdentifier("calendarOverrideError")
+        }
+        if let workoutStartError {
+            Text(workoutStartError).font(.subheadline).foregroundStyle(Theme.muted)
+        }
+        todayWorkoutAction(proj, today: today)
+        content(proj, today: today)
+        if dateString == today, sync.canStartFreestyle {
+            Button("Start freestyle", systemImage: "figure.strengthtraining.traditional") { showFreestyle = true }
+                .frame(minHeight: 44).accessibilityIdentifier("calendar.startFreestyle")
+        }
+        // On a can_train_light=false blackout the backend projects
+        // items: [] — so suppress the endurance cards here too, or a
+        // blackout day would still show training to do (Codex #61 P2).
+        if !proj.suppressesScheduleAndEndurance {
+            loggedActivitiesSection
+            completedActivitiesSection
+            ridesSection
+        }
+    }
+
+    /// One activity on its own, opened from History.
+    @ViewBuilder private func focusedEntry(_ focus: DayAgendaFocus) -> some View {
+        switch focus {
+        case .activity(let id):
+            if let activity = sync.activities(on: dateString).first(where: { $0.id == id }) {
+                activityCard(activity)
+            } else {
+                focusedEntryGone
+            }
+        case .logged(let id):
+            if let activity = sync.manualActivities(on: dateString).first(where: { $0.id == id }) {
+                loggedActivityCard(activity)
+            } else {
+                focusedEntryGone
+            }
+        }
+    }
+
+    private var focusedEntryGone: some View {
+        Text("This activity is no longer here.")
+            .font(.subheadline).foregroundStyle(Theme.muted)
+            .accessibilityIdentifier("dayAgenda.focusGone")
     }
 
     /// Deletes a run recorded in the app and keeps the outcome for the alert.
@@ -623,6 +667,8 @@ struct DayAgendaView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dayAgenda.logged." + a.id)
     }
 
     // MARK: read-only completed activities (intervals.icu actuals)
@@ -721,6 +767,8 @@ struct DayAgendaView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dayAgenda.activity." + a.id)
     }
 
     /// The heart rate drop after a run recorded with a strap (run-recorder P7).

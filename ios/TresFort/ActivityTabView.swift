@@ -2,9 +2,13 @@ import SwiftUI
 
 enum ActivitySide: Hashable { case history, progress }
 
-/// A date opened from History.
+/// An entry opened from History. Each row pushes its own value: rows that
+/// share a date must not share one, or the list highlights and opens the
+/// first row with that value instead of the one tapped.
 struct ActivityHistoryDay: Hashable {
+    let entryID: String
     let date: String
+    let focus: DayAgendaFocus?
 }
 
 /// The Activity tab. History lists what the member has done, newest first,
@@ -41,7 +45,8 @@ struct ActivityTabView: View {
             .navigationTitle("Activity")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: ActivityHistoryDay.self) { day in
-                DayAgendaView(sync: sync, dateString: day.date, onStartWorkout: onShowWorkout)
+                DayAgendaView(sync: sync, dateString: day.date, focus: day.focus,
+                              onStartWorkout: onShowWorkout)
                     .navigationTitle(ActivityHistory.dayTitle(day.date))
                     .navigationBarTitleDisplayMode(.inline)
             }
@@ -94,7 +99,8 @@ struct ActivityHistoryView: View {
             ForEach(months) { month in
                 Section {
                     ForEach(month.entries) { entry in
-                        NavigationLink(value: ActivityHistoryDay(date: entry.date)) {
+                        NavigationLink(value: ActivityHistoryDay(entryID: entry.id, date: entry.date,
+                                                                 focus: entry.focus)) {
                             ActivityHistoryRow(entry: entry)
                         }
                         .accessibilityIdentifier("activityHistory.entry." + entry.id)

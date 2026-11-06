@@ -166,6 +166,22 @@ describe('Apple Health workouts keep their heart rate', () => {
     expect(s.heart_rate[107]).toBe(170);
   });
 
+  it('still charts heart rate when the route is a single fix', async () => {
+    const me = await member();
+    const healthId = crypto.randomUUID();
+    const activityId = await push(me.jwt, healthId, { streams: { heart_rate: heartRate } });
+    const put = await SELF.fetch(`${BASE}/api/activities/healthkit/${healthId}/route`, {
+      method: 'PUT', headers: auth(me.jwt),
+      body: JSON.stringify({ route: encodeRoute([[{ t: START_MS, lat: 45.519, lon: -122.6793, alt: 15 }]]) }),
+    });
+    expect(put.status).toBe(200);
+    const res = await streams(me.jwt, activityId);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ activity_id: activityId, source: 'healthkit' });
+    expect(res.body.streams).toMatchObject({ moving_s: 299, distance_m: null, speed_mps: null });
+    expect(res.body.streams.heart_rate[0]).toBe(130);
+  });
+
   it('replaces the series on a later push, keeps it when streams are left out and clears it when they have none', async () => {
     const me = await member();
     const healthId = crypto.randomUUID();

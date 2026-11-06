@@ -9751,11 +9751,18 @@ export async function getActivityStreams(
   const shift = stored?.route && heart?.series.start_ms != null
     ? (stored.route.start_ms - heart.series.start_ms) / 1000 : 0;
   const readings = heart ? decodeHeartRate(heart.series).map((r) => ({ t: r.t - shift, v: r.v })) : [];
-  const streams = track.length > 0 || heart
+  const withRoute = track.length > 0 || heart
     ? buildActivityStreams(track, readings, { heartRateClock: 'moving' })
     : null;
-  const charted = stored?.route ? stored : heart;
-  if (charted && streams) return { ok: true, activity_id: charted.activity_id, source: charted.source, streams };
+  if (stored?.route && withRoute) {
+    return { ok: true, activity_id: stored.activity_id, source: stored.source, streams: withRoute };
+  }
+  // No route, or one too short to chart (a single fix): heart rate alone, on
+  // its own clock.
+  const heartOnly = heart && track.length > 0
+    ? buildActivityStreams([], decodeHeartRate(heart.series), { heartRateClock: 'moving' })
+    : withRoute;
+  if (heart && heartOnly) return { ok: true, activity_id: heart.activity_id, source: heart.source, streams: heartOnly };
   return { ok: false, reason: provider.reason };
 }
 

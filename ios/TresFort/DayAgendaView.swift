@@ -659,15 +659,17 @@ struct DayAgendaView: View {
     /// and the route map of a run recorded in the app, which can be deleted
     /// here.
     private func activityCard(_ a: ExternalActivity) -> some View {
-        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments, recordingID in
+        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments, recordingID, recovery in
             activityCardContent(a, routeSegments: segments,
-                                recordedRunID: a.recordedRunID(routeRecordingID: recordingID))
+                                recordedRunID: a.recordedRunID(routeRecordingID: recordingID),
+                                recovery: recovery)
         }
     }
 
     private func activityCardContent(_ a: ExternalActivity,
                                      routeSegments: [[CLLocationCoordinate2D]],
-                                     recordedRunID: String?) -> some View {
+                                     recordedRunID: String?,
+                                     recovery: HeartRateRecovery?) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: a.glyph)
@@ -679,7 +681,7 @@ struct DayAgendaView: View {
             }
 
             SourceAttributionLabel(text: a.source_attribution)
-            let stats = activityStats(a)
+            let stats = activityStats(a) + recoveryStats(recovery)
             if !stats.isEmpty {
                 LazyVGrid(
                     columns: [
@@ -718,6 +720,12 @@ struct DayAgendaView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// The heart rate drop after a run recorded with a strap (run-recorder P7).
+    private func recoveryStats(_ recovery: HeartRateRecovery?) -> [(label: String, value: String)] {
+        guard let summary = recovery?.summary else { return [] }
+        return [(label: "HR Recovery", value: summary)]
     }
 
     /// The present (non-nil) basic stats, in display order — duration and

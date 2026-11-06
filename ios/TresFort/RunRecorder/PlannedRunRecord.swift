@@ -151,13 +151,15 @@ struct PlannedRunRecordView: View {
     private var unit: RunDistanceUnit { RunDistanceUnit(rawValue: unitRaw) ?? .miles }
 
     var body: some View {
-        WithActivityRoute(activity: run, access: routeAccess) { segments, recordingID in
+        WithActivityRoute(activity: run, access: routeAccess) { segments, recordingID, recovery in
             record(routeSegments: segments,
-                   recordedRunID: run?.recordedRunID(routeRecordingID: recordingID))
+                   recordedRunID: run?.recordedRunID(routeRecordingID: recordingID),
+                   recovery: recovery)
         }
     }
 
-    private func record(routeSegments: [[CLLocationCoordinate2D]], recordedRunID: String?) -> some View {
+    private func record(routeSegments: [[CLLocationCoordinate2D]], recordedRunID: String?,
+                        recovery: HeartRateRecovery?) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "figure.run")
@@ -172,10 +174,14 @@ struct PlannedRunRecordView: View {
                 SourceAttributionLabel(text: run.source_attribution)
                 let record = PlannedRunRecord(run: run, plan: slot.runPlan,
                                               plannedSeconds: slot.target_duration_s, unit: unit)
+                // The heart rate drop after the stop, for a run recorded with a strap (P7).
+                let rows = record.rows + (recovery?.summary.map {
+                    [PlannedRunRecord.Row(id: "recovery", label: "HR recovery", value: $0)]
+                } ?? [])
                 LazyVGrid(columns: [GridItem(.flexible(), alignment: .topLeading),
                                     GridItem(.flexible(), alignment: .topLeading)],
                           alignment: .leading, spacing: 14) {
-                    ForEach(record.rows) { row in
+                    ForEach(rows) { row in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(row.label.uppercased())
                                 .font(Theme.mono(9, .bold)).tracking(1)

@@ -187,7 +187,9 @@ integration or social breadth.
   spoken splits are in the repository. Real runs are
   checked on the owner's iPhone. P4 adds auto-pause and a glanceable
   running display. P5 has Tres Fort keep each recorded run and its GPS
-  route itself, with intervals.icu an optional copy.
+  route itself, with intervals.icu an optional copy. P6 maps runs the app
+  didn't record. P7 keeps a strap's heart rate live on the run summary and
+  records how far it falls one and two minutes after the stop.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach or the member plans runs with steps and pace or
   heart rate targets in the Tres Fort plan, and the recorder follows them

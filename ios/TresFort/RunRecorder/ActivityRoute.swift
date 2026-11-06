@@ -60,6 +60,9 @@ struct ActivityRouteResponse: Decodable, Equatable {
     let recording_id: String?
     /// Nil for a run recorded without GPS fixes.
     let route: EncodedActivityRoute?
+    /// The recorded run's heart rate after the stop (P7). Nil for other
+    /// routes, a run recorded without it, and from an older server.
+    var heart_rate_recovery: HeartRateRecovery? = nil
 }
 
 extension APIClient {
@@ -235,28 +238,31 @@ extension ExternalActivity {
 /// segments to `content`: none until the route arrives, and none for an
 /// activity that can't have one. `content` also gets the recording behind
 /// the route, if any, which is how the intervals.icu copy of a run recorded
-/// in the app is known to be one.
+/// in the app is known to be one, and that recording's heart rate recovery.
 struct WithActivityRoute<Content: View>: View {
     let activity: ExternalActivity?
     let access: ActivityRouteAccess?
-    @ViewBuilder let content: (_ segments: [[CLLocationCoordinate2D]], _ recordingID: String?) -> Content
+    @ViewBuilder let content: (_ segments: [[CLLocationCoordinate2D]], _ recordingID: String?,
+                               _ recovery: HeartRateRecovery?) -> Content
     @State private var loaded: LoadedRoute?
 
     private struct LoadedRoute {
         let activityID: String
         let recordingID: String?
         let segments: [[CLLocationCoordinate2D]]
+        let recovery: HeartRateRecovery?
     }
 
     var body: some View {
         let current = loaded?.activityID == activity?.id ? loaded : nil
-        content(current?.segments ?? [], current?.recordingID)
+        content(current?.segments ?? [], current?.recordingID, current?.recovery)
             .task(id: activity?.id) {
                 guard let activity, activity.mayHaveRoute, let access else { return }
                 let route = await ActivityRouteStore.shared.route(for: activity.id, access: access)
                 guard !Task.isCancelled else { return }
                 loaded = LoadedRoute(activityID: activity.id, recordingID: route?.recording_id,
-                                     segments: route?.route?.drawableSegments ?? [])
+                                     segments: route?.route?.drawableSegments ?? [],
+                                     recovery: route?.heart_rate_recovery)
             }
     }
 }

@@ -252,6 +252,53 @@ describe('POST /api/activities/recordings', () => {
     expect(again).toMatchObject({ status: 200, body: { deduplicated: true, intervals: { status: 'not_connected' } } });
   });
 
+  it('keeps the heart rate after the stop with the run and serves it with the route (P7)', async () => {
+    const member = await memberJwt();
+    const id = crypto.randomUUID();
+    const activityId = `recording:activity:${member.id}:${id}`;
+    const res = await post(member.jwt, recordingForm({
+      id, date: DATE, recovery_hr_at_stop: '165', recovery_hr_after_60s: '137', recovery_hr_after_120s: '121',
+    }, tcxFile(id)));
+    expect(res.status).toBe(201);
+    const served = await route(member.jwt, activityId);
+    expect(served.body.heart_rate_recovery).toEqual({ at_stop: 165, after_60s: 137, after_120s: 121 });
+    // The cool-down never changes the run's own figures.
+    const row = await env.DB.prepare('SELECT average_hr, max_hr, moving_time_sec FROM external_activities WHERE id = ?1')
+      .bind(activityId).first<Record<string, number | null>>();
+    const plain = crypto.randomUUID();
+    await post(member.jwt, recordingForm({ id: plain, date: DATE }, tcxFile(plain)));
+    const plainRow = await env.DB.prepare('SELECT average_hr, max_hr, moving_time_sec FROM external_activities WHERE id = ?1')
+      .bind(`recording:activity:${member.id}:${plain}`).first<Record<string, number | null>>();
+    expect(row).toEqual(plainRow);
+    expect((await route(member.jwt, `recording:activity:${member.id}:${plain}`)).body.heart_rate_recovery).toBeNull();
+
+    // A retry never replaces a kept value, but fills one an earlier attempt lacked.
+    await post(member.jwt, recordingForm({ id, date: DATE, recovery_hr_at_stop: '150' }, tcxFile(id)));
+    expect((await route(member.jwt, activityId)).body.heart_rate_recovery.at_stop).toBe(165);
+    await post(member.jwt, recordingForm({ id: plain, date: DATE, recovery_hr_at_stop: '158', recovery_hr_after_60s: '130' },
+      tcxFile(plain)));
+    expect((await route(member.jwt, `recording:activity:${member.id}:${plain}`)).body.heart_rate_recovery)
+      .toEqual({ at_stop: 158, after_60s: 130, after_120s: null });
+  });
+
+  it('refuses malformed heart rate recovery before keeping anything', async () => {
+    const member = await memberJwt();
+    const malformed: Record<string, string>[] = [
+      { recovery_hr_at_stop: 'fast' },
+      { recovery_hr_at_stop: '300' },
+      { recovery_hr_at_stop: '150.5' },
+      { recovery_hr_after_60s: '130' },
+    ];
+    for (const fields of malformed) {
+      const id = crypto.randomUUID();
+      const res = await post(member.jwt, recordingForm({ id, date: DATE, ...fields }, tcxFile(id)));
+      expect(res).toEqual({ status: 400, body: { error: 'invalid_recovery' } });
+      const kept = await env.DB.prepare('SELECT COUNT(*) AS n FROM external_activities WHERE external_id = ?1')
+        .bind(id).first<{ n: number }>();
+      expect(kept!.n).toBe(0);
+    }
+  });
+
   it('keeps the run and reports a write rejection without disconnecting the read credential', async () => {
     const jwt = await devJwt();
     const id = crypto.randomUUID();
@@ -354,6 +401,7 @@ describe('a recorded run among other copies of the same run', () => {
 
     const served = await route(member.jwt, intervals);
     expect(served).toMatchObject({ status: 200, body: { activity_id: recording, recording_id: id } });
+    expect(served.body.heart_rate_recovery).toBeNull();
     expect((await route(member.jwt, recording)).status).toBe(200);
     // Another member never sees it, even with the ids.
     const stranger = await memberJwt();
@@ -368,13 +416,15 @@ describe('a recorded run among other copies of the same run', () => {
     expect((await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id, noGps)))).status).toBe(201);
     const recording = `recording:activity:${member.id}:${id}`;
     expect(await route(member.jwt, recording)).toEqual({
-      status: 200, body: { activity_id: recording, source: 'recording', recording_id: id, route: null },
+      status: 200,
+      body: { activity_id: recording, source: 'recording', recording_id: id, route: null, heart_rate_recovery: null },
     });
     const intervals = await insertActivity(member.id, 'intervals', 'i991', START_MS - 2_000);
     await dedupeHealthKitAgainstIntervals(env.DB, member.id);
     expect(await state(recording)).toMatchObject({ duplicate_of: intervals });
     expect(await route(member.jwt, intervals)).toEqual({
-      status: 200, body: { activity_id: recording, source: 'recording', recording_id: id, route: null },
+      status: 200,
+      body: { activity_id: recording, source: 'recording', recording_id: id, route: null, heart_rate_recovery: null },
     });
     const stranger = await memberJwt();
     expect((await route(stranger.jwt, intervals)).status).toBe(404);

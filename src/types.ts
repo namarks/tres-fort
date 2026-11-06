@@ -375,6 +375,11 @@ export interface ExternalActivityRow {
   /** The member's own 1–10 "How hard was it?" (migration 0066); scores the
    * workout only when nothing measured does (load_method 'effort'). */
   effort?: number | null;
+  /** Heart rate at the stop of a run recorded in the app, and one and two
+   * minutes after it (migration 0067); only on source='recording' rows. */
+  recovery_hr_at_stop?: number | null;
+  recovery_hr_after_60s?: number | null;
+  recovery_hr_after_120s?: number | null;
 }
 
 /** A normalized completed activity as returned by the intervals.icu fetcher. */

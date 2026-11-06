@@ -29,7 +29,7 @@ struct AppleHealthSettingsView: View {
                 }
             }
             Section("How your workouts are used") {
-                Text("With the permissions you grant, Très Fort uploads workout records to its server: activity type, source, dates, duration, distance, calories, elevation and heart-rate summaries when available. An authorized AI app and its configured model provider can read these records. Group sharing is separate and off by default.")
+                Text("With the permissions you grant, Très Fort uploads workout records to its server: activity type, source, dates, duration, distance, calories, elevation and heart-rate summaries when available. It also keeps each workout's heart-rate readings and a run's route, for their charts and map; only you see those. An authorized AI app and its configured model provider can read these records. Group sharing is separate and off by default.")
                     .font(.footnote)
                 PrivacyPolicyLink()
             }

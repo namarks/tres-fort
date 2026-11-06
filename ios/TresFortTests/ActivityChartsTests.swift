@@ -133,16 +133,20 @@ final class ActivityChartsTests: XCTestCase {
     }
 
     func testOnlyActivitiesWithStreamsAreAsked() {
-        func activity(source: String, kind: String) -> ExternalActivity {
+        func activity(source: String, kind: String, hr: Double? = nil) -> ExternalActivity {
             ExternalActivity(
                 id: "x", source: source, external_id: "e", date: "2026-11-01", kind: kind,
                 name: nil, moving_time_sec: 60, elapsed_time_sec: nil, distance_m: 100, average_watts: nil,
-                weighted_avg_watts: nil, average_hr: nil, max_hr: nil, training_load: nil, intensity: nil,
+                weighted_avg_watts: nil, average_hr: hr, max_hr: nil, training_load: nil, intensity: nil,
                 calories: nil, elevation_gain_m: nil, synced_at: 1, deleted_at: nil)
         }
         XCTAssertTrue(activity(source: "intervals", kind: "other").mayHaveStreams)
         XCTAssertTrue(activity(source: "healthkit", kind: "run").mayHaveStreams)
         XCTAssertFalse(activity(source: "healthkit", kind: "ride").mayHaveStreams)
+        // Any workout with heart rate whose readings Tres Fort keeps.
+        XCTAssertTrue(activity(source: "healthkit", kind: "other", hr: 140).mayHaveStreams)
+        XCTAssertTrue(activity(source: "fit", kind: "ride", hr: 140).mayHaveStreams)
         XCTAssertFalse(activity(source: "manual", kind: "run").mayHaveStreams)
+        XCTAssertFalse(activity(source: "manual", kind: "other", hr: 140).mayHaveStreams)
     }
 }

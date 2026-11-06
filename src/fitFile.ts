@@ -352,6 +352,12 @@ export function parseFit(bytes: Uint8Array): FitActivity {
   const elapsed = sum(7, 1000) ?? recordSpan;
   const timer = sum(8, 1000) ?? elapsed;
   const lastDistance = records.reduce<number | null>((d, r) => r.get(5) ?? d, null);
+  // A file whose session leaves out average or maximum heart rate still has
+  // them in its records; the app and web chart a workout by its average.
+  const readings = hr.map((s) => s.v).filter((v) => v > 0 && v < 255);
+  const readingMean = readings.length > 0 ? readings.reduce((x, y) => x + y, 0) / readings.length : null;
+  const readingMax = readings.length > 0 ? readings.reduce((x, y) => Math.max(x, y)) : null;
+
   const activityStamp = (activity as Fields | null)?.get(FIELD_TIMESTAMP);
   const activityLocal = (activity as Fields | null)?.get(5);
   const offset = activityStamp !== undefined && activityLocal !== undefined ? activityLocal - activityStamp : null;
@@ -366,8 +372,8 @@ export function parseFit(bytes: Uint8Array): FitActivity {
     timer_sec: timer,
     distance_m: sum(9, 100) ?? (lastDistance === null ? null : lastDistance / 100),
     calories: sum(11),
-    avg_hr: roundOrNull(combined(16)),
-    max_hr: highest(17),
+    avg_hr: roundOrNull(combined(16) ?? readingMean),
+    max_hr: highest(17) ?? readingMax,
     avg_power: roundOrNull(combined(20)),
     normalized_power: roundOrNull(combined(34, 4)),
     ascent_m: sum(22),

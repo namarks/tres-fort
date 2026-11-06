@@ -235,6 +235,15 @@ function clockFrom(timeline: readonly TrackSample[]): Clock {
   };
 }
 
+/** A clock that is already moving time, from 0 to `total`. */
+function movingClock(total: number): Clock {
+  return {
+    total,
+    moving: (t) => (t >= 0 && t <= total ? t : null),
+    stretch: (t) => (t >= 0 && t <= total ? 0 : null),
+  };
+}
+
 const round = (v: number, places: number) => {
   const f = 10 ** places;
   return Math.round(v * f) / f;
@@ -298,19 +307,24 @@ export function elevationGain(values: readonly (number | null)[]): number | null
 
 /**
  * The chart series of one activity: a timeline (times, distance, altitude)
- * and any heart-rate readings, on the same elapsed-seconds clock. The
- * timeline's gaps and segment starts are the pauses; with no timeline the
- * heart-rate readings set the clock. Null when there is under one bucket's
- * worth of moving time or nothing to draw.
+ * and any heart-rate readings. The timeline's gaps and segment starts are
+ * the pauses; with no timeline the heart-rate readings set the clock.
+ * Readings are on the timeline's elapsed clock, or with `heartRateClock:
+ * 'moving'` already on moving time (a series Tres Fort keeps, its pauses
+ * taken out by the source). Null when there is under one bucket's worth of
+ * moving time or nothing to draw.
  */
 export function buildActivityStreams(
   track: readonly TrackSample[],
   heartRate: readonly ValueSample[] = [],
+  options: { heartRateClock?: 'elapsed' | 'moving' } = {},
 ): ActivityStreams | null {
-  const timeline = track.length > 0
-    ? track
-    : heartRate.map((r) => ({ t: r.t, d: null, alt: null }));
-  const clock = clockFrom(timeline);
+  const hrOnMoving = options.heartRateClock === 'moving';
+  const clock = track.length > 0
+    ? clockFrom(track)
+    : hrOnMoving
+      ? movingClock(heartRate.reduce((m, r) => (Number.isFinite(r.t) ? Math.max(m, r.t) : m), 0))
+      : clockFrom(heartRate.map((r) => ({ t: r.t, d: null, alt: null })));
   if (clock.total < MIN_BUCKET_S * 2) return null;
   const width = Math.max(MIN_BUCKET_S, Math.ceil(clock.total / MAX_POINTS));
   const count = Math.max(1, Math.ceil(clock.total / width));
@@ -367,7 +381,8 @@ export function buildActivityStreams(
     return v >= 0 && v <= MAX_SPEED_MPS ? v : null;
   });
 
-  const hr = bucketMeans(heartRate, clock, width, count, (v) => v >= 25 && v <= 250);
+  const hr = bucketMeans(heartRate, hrOnMoving ? movingClock(clock.total) : clock, width, count,
+    (v) => v >= 25 && v <= 250);
   const altReadings = track.flatMap((s) => (s.alt === null ? [] : [{ t: s.t, v: s.alt }]));
   const elevation = smooth(
     bucketMeans(altReadings, clock, width, count, (v) => Math.abs(v) < 10_000),

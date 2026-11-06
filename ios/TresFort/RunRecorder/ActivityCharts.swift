@@ -91,9 +91,12 @@ final class ActivityStreamsStore {
 
 extension ExternalActivity {
     /// Activities the server can chart: anything intervals.icu has (its
-    /// streams carry heart rate for any sport) and every run with a route.
+    /// streams carry heart rate for any sport), every run with a route, and
+    /// any workout with heart rate whose readings Tres Fort keeps (Apple
+    /// Health, .fit imports and runs recorded in the app).
     var mayHaveStreams: Bool {
         source == "intervals" || mayHaveRoute
+            || (["healthkit", "fit", "recording"].contains(source) && average_hr != nil)
     }
 }
 

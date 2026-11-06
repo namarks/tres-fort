@@ -73,21 +73,61 @@ export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: 
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+/**
+ * Meters walked along GPS fixes, leg by leg. A leg faster than a person
+ * moves is a bad fix: it adds nothing and the next leg is measured from the
+ * last good fix, so neither the jump nor the return counts. When fixes keep
+ * disagreeing with the last good one for longer than a pause, the walker
+ * starts again from the newest fix instead of rejecting the rest.
+ */
+class GpsDistance {
+  meters = 0;
+  private last: { t: number; lat: number; lon: number } | null = null;
+  private rejectedSince: number | null = null;
+
+  /** Forget the last fix, as after a pause; nothing is added across it. */
+  restart(): void {
+    this.last = null;
+    this.rejectedSince = null;
+  }
+
+  /** Add the leg to a fix at `t` seconds; the total so far. */
+  add(t: number, lat: number, lon: number): number {
+    const last = this.last;
+    if (!last) {
+      this.last = { t, lat, lon };
+      return this.meters;
+    }
+    const leg = haversineMeters(last.lat, last.lon, lat, lon);
+    if (leg <= MAX_SPEED_MPS * Math.max(1, t - last.t)) {
+      this.meters += leg;
+      this.last = { t, lat, lon };
+      this.rejectedSince = null;
+    } else {
+      this.rejectedSince ??= t;
+      if (t - this.rejectedSince > PAUSE_GAP_S) {
+        this.last = { t, lat, lon };
+        this.rejectedSince = null;
+      }
+    }
+    return this.meters;
+  }
+}
+
 /** A stored route's timeline: distance walked point to point within each
  * segment, a new segment after each pause. */
 export function trackFromRoute(route: EncodedRoute): TrackSample[] {
   const segments = decodeRoute(route);
   const start = route.start_ms;
   const track: TrackSample[] = [];
-  let d = 0;
+  const gps = new GpsDistance();
   for (const segment of segments) {
+    gps.restart();
     for (let i = 0; i < segment.length; i++) {
       const p = segment[i]!;
-      if (i > 0) {
-        const q = segment[i - 1]!;
-        d += haversineMeters(q.lat, q.lon, p.lat, p.lon);
-      }
-      track.push({ t: (p.t - start) / 1000, d, alt: p.alt, newSegment: i === 0 && track.length > 0 });
+      const t = (p.t - start) / 1000;
+      const d = gps.add(t, p.lat, p.lon);
+      track.push({ t, d, alt: p.alt, newSegment: i === 0 && track.length > 0 });
     }
   }
   return track;
@@ -118,8 +158,7 @@ export function samplesFromProvider(s: ProviderStreams): { track: TrackSample[];
   const track: TrackSample[] = [];
   const heartRate: ValueSample[] = [];
   const useGps = !s.distance?.some((v) => v != null) && !!s.lat && !!s.lon;
-  let gpsD = 0;
-  let last: { lat: number; lon: number } | null = null;
+  const gps = new GpsDistance();
   let lastT = -Infinity;
   for (let i = 0; i < n; i++) {
     const t = s.time ? s.time[i] : i;
@@ -130,9 +169,7 @@ export function samplesFromProvider(s: ProviderStreams): { track: TrackSample[];
       const lat = s.lat![i];
       const lon = s.lon![i];
       if (lat != null && lon != null && !(lat === 0 && lon === 0)) {
-        if (last) gpsD += haversineMeters(last.lat, last.lon, lat, lon);
-        last = { lat, lon };
-        d = gpsD;
+        d = gps.add(t, lat, lon);
       }
     } else {
       const v = s.distance?.[i];

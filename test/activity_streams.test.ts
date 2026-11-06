@@ -125,6 +125,26 @@ describe('route and provider samples', () => {
     expect(track[4]!.d).toBeCloseTo(3 * step, 1);
   });
 
+  it('skips a bad GPS fix in a route, both the jump and the return', () => {
+    // About 3 m/s due north for ten minutes, one fix 5 km off.
+    const points = Array.from({ length: 601 }, (_, i): RoutePoint =>
+      ({ t: START_MS + i * 1_000, lat: 45.519 + i * 0.000027 + (i === 300 ? 0.045 : 0), lon: -122.6793, alt: 15 }));
+    const s = buildActivityStreams(trackFromRoute(encodeRoute([points])!))!;
+    expect(s.total_distance_m).toBeGreaterThan(1790);
+    expect(s.total_distance_m).toBeLessThan(1810);
+    expect(s.speed_mps!.every((v) => v !== null && Math.abs(v - 3) < 0.1)).toBe(true);
+  });
+
+  it('starts again from new fixes when they keep disagreeing with an early bad one', () => {
+    // The first fix is 5 km off; the rest are a steady run.
+    const points = Array.from({ length: 301 }, (_, i): RoutePoint =>
+      ({ t: START_MS + i * 1_000, lat: 45.519 + i * 0.000027 + (i === 0 ? 0.045 : 0), lon: -122.6793, alt: 15 }));
+    const track = trackFromRoute(encodeRoute([points])!);
+    const total = track[track.length - 1]!.d!;
+    expect(total).toBeGreaterThan(800);
+    expect(total).toBeLessThan(900);
+  });
+
   it('prefers the provider distance stream and falls back to GPS positions', () => {
     const withDistance = samplesFromProvider({
       time: [0, 1, 2], distance: [0, 3, 6], heartrate: [140, null, 142], altitude: null,

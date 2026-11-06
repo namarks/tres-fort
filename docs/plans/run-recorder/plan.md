@@ -1,6 +1,6 @@
 # Run recorder on iPhone
 
-Slug: run-recorder · Status: active · Updated: 2026-11-04 · Theme: connected-training
+Slug: run-recorder · Status: active · Updated: 2026-11-06 · Theme: connected-training
 
 ## Goal
 
@@ -286,12 +286,61 @@ coach sees it in the same place as Garmin runs.
       The privacy policy says the app uploads the route of a run another app
       saved to Apple Health.
 
+- [ ] **P7 — Run summary and heart rate recovery**
+  - From the owner's tempo run on 2026-11-05: the "Run saved" screen showed
+    heart rate as "–" the moment the run stopped, although the strap stayed
+    connected and the saved run had its heart rate, and its pace tile showed
+    the pace of the last 30 seconds before the stop, which means nothing
+    after the run. The owner asked to keep heart rate live after the stop
+    and to record how fast it falls.
+  - Heart rate sources: a Bluetooth strap the app connects itself (live),
+    and whatever Apple Health's workout builder collects on the iPhone. An
+    Apple Watch never streams live to the iPhone recorder; heart rate after
+    the stop on a Watch belongs to the Watch recorder
+    ([apple-watch](../apple-watch/plan.md) P2).
+  - [x] **(a) The summary after the stop** (in the repository)
+    - Time, distance and average pace stay frozen at the stop. The pace tile
+      gives way to the run's average heart rate. The strap's reading shows
+      live, marked LIVE, until Done, the strap drops or five minutes pass;
+      then the tile shows the run's maximum heart rate. Without a strap both
+      come from the run's own readings.
+    - Readings after the stop never join the run, so moving time, distance,
+      average and maximum heart rate, load and the Apple Health workout are
+      the same as before.
+  - [x] **(b) Heart rate recovery** (in the repository)
+    - When the strap is connected and read the heart rate within 5 seconds
+      of the stop, a "Cooling down" card counts two minutes and asks the
+      member to stand or walk easy, so runs compare. The reading nearest one
+      and two minutes after the stop (within 5 seconds) is kept; the screen
+      stays on while it counts.
+    - The run uploads once the cool-down ends: after two minutes, at Done,
+      on closing the recorder or when the strap drops, with whatever was
+      measured. A foreground upload doesn't send it early.
+    - `POST /api/activities/recordings` takes optional
+      `recovery_hr_at_stop`, `recovery_hr_after_60s` and
+      `recovery_hr_after_120s` (whole bpm, 20 to 250; the later ones need
+      the first) into `external_activities` (migration 0067), on the
+      recording's row only. A retry fills them when the earlier attempt had
+      none and never replaces them. `GET /api/activities/:id/route` returns
+      them as `heart_rate_recovery` with the recording behind an activity,
+      and the app's run card and planned-run record and the web day panel
+      show "28 bpm in 1 min · 44 in 2 min".
+    - Apple Health's Cardio Recovery (`heartRateRecoveryOneMinute`) is
+      written by the Apple Watch only after workouts recorded in Apple's
+      Workout app, so it never exists for a recorder run and isn't read.
+  - [ ] **(c) Confirm on the device**
+    - On a TestFlight build with the owner's strap: heart rate stays live
+      after the stop, the cool-down keeps two readings, and the run's card
+      shows them after the upload. Needs migration 0067 in production before
+      the API deploy.
+
 ## Execution frontier
 
 - P3
 - P4
 - P5
 - P6
+- P7
 
 ## Dependencies
 
@@ -300,6 +349,8 @@ coach sees it in the same place as Garmin runs.
 | P3 | gated_by | external:owner-run-recorder-device-verification | Real GPS runs on the owner's iPhone need an authorized device build. |
 | P1 | coordinates_with | plan:app-store-submission | New location and Health write permissions change the App Privacy answers and review notes. |
 | P5 | coordinates_with | plan:app-store-submission | Keeping GPS routes in Tres Fort adds precise location, linked to the member, to the App Privacy answers. |
+| P7 | gated_by | external:owner-run-recorder-device-verification | Heart rate after the stop needs the owner's strap on a real run. |
+| P7 | coordinates_with | plan:apple-watch | Heart rate after the stop on a Watch needs the Watch recorder's own session handling. |
 
 Phases run in order: P1 needs P0's upload path, and P2's Live Activity
 mirrors P1's session.
@@ -314,6 +365,10 @@ the owner's go-ahead, together with the November security release
 done once deleting a recorded run is seen on the device. P6 is done once
 maps of an intervals.icu run and of a Strava run show on the device, after
 allowing Health's workout-route access on build 65.
+
+P7(a) and (b) are in the repository and need, each on the owner's written
+go-ahead, migration 0067 in production before an API and web deploy, and a
+TestFlight build; then (c) is a run with the strap.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -420,6 +475,19 @@ the scene delegate is left to P3's force-quit check.
   `web/test/routeMap.test.ts` cover asking for Health runs' routes. The
   HealthKit route queries are compiled only; the first real route is seen
   on a device.
+- P7: `test/run_recording.test.ts` covers keeping the heart rate after the
+  stop with a recording and serving it with the route, the run's own
+  figures unchanged, a retry filling a missing value but never replacing
+  one, and refusing malformed values before keeping anything.
+  `HeartRateRecoveryTests` covers the reading at the stop, the nearest
+  reading to each mark within 5 seconds, marks with none, a strap that goes
+  quiet, dropped readings and the summary text. `RunRecorderTests` covers
+  the strap staying live for five minutes after the stop, the upload waiting
+  for the cool-down (also on foreground) and carrying it, readings after the
+  stop never joining the run or the Health workout, Done mid-cool-down, a
+  dropped strap, and a run without a strap uploading at once.
+  `RunRecordingTests` covers the multipart fields and runs saved before
+  them. `web/test/routeMap.test.ts` covers the web's recovery text.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing
@@ -471,10 +539,10 @@ the scene delegate is left to P3's force-quit check.
   was optional, with Apple Health keeping the route. P5 has Tres Fort keep
   the run and its route itself; intervals.icu stays the store of record for
   the activities it syncs.
-- Heart rate on iPhone comes only from what Health provides during the
-  session (a paired watch or supported headphones). Direct Bluetooth chest
-  straps and an Apple Watch app are possible later slices, not part of this
-  plan.
+- Heart rate on iPhone comes from a Bluetooth strap the app connects
+  itself (from P3 feedback) or what Health provides during the session
+  (supported headphones, for example). An Apple Watch recorder is the
+  [apple-watch](../apple-watch/plan.md) plan.
 - Recovering the Sep 4 to Oct 27, 2026 Strava runs is an owner task (Strava
   export uploaded to intervals.icu), not part of this plan.
 - `delete_activity` deletes only `tresfort:activity:` activities, so it can't

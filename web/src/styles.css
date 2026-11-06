@@ -189,6 +189,7 @@ p { margin: 0 0 0.75rem; }
   height: 220px; margin-top: 0.5rem; border-radius: 10px; overflow: hidden;
   border: 1px solid var(--line); background: var(--surface-2);
 }
+.route-recovery { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.875rem; }
 .route-map.outline svg { display: block; width: 100%; height: 100%; }
 .route-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .activity-charts { margin-top: 0.75rem; display: grid; gap: 0.75rem; }

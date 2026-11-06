@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchActivityRoute } from './api';
 import { accentColor, drawRoute, loadMapKit, onMapKitFailure } from './mapkit';
-import { drawableSegments, routeOutline, type LatLon } from './routeMap';
+import { drawableSegments, recoveryText, routeOutline, type LatLon } from './routeMap';
 
 /**
  * A run's route under its card: Apple Maps when the site has a MapKit JS
@@ -10,25 +10,38 @@ import { drawableSegments, routeOutline, type LatLon } from './routeMap';
  * intervals.icu can't send its track.
  */
 export function RouteMap({ activityId, label }: { activityId: string; label: string }) {
-  const [loaded, setLoaded] = useState<{ id: string; segments: LatLon[][] } | null>(null);
+  const [loaded, setLoaded] = useState<{ id: string; segments: LatLon[][]; recovery: string | null } | null>(null);
 
   useEffect(() => {
     let live = true;
     fetchActivityRoute(activityId)
       .then((found) => {
-        if (live) setLoaded({ id: activityId, segments: found ? drawableSegments(found.route) : [] });
+        if (live) {
+          setLoaded({
+            id: activityId,
+            segments: found ? drawableSegments(found.route) : [],
+            recovery: recoveryText(found?.heart_rate_recovery),
+          });
+        }
       })
       .catch(() => {
-        if (live) setLoaded({ id: activityId, segments: [] });
+        if (live) setLoaded({ id: activityId, segments: [], recovery: null });
       });
     return () => {
       live = false;
     };
   }, [activityId]);
 
-  const segments = loaded?.id === activityId ? loaded.segments : [];
-  if (segments.length === 0) return null;
-  return <RouteView key={activityId} segments={segments} label={label} />;
+  const current = loaded?.id === activityId ? loaded : null;
+  const segments = current?.segments ?? [];
+  const recovery = current?.recovery ?? null;
+  if (segments.length === 0 && recovery === null) return null;
+  return (
+    <>
+      {recovery !== null ? <p className="route-recovery">Heart rate recovery: {recovery}</p> : null}
+      {segments.length > 0 ? <RouteView key={activityId} segments={segments} label={label} /> : null}
+    </>
+  );
 }
 
 function RouteView({ segments, label }: { segments: LatLon[][]; label: string }) {

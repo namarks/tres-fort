@@ -14,7 +14,9 @@ import UIKit
 /// records, a Live Activity mirrors it on the Lock Screen with pause, resume
 /// and finish, and each mile or kilometer can be announced (P2). A Bluetooth
 /// heart rate strap the member set up reconnects while the recorder is open
-/// or a run records, and its readings join the run.
+/// or a run records, and its readings join the run. After a saved run the
+/// strap keeps feeding the summary live, and its readings one and two
+/// minutes after the stop are kept as the run's heart rate recovery (P7).
 @MainActor
 final class RunRecorderModel: ObservableObject {
     enum Phase: Equatable {
@@ -55,6 +57,12 @@ final class RunRecorderModel: ObservableObject {
     /// Health not saving the workout.
     @Published private(set) var note: String?
     @Published private(set) var latestHeartRate: RecordedRun.HeartRateSample?
+    /// The cool-down after a saved run, while the strap stays connected:
+    /// the heart rate at the stop and one and two minutes later (P7). Nil
+    /// without a strap reading at the stop.
+    @Published private(set) var recovery: HeartRateRecoveryMeasurement?
+    /// The run whose cool-down is being measured; it uploads once that ends.
+    @Published private(set) var measuringRecoveryOf: UUID?
     /// Horizontal accuracy of the latest GPS fix, in meters, while the
     /// recorder is open or recording.
     @Published private(set) var gpsAccuracy: CLLocationAccuracy?
@@ -144,6 +152,8 @@ final class RunRecorderModel: ObservableObject {
     private var lastCheckpoint: Date?
     private var builderMoving: Double = 0
     private var isUploading = false
+    /// A run's cool-down ended while an upload ran, so another pass sends it.
+    private var uploadAgain = false
     private var splits: RunSplitTracker?
     private var speaker: RunSplitSpeaking?
     private var lastActivityUpdate: Date?
@@ -166,6 +176,13 @@ final class RunRecorderModel: ObservableObject {
     private var targetCoach = RunTargetCoach()
     /// Heart rate cues use the average over this many seconds.
     static let heartRateWindow: TimeInterval = 15
+    /// After the run, the strap's reading shows live for this long.
+    static let liveHeartRateWindow: TimeInterval = 5 * 60
+    /// A reading older than this isn't live any more.
+    static let heartRateFreshness: TimeInterval = 15
+    /// Settles the cool-down's marks once a second, for a strap that goes
+    /// quiet or drops.
+    private var recoveryTicker: Task<Void, Never>?
 
     /// iPhone on iOS 26 or later with Health data, outside the App Store
     /// build until the device checks in P3 pass.
@@ -244,6 +261,7 @@ final class RunRecorderModel: ObservableObject {
     /// The recorder closed. A run that records keeps its GPS and strap.
     func closed() {
         isOpen = false
+        finishRecovery()
         coolDownGPS()
         if !isRecording && phase != .starting && phase != .recovering { heartRateMonitor.release() }
     }
@@ -302,6 +320,8 @@ final class RunRecorderModel: ObservableObject {
 
     func start() async {
         guard phase == .idle || phase == .finished || isFailed else { return }
+        finishRecovery()
+        recovery = nil
         // An unfinished run comes first, even before launch recovery got to it.
         if (try? store(creating: false)?.unfinished()) != nil {
             phase = .idle
@@ -472,13 +492,86 @@ final class RunRecorderModel: ObservableObject {
         }
         checkpoint(force: true)
         phase = .finished
+        beginRecovery(finished)
         // The checkpoint carries the slot, so a run recovered after the app
         // was stopped still marks its workout done.
         if let slotID = finished.plannedSlotID,
            await onPlannedRunSaved(slotID, finished.date, Int(finished.movingSeconds.rounded())) {
             completedWorkoutName = finished.name ?? plannedRun?.workoutName
         }
-        await uploadPending()
+        // A run whose cool-down is measured uploads when that ends.
+        if measuringRecoveryOf != finished.id { await uploadPending() }
+    }
+
+    // MARK: - After the run
+
+    var isMeasuringRecovery: Bool { measuringRecoveryOf != nil }
+
+    /// The strap's reading while it streams after a saved run: until Done,
+    /// the strap drops or five minutes pass. Nil otherwise, when the summary
+    /// falls back to the run's own heart rate.
+    func liveHeartRate(at date: Date) -> Double? {
+        guard phase == .finished, let endedAt = run?.endedAt,
+              date.timeIntervalSince(endedAt) < Self.liveHeartRateWindow,
+              heartRateMonitor.isConnected, let sample = heartRateMonitor.latest,
+              date.timeIntervalSince(sample.timestamp) < Self.heartRateFreshness else { return nil }
+        return sample.beatsPerMinute
+    }
+
+    /// Starts the cool-down when the strap is still connected and read the
+    /// heart rate at the stop. Its readings never join the run.
+    private func beginRecovery(_ run: RecordedRun) {
+        guard heartRateMonitor.isConnected, let endedAt = run.endedAt,
+              let measurement = HeartRateRecoveryMeasurement(run: run, stoppedAt: endedAt) else { return }
+        recovery = measurement
+        measuringRecoveryOf = run.id
+        heartRateMonitor.onSample = { [weak self] in self?.recordRecovery($0) }
+        recoveryTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                self.tickRecovery()
+            }
+        }
+    }
+
+    /// A strap reading during the cool-down.
+    func recordRecovery(_ sample: RecordedRun.HeartRateSample) {
+        guard isMeasuringRecovery, var measurement = recovery else { return }
+        measurement.add(sample)
+        recovery = measurement
+        if measurement.isComplete { finishRecovery() }
+    }
+
+    /// Ends the cool-down when the strap dropped, and settles marks the
+    /// clock passed without a reading.
+    func tickRecovery() {
+        guard isMeasuringRecovery, var measurement = recovery else { return }
+        guard heartRateMonitor.isConnected else { return finishRecovery() }
+        measurement.expire(at: now())
+        recovery = measurement
+        if measurement.isComplete { finishRecovery() }
+    }
+
+    /// Keeps what the cool-down measured with the run and sends it. Done,
+    /// closing the recorder or the strap dropping ends it early with what
+    /// it has.
+    private func finishRecovery() {
+        guard let id = measuringRecoveryOf else { return }
+        measuringRecoveryOf = nil
+        recoveryTicker?.cancel()
+        recoveryTicker = nil
+        heartRateMonitor.onSample = nil
+        if let result = recovery?.result, var run, run.id == id {
+            run.recovery = result
+            self.run = run
+            checkpoint(force: true)
+        }
+        if isUploading {
+            uploadAgain = true
+        } else {
+            Task { await self.uploadPending() }
+        }
     }
 
     /// Throws the run away: no Health workout, no upload.
@@ -497,6 +590,8 @@ final class RunRecorderModel: ObservableObject {
     /// Back to the start screen once a finished or failed run is dismissed.
     func reset() {
         guard !isRecording, phase != .starting, phase != .recovering else { return }
+        finishRecovery()
+        recovery = nil
         run = nil
         note = nil
         latestHeartRate = nil
@@ -864,17 +959,29 @@ final class RunRecorderModel: ObservableObject {
     }
 
     func uploadPending() async {
-        guard !isUploading, let store = store(creating: false),
-              let pending = try? store.pendingUploads(), !pending.isEmpty else { return }
+        guard !isUploading else { return }
+        isUploading = true
+        defer { isUploading = false }
+        repeat {
+            uploadAgain = false
+            await uploadOnce()
+        } while uploadAgain
+    }
+
+    private func uploadOnce() async {
+        // A run whose cool-down is still measured waits for it.
+        let waiting = Set([measuringRecoveryOf].compactMap { $0 })
+        guard let store = store(creating: false),
+              let pending = try? store.pendingUploads().filter({ !waiting.contains($0.id) }),
+              !pending.isEmpty else { return }
         guard let jwt = jwt() else {
             uploadStatus = .waiting
             return
         }
-        isUploading = true
         uploadStatus = .uploading
-        defer { isUploading = false }
         do {
-            let summary = try await RunRecordingUploader.uploadPending(store: store, api: api, jwt: jwt)
+            let summary = try await RunRecordingUploader.uploadPending(
+                store: store, api: api, jwt: jwt, waiting: waiting)
             if summary.unauthorized { onUnauthorized() }
             if !summary.uploaded.isEmpty { onUploaded() }
             if !summary.failed.isEmpty {

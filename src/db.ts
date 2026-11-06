@@ -9409,6 +9409,14 @@ export async function deleteFitActivity(db: D1Database, userId: string, clientId
   return true;
 }
 
+/** Heart rate after a run recorded in the app (docs/plans/run-recorder P7):
+ * at the stop, and one and two minutes later, in whole bpm. */
+export interface HeartRateRecovery {
+  at_stop: number;
+  after_60s: number | null;
+  after_120s: number | null;
+}
+
 export interface RecordedRunStoreResult {
   activity: ExternalActivityRow;
   /** This recording was already stored. */
@@ -9428,7 +9436,13 @@ export interface RecordedRunStoreResult {
 export async function storeRecordedRun(
   db: D1Database,
   userId: string,
-  input: { recording_id: string; date: string; name: string | null; run: TcxRun },
+  input: {
+    recording_id: string;
+    date: string;
+    name: string | null;
+    run: TcxRun;
+    recovery?: HeartRateRecovery | null;
+  },
 ): Promise<RecordedRunStoreResult> {
   const recordingId = input.recording_id.toLowerCase();
   const id = `recording:activity:${userId}:${recordingId}`;
@@ -9445,8 +9459,23 @@ export async function storeRecordedRun(
     await refreshActivityLoads(db, userId, { fromDate: stored.date, toDate: stored.date });
     return { activity: (await read()) ?? stored, deduplicated: true, deleted: false };
   };
+  const recovery = input.recovery ?? null;
   const existing = await read();
-  if (existing) return returnStored(existing);
+  if (existing) {
+    // A retry can carry the recovery an earlier attempt didn't have yet;
+    // a value already kept is never replaced.
+    if (recovery && !memberDeleted(existing) && existing.recovery_hr_at_stop == null) {
+      await db
+        .prepare(
+          `UPDATE external_activities
+              SET recovery_hr_at_stop = ?3, recovery_hr_after_60s = ?4, recovery_hr_after_120s = ?5
+            WHERE id = ?1 AND user_id = ?2 AND recovery_hr_at_stop IS NULL`,
+        )
+        .bind(id, userId, recovery.at_stop, recovery.after_60s, recovery.after_120s)
+        .run();
+    }
+    return returnStored(existing);
+  }
 
   const { run } = input;
   // The member's timezone follows the device (X-Device-TZ on every request).
@@ -9463,9 +9492,10 @@ export async function storeRecordedRun(
             moving_time_sec,elapsed_time_sec,distance_m,average_watts,
             weighted_avg_watts,average_hr,max_hr,training_load,intensity,
             calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,
-            start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec,sport)
+            start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec,sport,
+            recovery_hr_at_stop,recovery_hr_after_60s,recovery_hr_after_120s)
          VALUES (?1,?2,'recording',?3,?4,?5,'run',?6,?7,?8,?9,NULL,NULL,?10,?11,NULL,NULL,
-                 ?12,NULL,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18,'run')
+                 ?12,NULL,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18,'run',?19,?20,?21)
          ON CONFLICT DO NOTHING`,
       )
       .bind(
@@ -9475,6 +9505,7 @@ export async function storeRecordedRun(
         run.calories === null ? null : Math.round(run.calories),
         JSON.stringify({ source: 'recording' }), ts,
         run.start_utc_ms, local.zone, hr?.rms_bpm ?? null, hr ? Math.round(hr.seconds) : null,
+        recovery?.at_stop ?? null, recovery?.after_60s ?? null, recovery?.after_120s ?? null,
       ),
   ];
   if (route) {
@@ -9511,6 +9542,9 @@ export interface StoredActivityRoute {
   recording_id: string | null;
   /** Null for a run recorded without GPS fixes. */
   route: EncodedRoute | null;
+  /** The recorded run's heart rate after the stop (P7); null for a Health
+   * route or a run recorded without it. */
+  heart_rate_recovery: HeartRateRecovery | null;
 }
 
 /**
@@ -9529,7 +9563,8 @@ export async function getActivityRoute(
 ): Promise<StoredActivityRoute | null> {
   const row = await db
     .prepare(
-      `SELECT a.id AS activity_id, a.source, a.external_id, r.route
+      `SELECT a.id AS activity_id, a.source, a.external_id, r.route,
+              a.recovery_hr_at_stop, a.recovery_hr_after_60s, a.recovery_hr_after_120s
          FROM external_activities a
          LEFT JOIN activity_routes r ON r.activity_id = a.id AND r.user_id = a.user_id
         WHERE a.user_id = ?1
@@ -9540,13 +9575,28 @@ export async function getActivityRoute(
         LIMIT 1`,
     )
     .bind(userId, activityId)
-    .first<{ activity_id: string; source: 'recording' | 'healthkit'; external_id: string; route: string | null }>();
+    .first<{
+      activity_id: string;
+      source: 'recording' | 'healthkit';
+      external_id: string;
+      route: string | null;
+      recovery_hr_at_stop: number | null;
+      recovery_hr_after_60s: number | null;
+      recovery_hr_after_120s: number | null;
+    }>();
   if (!row) return null;
   return {
     activity_id: row.activity_id,
     source: row.source,
     recording_id: row.source === 'recording' ? row.external_id : null,
     route: row.route === null ? null : parseStoredRoute(row.route),
+    heart_rate_recovery: row.source === 'recording' && row.recovery_hr_at_stop !== null
+      ? {
+          at_stop: row.recovery_hr_at_stop,
+          after_60s: row.recovery_hr_after_60s,
+          after_120s: row.recovery_hr_after_120s,
+        }
+      : null,
   };
 }
 

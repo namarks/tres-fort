@@ -109,6 +109,7 @@ import {
   upsertHealthKitActivity,
   uploadRecordedRun,
   storeRecordedRun,
+  type HeartRateRecovery,
   getActivityRoute,
   getIntervalsActivityRoute,
   getActivityStreams,
@@ -1627,6 +1628,26 @@ const RECORDING_ERROR_STATUS = {
   not_found: 404,
 } as const;
 
+// Optional heart rate after the stop (P7): `recovery_hr_at_stop` and, with
+// it, `recovery_hr_after_60s` and `recovery_hr_after_120s`, each whole bpm
+// from 20 to 250. Null when absent; 'invalid' for a malformed field or a
+// later reading without the one at the stop.
+function recordingRecovery(form: FormData): HeartRateRecovery | null | 'invalid' {
+  const read = (key: string): number | null | 'invalid' => {
+    const value = form.get(key);
+    if (value === null) return null;
+    if (typeof value !== 'string' || !/^\d{2,3}$/.test(value)) return 'invalid';
+    const bpm = Number(value);
+    return bpm >= 20 && bpm <= 250 ? bpm : 'invalid';
+  };
+  const atStop = read('recovery_hr_at_stop');
+  const after60 = read('recovery_hr_after_60s');
+  const after120 = read('recovery_hr_after_120s');
+  if (atStop === 'invalid' || after60 === 'invalid' || after120 === 'invalid') return 'invalid';
+  if (atStop === null) return after60 === null && after120 === null ? null : 'invalid';
+  return { at_stop: atStop, after_60s: after60, after_120s: after120 };
+}
+
 apiRoutes.post('/activities/recordings', async (c) => {
   let form: FormData;
   try {
@@ -1642,6 +1663,8 @@ apiRoutes.post('/activities/recordings', async (c) => {
   if (name !== null && (typeof name !== 'string' || name.length > 200)) {
     return c.json({ error: 'invalid_name' }, 400);
   }
+  const recovery = recordingRecovery(form);
+  if (recovery === 'invalid') return c.json({ error: 'invalid_recovery' }, 400);
   // The Workers FormData typing omits File entries; check at runtime.
   const file = form.get('file') as unknown;
   if (!(file instanceof File) || file.size === 0) {
@@ -1660,7 +1683,9 @@ apiRoutes.post('/activities/recordings', async (c) => {
   const userId = c.get('userId');
   const recordingId = id.toLowerCase();
   const trimmedName = name && name.trim().length > 0 ? name.trim() : null;
-  const stored = await storeRecordedRun(c.env.DB, userId, { recording_id: recordingId, date, name: trimmedName, run });
+  const stored = await storeRecordedRun(c.env.DB, userId, {
+    recording_id: recordingId, date, name: trimmedName, run, recovery,
+  });
   const kept = { recording_id: recordingId, activity_id: stored.activity.id };
   // A run the member deleted from Tres Fort is not sent anywhere again.
   if (stored.deleted) {
@@ -1713,7 +1738,10 @@ apiRoutes.get('/activities/:id/route', async (c) => {
   if (found) return c.json(found);
   const provider = await getIntervalsActivityRoute(c.env.DB, c.env, userId, activityId);
   if (provider.ok) {
-    return c.json({ activity_id: provider.activity_id, source: 'intervals', recording_id: null, route: provider.route });
+    return c.json({
+      activity_id: provider.activity_id, source: 'intervals', recording_id: null, route: provider.route,
+      heart_rate_recovery: null,
+    });
   }
   if (provider.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);
   return c.json({ error: 'not_found' }, 404);

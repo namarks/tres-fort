@@ -1,6 +1,6 @@
 # Runs on Apple Watch
 
-Slug: apple-watch · Status: paused · Updated: 2026-11-03 · Theme: connected-training
+Slug: apple-watch · Status: paused · Updated: 2026-11-06 · Theme: connected-training
 
 ## Goal
 
@@ -66,6 +66,16 @@ recorded on the iPhone.
       and can pause or end it.
     - A run interrupted by a Watch restart resumes through workout recovery,
       as the iPhone recorder does.
+    - Heart rate after the stop (plan:run-recorder P7): the wrist sensor
+      streams only during a workout session, so End stops the activity
+      (`stopActivity`, session state `stopped`) and ends the builder's
+      collection at the stop, while the session stays open for the two-minute
+      cool-down and the live summary. The session ends at Done, after five
+      minutes or when the run is saved, so the extra minutes never change
+      duration, distance or load. The readings at one and two minutes go
+      with the run exactly as a strap's do. Apple's own Cardio Recovery
+      (`heartRateRecoveryOneMinute`) is written only for workouts recorded
+      in Apple's Workout app, so it is never a source for these runs.
   - [ ] **(c) Planned steps on the wrist**
     - The current step, what's left of it and the target show on the Watch.
       Each new step and each off-target or back-on-target moment gets a

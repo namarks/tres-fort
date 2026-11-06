@@ -55,6 +55,11 @@ extension APIClient: RecordingUploadAPI {
         if let name = run.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
             field("name", name)
         }
+        if let recovery = run.recovery {
+            field("recovery_hr_at_stop", "\(recovery.atStop)")
+            if let bpm = recovery.after60s { field("recovery_hr_after_60s", "\(bpm)") }
+            if let bpm = recovery.after120s { field("recovery_hr_after_120s", "\(bpm)") }
+        }
         body.append(Data(
             ("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(run.uploadID).tcx\"\r\n"
              + "Content-Type: application/vnd.garmin.tcx+xml\r\n\r\n").utf8))
@@ -100,13 +105,16 @@ enum RunRecordingUploader {
         return code == 409 && body.contains("\"intervals_not_connected\"")
     }
 
+    /// `waiting` holds runs not to send yet, such as one whose cool-down is
+    /// still being measured.
     static func uploadPending(
         store: RunRecordingStore,
         api: RecordingUploadAPI,
-        jwt: String
+        jwt: String,
+        waiting: Set<UUID> = []
     ) async throws -> Summary {
         var summary = Summary()
-        for run in try store.pendingUploads() {
+        for run in try store.pendingUploads() where !waiting.contains(run.id) {
             do {
                 let result = try await api.uploadRecording(run, jwt: jwt)
                 try store.remove(id: run.id)

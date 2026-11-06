@@ -188,6 +188,11 @@ integration or social breadth.
   checked on the owner's iPhone. P4 adds auto-pause and a glanceable
   running display. P5 has Tres Fort keep each recorded run and its GPS
   route itself, with intervals.icu an optional copy.
+- [Run detail charts](run-detail-charts/plan.md) — **active**; pace, heart
+  rate and elevation charts for a run in the app and on the web, from
+  intervals.icu streams read live or the route Tres Fort keeps, with a
+  private heart-rate series kept for recorded and Apple Health runs. P0's
+  chart series endpoint is in the repository.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach or the member plans runs with steps and pace or
   heart rate targets in the Tres Fort plan, and the recorder follows them

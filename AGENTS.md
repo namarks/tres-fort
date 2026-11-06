@@ -316,6 +316,10 @@ chat start) and a **prompt** (`coach_brief`).
   Apple Health run (`PUT /api/activities/healthkit/:id/route`, kept in
   `activity_routes`) and reads an intervals.icu run's track from
   intervals.icu without storing it (`src/services/intervalsRoute.ts`).
+  `GET /api/activities/:id/streams` serves pace, heart rate and elevation
+  chart series (`src/activityStreams.ts`) the same way: intervals.icu read
+  live, else the stored route. Private like routes; see
+  [the plan](docs/plans/run-detail-charts/plan.md).
   `GET /api/me/thresholds/suggestions` offers the
   thresholds intervals.icu scored the member's latest synced workouts with;
   only the member's tap saves one (`source='intervals'`).

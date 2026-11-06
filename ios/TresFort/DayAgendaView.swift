@@ -705,6 +705,7 @@ struct DayAgendaView: View {
             if !routeSegments.isEmpty {
                 ActivityRouteThumbnail(segments: routeSegments)
             }
+            ActivityChartsSection(activity: a, access: sync.activityRouteAccess)
             if a.offersEffortRating {
                 EffortRatingControl(activity: a) { effort in
                     await sync.rateActivityEffort(activityID: a.id, effort: effort)

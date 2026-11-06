@@ -47,14 +47,19 @@ group views or coach tools.
     recorded or Apple Health run, the stored route gives pace and
     elevation. 404 when there is nothing to chart; 502 when intervals.icu is
     unavailable and there is no stored route.
-- [ ] **P1 — Charts in the app**
-  - The run's map sheet becomes its detail: map, then pace, heart rate and
-    elevation charts (Swift Charts) sharing one moving-time axis, with a
-    shared scrub line reading all three at once. Pace in the member's
-    units (min/mi or min/km), speed for a ride; a stopped stretch draws no
-    pace. A run with no GPS (treadmill) opens the same detail from its card.
-  - Loading, no-data and intervals.icu-unavailable states; nothing is
-    cached beyond the open sheet.
+- [x] **P1 — Charts in the app**
+  - Every activity card with series (any intervals.icu activity, every run
+    with a route) and a planned run's record show pace, heart rate and
+    elevation charts (Swift Charts) below the map, on one axis: distance in
+    the member's miles or kilometers, else moving minutes. Touching a chart
+    reads its value at that point and marks the same point on the others.
+    Pace in min/mi or min/km (faster is up), speed for a ride, elevation in
+    feet with miles; standing still or missing data breaks the line, and
+    one GPS hiccup is held to the 2nd to 98th percentile.
+  - Series load when the card appears and are kept in memory per account
+    (`ActivityStreamsStore`); "nothing to chart" is remembered for ten
+    minutes and a failed read is tried again. A chart with no data is left
+    out.
 - [ ] **P2 — Charts on the web**
   - The same three charts under the web run's route map, as inline SVG with
     a hover read-out, following the Ink palette.
@@ -71,7 +76,7 @@ group views or coach tools.
 
 ## Execution frontier
 
-- P1
+- P2
 
 ## Dependencies
 
@@ -85,8 +90,9 @@ series, so it can follow P1 or run beside it.
 
 ## Next step
 
-**Now (@agent):** Build P1, the charts in the app's run detail. P0 reaches
-production with the next API deploy, on the owner's written go-ahead.
+**Now (@agent):** Build P2, the charts on the web. P0 reaches production
+with the next API deploy and P1 with the next TestFlight build, each on the
+owner's written go-ahead.
 
 ## Verification evidence
 
@@ -97,6 +103,11 @@ production with the next API deploy, on the owner's written go-ahead.
   endpoint for an intervals.icu run (stores nothing), for an Apple Health
   run's stored route, 404 for another member, 404 with nothing to chart and
   502 when intervals.icu is down.
+- P1: `ios/TresFortTests/ActivityChartsTests.swift` covers the server's
+  series in miles and kilometers, line breaks at standing still and missing
+  points, speed for a ride, heart-rate-only activities over moving time,
+  the percentile clamp, the scrub read-out, the per-account store and which
+  activities ask for series.
 
 ## Notes / open questions
 

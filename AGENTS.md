@@ -322,8 +322,8 @@ chat start) and a **prompt** (`coach_brief`).
   `GET /api/activities/:id/streams` serves pace, heart rate and elevation
   chart series (`src/activityStreams.ts`) the same way: intervals.icu read
   live, else the stored route plus the heart-rate series kept for a
-  recorded or Apple Health run (`activity_heart_rates`, migration 0068,
-  `src/heartRateSeries.ts`, runs only). Private like routes; see
+  recorded run or an Apple Health or `.fit` workout (`activity_heart_rates`,
+  migration 0068, `src/heartRateSeries.ts`). Private like routes; see
   [the plan](docs/plans/run-detail-charts/plan.md).
   `GET /api/me/thresholds/suggestions` offers the
   thresholds intervals.icu scored the member's latest synced workouts with;

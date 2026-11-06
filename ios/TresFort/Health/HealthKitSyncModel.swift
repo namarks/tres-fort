@@ -336,7 +336,7 @@ final class HealthKitSyncModel: ObservableObject {
     /// again, once, with their heart-rate and power samples so they get a
     /// stream-based load; a second pass does the same, once, for the other
     /// sports scored from heart rate (sport-activities P1), and a third for
-    /// runs, whose heart rate the server now keeps for their charts
+    /// every workout, whose heart rate the server now keeps for its chart
     /// (run-detail-charts P3). A sync that
     /// started without an anchor has just pushed everything with streams, so
     /// it only records the passes as done. A failed detail read leaves a pass
@@ -354,9 +354,7 @@ final class HealthKitSyncModel: ObservableObject {
                 !enduranceKinds.contains(Self.kind(for: w.workoutActivityType))
                     && Sports.scoresHeartRate(Sports.sport(for: w.workoutActivityType))
             }),
-            (AccountLocalState.healthRunHeartRateBackfillKey(userID: accountID), { w in
-                Self.kind(for: w.workoutActivityType) == "run"
-            }),
+            (AccountLocalState.healthHeartRateBackfillKey(userID: accountID), { _ in true }),
         ]
         var pushed = false
         var recent: [HKWorkout]?
@@ -456,16 +454,18 @@ final class HealthKitSyncModel: ObservableObject {
         }
     }
 
-    /// Runs, rides and the sports the Worker scores from heart rate (soccer,
-    /// tennis, hikes, …; `Sports.heartRateScored`) are scored from streams.
+    /// Every workout sends its heart rate: the Worker scores runs, rides and
+    /// the sports it scores from heart rate (soccer, tennis, hikes, …;
+    /// `Sports.heartRateScored`) from it, and keeps every workout's readings
+    /// for its heart-rate chart (run-detail-charts P3). Other sports get no
+    /// load from it.
     nonisolated static func hasDetailStreams(kind: String, sport: String? = nil) -> Bool {
-        kind == "run" || kind == "ride" || Sports.scoresHeartRate(sport)
+        true
     }
 
-    /// Heart rate for runs, rides and heart-rate-scored sports, plus cycling
-    /// power for rides. Nil when HealthKit fails, so the push omits `streams`
-    /// and the Worker keeps what it stored; an empty result tells it the
-    /// workout has none.
+    /// Heart rate for every workout, plus cycling power for rides. Nil when
+    /// HealthKit fails, so the push omits `streams` and the Worker keeps what
+    /// it stored; an empty result tells it the workout has none.
     private func detailStreams(for w: HKWorkout, kind: String, sport: String) async -> [String: HealthStream]? {
         guard Self.hasDetailStreams(kind: kind, sport: sport) else { return nil }
         let source = w.sourceRevision.source.bundleIdentifier

@@ -1,7 +1,7 @@
-// Heart-rate series Tres Fort keeps for a member's own runs
+// Heart-rate series Tres Fort keeps for a member's own workouts
 // (docs/plans/run-detail-charts P3, migration 0068): the encoding, charting
-// readings already on moving time, and the Apple Health push that fills the
-// series. The recorder's upload is covered in run_recording.test.ts, account
+// readings already on moving time, and the Apple Health push and .fit
+// import that fill the series. The recorder's upload is covered in run_recording.test.ts, account
 // deletion in account_deletion.test.ts.
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import {
   decodeHeartRate, encodeHeartRate, MAX_HEART_RATE_POINTS, parseStoredHeartRate,
 } from '../src/heartRateSeries';
 import { issueAppJwt } from '../src/auth';
+import { activityFit } from './fitWriter';
 
 const BASE = 'https://tres-fort.test';
 const START_MS = Date.parse('2026-11-01T15:00:00Z');
@@ -111,7 +112,7 @@ const kept = (activityId: string) => env.DB
   .prepare('SELECT point_count FROM activity_heart_rates WHERE activity_id = ?1')
   .bind(activityId).first<{ point_count: number }>();
 
-describe('Apple Health runs keep their heart rate', () => {
+describe('Apple Health workouts keep their heart rate', () => {
   it('keeps a run\'s pushed heart rate and charts it with the route, for its member only', async () => {
     const me = await member();
     const healthId = crypto.randomUUID().toUpperCase();
@@ -176,14 +177,38 @@ describe('Apple Health runs keep their heart rate', () => {
     expect(await kept(activityId)).toBeNull();
   });
 
-  it('keeps no series for a workout that is not a run, and forgets it when a run becomes one', async () => {
+  it('keeps any workout\'s heart rate and charts it over moving time', async () => {
     const me = await member();
-    const ride = await push(me.jwt, crypto.randomUUID(), { kind: 'ride', streams: { heart_rate: heartRate } });
-    expect(await kept(ride)).toBeNull();
-    const healthId = crypto.randomUUID();
-    const activityId = await push(me.jwt, healthId, { streams: { heart_rate: heartRate } });
-    expect(await kept(activityId)).not.toBeNull();
-    await push(me.jwt, healthId, { kind: 'walk' });
+    const soccer = await push(me.jwt, crypto.randomUUID(), {
+      kind: 'other', name: 'Soccer', distance_m: null, streams: { heart_rate: heartRate },
+    });
+    expect(await kept(soccer)).toEqual({ point_count: 300 });
+    const res = await streams(me.jwt, soccer);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ activity_id: soccer, source: 'healthkit' });
+    expect(res.body.streams).toMatchObject({ moving_s: 299, distance_m: null, speed_mps: null, elevation_m: null });
+    expect(res.body.streams.heart_rate[0]).toBe(130);
+  });
+
+  it('keeps a .fit workout\'s heart rate, and forgets it when the import is deleted', async () => {
+    const me = await member();
+    const clientId = crypto.randomUUID();
+    const form = new FormData();
+    form.set('id', clientId);
+    form.set('file', new File([activityFit({ start: '2026-10-25T03:00:00Z', seconds: 600, hr: 150, power: 200, distanceM: 5000 })], 'ride.fit'));
+    const r = await SELF.fetch(`${BASE}/api/activities/fit`, { method: 'POST', headers: { Authorization: `Bearer ${me.jwt}` }, body: form });
+    expect(r.status).toBe(201);
+    const activityId = (await r.json<any>()).activity.id as string;
+    expect((await kept(activityId))?.point_count).toBeGreaterThan(500);
+    const res = await streams(me.jwt, activityId);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ activity_id: activityId, source: 'fit' });
+    expect(res.body.streams.heart_rate.filter((v: number | null) => v !== null).length).toBeGreaterThan(100);
+
+    const del = await SELF.fetch(`${BASE}/api/activities/fit/${clientId}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${me.jwt}` },
+    });
+    expect(del.status).toBeLessThan(300);
     expect(await kept(activityId)).toBeNull();
   });
 

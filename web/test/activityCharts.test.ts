@@ -92,9 +92,9 @@ describe('chart helpers', () => {
     expect(formatPace(4000)).toBe('–');
   });
 
-  it('offers charts for intervals.icu activities and runs with a route only', () => {
-    const activity = (id: string, source: string, kind: string, deleted_at: number | null = null) =>
-      ({ id, source, kind, deleted_at });
+  it('offers charts for intervals.icu activities, runs with a route and workouts with kept heart rate', () => {
+    const activity = (id: string, source: string, kind: string, deleted_at: number | null = null, average_hr: number | null = null) =>
+      ({ id, source, kind, deleted_at, average_hr });
     const state = {
       external_activities: [
         activity('a', 'intervals', 'other'),
@@ -102,8 +102,11 @@ describe('chart helpers', () => {
         activity('c', 'healthkit', 'ride'),
         activity('d', 'recording', 'run', 1),
         activity('e', 'manual', 'run'),
+        activity('f', 'healthkit', 'other', null, 140),
+        activity('g', 'fit', 'ride', null, 140),
+        activity('h', 'manual', 'other', null, 140),
       ],
     } as unknown as StateResponse;
-    expect([...chartableActivities(state)]).toEqual([['a', 'other'], ['b', 'run']]);
+    expect([...chartableActivities(state)]).toEqual([['a', 'other'], ['b', 'run'], ['f', 'other'], ['g', 'ride']]);
   });
 });

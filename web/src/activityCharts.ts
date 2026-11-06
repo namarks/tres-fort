@@ -10,7 +10,7 @@ export type { ActivityStreams };
 /** `GET /api/activities/:id/streams`. */
 export interface ActivityStreamsResponse {
   activity_id: string;
-  source: 'intervals' | 'recording' | 'healthkit';
+  source: 'intervals' | 'recording' | 'healthkit' | 'fit';
   streams: ActivityStreams;
 }
 
@@ -19,14 +19,18 @@ const FEET_PER_METER = 3.28084;
 /** Slower than this is standing still, not a pace to draw. */
 const SLOWEST_MOVING_MPS = 0.8;
 const ROUTE_SOURCES = new Set(['recording', 'intervals', 'healthkit']);
+/** Sources whose heart-rate readings Tres Fort keeps (P3). */
+const HEART_RATE_SOURCES = new Set(['recording', 'healthkit', 'fit']);
 
 /** The activities the server can chart, by id, with their kind: anything
- * from intervals.icu (its streams carry heart rate for any sport) and every
- * run with a route. */
+ * from intervals.icu (its streams carry heart rate for any sport), every
+ * run with a route, and any workout with heart rate whose readings Tres
+ * Fort keeps. */
 export function chartableActivities(state: StateResponse): Map<string, string> {
   return new Map(state.external_activities
     .filter((a) => a.deleted_at === null
-      && (a.source === 'intervals' || (a.kind === 'run' && ROUTE_SOURCES.has(a.source))))
+      && (a.source === 'intervals' || (a.kind === 'run' && ROUTE_SOURCES.has(a.source))
+        || (HEART_RATE_SOURCES.has(a.source) && a.average_hr !== null && a.average_hr !== undefined)))
     .map((a) => [a.id, a.kind]));
 }
 

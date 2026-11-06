@@ -66,17 +66,15 @@ final class HealthWorkoutStreamsTests: XCTestCase {
         XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: body))
     }
 
-    func testRunsRidesAndHeartRateSportsCarryStreams() {
+    func testEveryWorkoutCarriesHeartRate() {
+        // Scored from it (sport-activities P1), or kept for its chart only
+        // (run-detail-charts P3).
         XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "run"))
         XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "ride"))
-        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "swim"))
-        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "strength"))
-        // Sports the Worker scores from heart rate (sport-activities P1).
         XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "other", sport: "soccer"))
-        XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "hike", sport: "hike"))
-        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "strength", sport: "strength"))
-        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "other", sport: "other"))
-        XCTAssertFalse(HealthKitSyncModel.hasDetailStreams(kind: "swim", sport: "swim"))
+        XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "strength", sport: "strength"))
+        XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "swim", sport: "swim"))
+        XCTAssertTrue(HealthKitSyncModel.hasDetailStreams(kind: "other", sport: "other"))
     }
 
     func testDropsReadingsTakenWhileThePauseLasts() {

@@ -66,29 +66,32 @@ group views or coach tools.
     `web/src/activityCharts.ts`), as inline SVG in the Ink palette for light
     and dark. Pointing at or touching any chart reads all of them at that
     point; with no pointer each shows its average.
-- [x] **P3 — Heart rate for recorded and Apple Health runs**
-  - Migration 0068 adds `activity_heart_rates`, one private row per run in
-    the encoding of `src/heartRateSeries.ts`: one whole-bpm reading per
-    second of moving time, delta-coded. It is filled from the recorder's
-    TCX upload (a retry can add it to a run stored without one, never
-    replace it) and from an Apple Health run's heart-rate stream push (a
-    later push replaces it, streams with no heart rate clear it, a push
-    without streams keeps it). Only runs keep one, as the owner approved;
-    `.fit` imports keep summaries only (a `.fit` run is usually also on
-    intervals.icu, which is read live). Account export includes it;
-    account deletion, deleting a recorded run (with its Apple Health
-    copies) and a Health workout that stops being a run remove it.
+- [x] **P3 — Heart rate kept for the member's own workouts**
+  - Migration 0068 adds `activity_heart_rates`, one private row per
+    workout in the encoding of `src/heartRateSeries.ts`: one whole-bpm
+    reading per second of moving time, delta-coded, with the epoch time
+    its clock starts at. It is filled from the recorder's TCX upload and
+    `.fit` imports (a retry or re-upload can add it to a workout stored
+    without one, never replace it) and from an Apple Health workout's
+    heart-rate stream push (a later push replaces it, streams with no
+    heart rate clear it, a push without streams keeps it). The owner first
+    approved runs, then on 2026-11-06 chose every workout with heart rate.
+    Account export includes it; account deletion, deleting a recorded run
+    (with its Apple Health copies) or a `.fit` import remove it.
   - The endpoint charts it with the stored route, or alone over moving
-    time for a run with no route. Both sources already take pauses out of
-    its clock, so it is laid on the route's moving time, shifted by the
-    time between the series' start (kept with it) and the route's first
-    GPS fix.
-  - The app re-sends the last year of Apple Health runs once (a third
-    one-time streams pass), so past Health runs get the chart. Runs
-    recorded in the app before this release keep no series: the app
-    deleted their files once the upload was acknowledged.
+    time for a workout with no route. Both sources already take pauses
+    out of its clock, so it is laid on the route's moving time, shifted
+    by the time between the series' start and the route's first GPS fix.
+    The app and the web ask for charts on any Apple Health, `.fit` or
+    recorded workout with an average heart rate.
+  - The app now reads heart rate for every Apple Health workout (only
+    runs, rides and heart-rate-scored sports get load from it; others
+    keep their load) and re-sends the last year's workouts once (a third
+    one-time streams pass), so past workouts get the chart. Runs recorded
+    in the app before this release keep no series: the app deleted their
+    files once the upload was acknowledged.
   - Privacy policy (website and the Worker's `/privacy`) and the app's
-    Apple Health settings text say runs' heart-rate readings are kept,
+    Apple Health settings text say workouts' heart-rate readings are kept,
     private, and how they are deleted. The App Privacy label already
     declares Health and Fitness data linked to the member for app
     functionality, so its answers don't change.
@@ -98,7 +101,8 @@ group views or coach tools.
     policy), and upload a TestFlight build after the release check passes
     on its commit.
   - On device: an intervals.icu run, a run recorded in the app and an
-    Apple Health run each show their charts, heart rate included; then
+    Apple Health run each show their charts, heart rate included, and an
+    Apple Health sport (soccer) shows its heart-rate chart; then
     archive this plan.
 
 ## Execution frontier
@@ -139,9 +143,10 @@ Health run show heart rate on device, and archive this plan.
   activities ask for series.
 - P3: `test/activity_heart_rates.test.ts` covers the encoding, readings on
   moving time lined up with a route across a pause, heart rate alone, an
-  Apple Health run's series with and without its route (404 for another
-  member), replacing, keeping and clearing it on later pushes, non-runs,
-  and the export; `test/run_recording.test.ts` covers a recorded run's
+  route whose first fix came after the start, an Apple Health run's
+  series with and without its route (404 for another member), replacing,
+  keeping and clearing it on later pushes, another sport's heart-rate
+  chart, a `.fit` workout's series and its removal, and the export; `test/run_recording.test.ts` covers a recorded run's
   series, its chart and its removal with the run;
   `test/account_deletion.test.ts` covers account deletion.
 - P2: `web/test/activityCharts.test.ts` covers kilometers and miles, speed

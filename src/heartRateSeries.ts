@@ -1,7 +1,7 @@
-// Heart-rate series Tres Fort keeps for a member's own runs
+// Heart-rate series Tres Fort keeps for a member's own workouts
 // (docs/plans/run-detail-charts P3, migration 0068): a run recorded in the
-// app, and an Apple Health run, so their charts have heart rate like an
-// intervals.icu run's. Pure: no D1. Readings are kept one per whole second
+// app, and any Apple Health or .fit workout with heart rate, so their charts
+// have heart rate like an intervals.icu activity's. Pure: no D1. Readings are kept one per whole second
 // of moving time (pauses already taken out by the source), as small
 // integers delta-coded in JSON text, so a long run stays far below D1's
 // 2 MB row limit.

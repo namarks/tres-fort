@@ -69,10 +69,10 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-sport-streams-backfill.v1.\(userID)"
     }
 
-    /// The one-time pass that re-sends runs' heart rate so the server keeps
-    /// it for their charts (run-detail-charts P3).
-    static func healthRunHeartRateBackfillKey(userID: String) -> String {
-        "com.nmarkspdx.liftcoach.healthkit-run-heart-rate-backfill.v1.\(userID)"
+    /// The one-time pass that re-sends every workout's heart rate so the
+    /// server keeps it for its chart (run-detail-charts P3).
+    static func healthHeartRateBackfillKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-heart-rate-backfill.v1.\(userID)"
     }
 
     /// The Apple Health runs whose route was sent or found missing
@@ -159,7 +159,7 @@ enum AccountLocalState {
             healthResetPendingKey(userID: userID),
             healthStreamsBackfillKey(userID: userID),
             healthSportStreamsBackfillKey(userID: userID),
-            healthRunHeartRateBackfillKey(userID: userID),
+            healthHeartRateBackfillKey(userID: userID),
             healthRoutesKey(userID: userID),
         ]
         var erased = true

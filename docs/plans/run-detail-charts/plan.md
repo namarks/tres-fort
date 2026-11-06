@@ -80,7 +80,9 @@ group views or coach tools.
     copies) and a Health workout that stops being a run remove it.
   - The endpoint charts it with the stored route, or alone over moving
     time for a run with no route. Both sources already take pauses out of
-    its clock, so it is laid on the route's moving time.
+    its clock, so it is laid on the route's moving time, shifted by the
+    time between the series' start (kept with it) and the route's first
+    GPS fix.
   - The app re-sends the last year of Apple Health runs once (a third
     one-time streams pass), so past Health runs get the chart. Runs
     recorded in the app before this release keep no series: the app

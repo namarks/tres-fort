@@ -24,21 +24,22 @@ describe('heart-rate series encoding', () => {
     const encoded = encodeHeartRate([
       { t: 0.2, v: 140 }, { t: 0.7, v: 141 }, { t: 3, v: 150.4 }, { t: 2, v: 145 },
       { t: 5, v: 300 }, { t: 6, v: 10 }, { t: -1, v: 150 }, { t: 7, v: Number.NaN },
-    ])!;
-    expect(encoded).toEqual({ v: 1, dt: [0, 2, 1], bpm: [141, 145, 150] });
+    ], START_MS)!;
+    expect(encoded).toEqual({ v: 1, start_ms: START_MS, dt: [0, 2, 1], bpm: [141, 145, 150] });
     expect(decodeHeartRate(encoded)).toEqual([{ t: 0, v: 141 }, { t: 2, v: 145 }, { t: 3, v: 150 }]);
     expect(parseStoredHeartRate(JSON.stringify(encoded))).toEqual(encoded);
   });
 
   it('is null with no usable reading, and caps a series at a day', () => {
-    expect(encodeHeartRate([])).toBeNull();
-    expect(encodeHeartRate([{ t: 1, v: 0 }])).toBeNull();
-    expect(encodeHeartRate([{ t: MAX_HEART_RATE_POINTS, v: 150 }])).toBeNull();
+    expect(encodeHeartRate([], null)).toBeNull();
+    expect(encodeHeartRate([{ t: 1, v: 0 }], null)).toBeNull();
+    expect(encodeHeartRate([{ t: MAX_HEART_RATE_POINTS, v: 150 }], null)).toBeNull();
+    expect(parseStoredHeartRate('{"v":1,"dt":[1],"bpm":[150]}')).toEqual({ v: 1, start_ms: null, dt: [1], bpm: [150] });
   });
 
   it('refuses stored text that is not a series', () => {
     for (const text of ['', '{}', 'null', '{"v":1,"dt":[1],"bpm":[]}', '{"v":1,"dt":[-1],"bpm":[150]}',
-      '{"v":2,"dt":[1],"bpm":[150]}', '{"v":1,"dt":[1],"bpm":[400]}']) {
+      '{"v":2,"dt":[1],"bpm":[150]}', '{"v":1,"dt":[1],"bpm":[400]}', '{"v":1,"start_ms":"x","dt":[1],"bpm":[150]}']) {
       expect(parseStoredHeartRate(text)).toBeNull();
     }
   });
@@ -140,6 +141,27 @@ describe('Apple Health runs keep their heart rate', () => {
 
     const stranger = await member();
     expect((await streams(stranger.jwt, activityId)).status).toBe(404);
+  });
+
+  it('lines heart rate up with a route whose first fix came after the start', async () => {
+    // Ten minutes; GPS locks on a minute in. Heart rate goes from 140 to 170
+    // at workout second 300, which is route second 240.
+    const me = await member();
+    const healthId = crypto.randomUUID();
+    const hr = { t: Array.from({ length: 600 }, (_, i) => i), v: Array.from({ length: 600 }, (_, i) => (i < 300 ? 140 : 170)) };
+    const activityId = await push(me.jwt, healthId, { moving_time_sec: 600, distance_m: 1800, streams: { heart_rate: hr } });
+    const points = Array.from({ length: 541 }, (_, i): RoutePoint =>
+      ({ t: START_MS + 60_000 + i * 1_000, lat: 45.519 + i * 0.000027, lon: -122.6793, alt: 15 }));
+    const put = await SELF.fetch(`${BASE}/api/activities/healthkit/${healthId}/route`, {
+      method: 'PUT', headers: auth(me.jwt), body: JSON.stringify({ route: encodeRoute([points]) }),
+    });
+    expect(put.status).toBe(200);
+    const s = (await streams(me.jwt, activityId)).body.streams;
+    expect(s.moving_s).toBe(540);
+    // Five-second points: 240 s is the start of point 48.
+    expect(s.heart_rate[46]).toBe(140);
+    expect(s.heart_rate[49]).toBe(170);
+    expect(s.heart_rate[107]).toBe(170);
   });
 
   it('replaces the series on a later push, keeps it when streams are left out and clears it when they have none', async () => {

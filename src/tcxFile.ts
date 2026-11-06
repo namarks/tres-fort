@@ -26,6 +26,8 @@ export interface TcxRun {
   /** `t` is moving seconds from the start: paused time is taken out, as in
    * a FIT file's timer time. */
   hr: Sample[];
+  /** Epoch ms `hr`'s clock starts at: the first track's first point. */
+  hr_start_ms: number | null;
   /** One segment per track; the recorder starts a new track after a pause. */
   segments: RoutePoint[][];
 }
@@ -143,6 +145,7 @@ export function parseTcx(text: string): TcxRun {
     avg_hr: readings.length > 0 ? readings.reduce((a, b) => a + b, 0) / readings.length : null,
     max_hr: readings.length > 0 ? readings.reduce((a, b) => Math.max(a, b)) : null,
     hr,
+    hr_start_ms: firstPoint,
     segments: tracks.map((track) => track
       .filter((p) => p.lat !== null && p.lon !== null)
       .map((p) => ({ t: p.t, lat: p.lat!, lon: p.lon!, alt: p.alt }))),

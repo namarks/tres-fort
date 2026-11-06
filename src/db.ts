@@ -9159,7 +9159,7 @@ export async function upsertHealthKitActivity(
   // (run-detail-charts P3). Streams sent without heart rate clear it; a push
   // with no streams keeps it, like the summaries.
   const heartRate = streamsSent && input.kind === 'run' && input.streams?.heart_rate
-    ? encodeHeartRate(input.streams.heart_rate) : null;
+    ? encodeHeartRate(input.streams.heart_rate, input.start_date_utc_ms ?? null) : null;
   const heartRateStatements = [
     ...(heartRate ? [keepHeartRateStatement(db, userId, id, heartRate, { replace: true })] : []),
     db
@@ -9530,7 +9530,7 @@ export async function storeRecordedRun(
     return { activity: (await read()) ?? stored, deduplicated: true, deleted: false };
   };
   const recovery = input.recovery ?? null;
-  const heartRate = encodeHeartRate(input.run.hr);
+  const heartRate = encodeHeartRate(input.run.hr, input.run.hr_start_ms);
   const existing = await read();
   if (existing) {
     // A retry can carry the heart rate a first attempt from an older build
@@ -9732,8 +9732,14 @@ export async function getActivityStreams(
   const stored = await getActivityRoute(db, userId, activityId);
   const heart = await getStoredHeartRate(db, userId, activityId, stored?.activity_id ?? null);
   const track = stored?.route ? trackFromRoute(stored.route) : [];
+  // Heart rate's clock starts at the workout's start, a route's at its first
+  // fix: move the readings onto the route's clock. Time before the first
+  // fix is taken as moving, as a run starts before GPS locks on.
+  const shift = stored?.route && heart?.series.start_ms != null
+    ? (stored.route.start_ms - heart.series.start_ms) / 1000 : 0;
+  const readings = heart ? decodeHeartRate(heart.series).map((r) => ({ t: r.t - shift, v: r.v })) : [];
   const streams = track.length > 0 || heart
-    ? buildActivityStreams(track, heart ? decodeHeartRate(heart.series) : [], { heartRateClock: 'moving' })
+    ? buildActivityStreams(track, readings, { heartRateClock: 'moving' })
     : null;
   const charted = stored?.route ? stored : heart;
   if (charted && streams) return { ok: true, activity_id: charted.activity_id, source: charted.source, streams };

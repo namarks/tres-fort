@@ -10,11 +10,15 @@ import type { Sample } from './trainingLoad';
 
 /**
  * The stored and exported form. Reading i is at `sum(dt[0..i])` seconds of
- * moving time from the start, so `dt[0]` is the first reading's own time;
- * `bpm[i]` is its whole beats a minute.
+ * moving time from `start_ms`, so `dt[0]` is the first reading's own time;
+ * `bpm[i]` is its whole beats a minute. `start_ms` is the epoch millisecond
+ * the clock starts at (the workout's start, or a recording's first point),
+ * so the series lines up with a route that starts at its first GPS fix;
+ * null when the source didn't say.
  */
 export interface EncodedHeartRate {
   v: 1;
+  start_ms: number | null;
   dt: number[];
   bpm: number[];
 }
@@ -30,7 +34,7 @@ export const MAX_BPM = 250;
  * taken out). Readings in the same whole second are averaged; invalid ones
  * are dropped. Null when none is left.
  */
-export function encodeHeartRate(samples: readonly Sample[]): EncodedHeartRate | null {
+export function encodeHeartRate(samples: readonly Sample[], startMs: number | null): EncodedHeartRate | null {
   const sums = new Map<number, { s: number; n: number }>();
   for (const { t, v } of samples) {
     if (!Number.isFinite(t) || t < 0 || !Number.isFinite(v) || v < MIN_BPM || v > MAX_BPM) continue;
@@ -46,7 +50,9 @@ export function encodeHeartRate(samples: readonly Sample[]): EncodedHeartRate | 
   }
   if (sums.size === 0) return null;
   const seconds = [...sums.keys()].sort((a, b) => a - b);
-  const out: EncodedHeartRate = { v: 1, dt: [], bpm: [] };
+  const out: EncodedHeartRate = {
+    v: 1, start_ms: startMs !== null && Number.isSafeInteger(startMs) ? startMs : null, dt: [], bpm: [],
+  };
   let last = 0;
   for (const second of seconds) {
     const { s, n } = sums.get(second)!;
@@ -80,8 +86,9 @@ export function parseStoredHeartRate(text: string): EncodedHeartRate | null {
     return null;
   }
   if (typeof value !== 'object' || value === null) return null;
-  const { v, dt, bpm } = value as Record<string, unknown>;
+  const { v, start_ms: start, dt, bpm } = value as Record<string, unknown>;
   if (v !== 1 || !isIntArray(dt, (n) => n >= 0) || !isIntArray(bpm, (n) => n >= MIN_BPM && n <= MAX_BPM)) return null;
   if (dt.length === 0 || dt.length !== bpm.length) return null;
-  return { v: 1, dt, bpm };
+  if (start !== undefined && start !== null && !Number.isSafeInteger(start)) return null;
+  return { v: 1, start_ms: typeof start === 'number' ? start : null, dt, bpm };
 }

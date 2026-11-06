@@ -160,7 +160,12 @@ if [ "${altool_status}" -ne 0 ]; then
   exit "${altool_status}"
 fi
 
-if LC_ALL=C grep -Eiq '(^|[^[:alnum:]_])(error|failed|failure)([^[:alnum:]_]|$)' "${upload_log}"; then
+# Xcode 26.3's altool also logs a harmless "ERROR: ... Failed to create URL
+# for 'CDUploaderStateInfoResumeFilePath'" line on uploads it then reports as
+# succeeded (build 66, 2026-11-06). Only that line is ignored; any other error
+# text still fails closed.
+if LC_ALL=C grep -Eiq '(^|[^[:alnum:]_])(error|failed|failure)([^[:alnum:]_]|$)' \
+  < <(LC_ALL=C grep -Fv "'CDUploaderStateInfoResumeFilePath'" "${upload_log}" || true); then
   echo "altool reported an upload failure despite exiting successfully; upload was not accepted." >&2
   exit 1
 fi

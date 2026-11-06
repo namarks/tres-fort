@@ -168,6 +168,24 @@ assert_contains "Uploaded 0.1.0 (30)."
 
 case_number=$((case_number + 1))
 run_case \
+  "harmless resume-file log line does not fail a successful upload" \
+  0 \
+  $'ERROR: [ContentDelivery.Uploader] Failed to create URL for \'CDUploaderStateInfoResumeFilePath\'\nUPLOAD SUCCEEDED with no errors\nRequestUUID = accepted-delivery'
+assert_status 0
+assert_contains "UPLOAD SUCCEEDED with no errors"
+assert_contains "Uploaded 0.1.0 (30)."
+
+case_number=$((case_number + 1))
+run_case \
+  "other errors still fail beside the harmless resume-file line" \
+  0 \
+  $'ERROR: [ContentDelivery.Uploader] Failed to create URL for \'CDUploaderStateInfoResumeFilePath\'\nERROR: Failed to upload package.\nUPLOAD SUCCEEDED with no errors'
+assert_status 1
+assert_contains "reported an upload failure despite exiting successfully"
+assert_not_contains "Uploaded 0.1.0 (30)."
+
+case_number=$((case_number + 1))
+run_case \
   "nonzero altool status propagates" \
   7 \
   "Transport unavailable"

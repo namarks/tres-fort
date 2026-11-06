@@ -2,7 +2,8 @@ import SwiftUI
 
 // Visual language: the Ink palette (`BrandPalette`), following the system
 // light or dark appearance, with a single dusty-navy accent and a muted green
-// for "done". One type system: SF Pro (system text styles, so Dynamic Type
+// for "done". The brand orange (`signal`, the fort in the app icon) marks
+// primary actions and Today's week fort; it is not a general accent. One type system: SF Pro (system text styles, so Dynamic Type
 // applies) for every label and heading; Bebas Neue display type only for
 // workout and exercise names and big numbers; JetBrains Mono only for big
 // numbers. Primary actions use `WorkoutPrimaryButtonStyle`.
@@ -17,6 +18,9 @@ enum Theme {
     static let accent = BrandPalette.accent
     /// Text and icons on an accent fill.
     static let onAccent = BrandPalette.onAccent
+    /// Brand orange for primary actions; `onSignal` labels a signal fill.
+    static let signal = BrandPalette.signal
+    static let onSignal = BrandPalette.onSignal
     static let done = BrandPalette.done
     static let danger = BrandPalette.danger
 

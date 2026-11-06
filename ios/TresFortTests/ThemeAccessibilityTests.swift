@@ -14,7 +14,7 @@ final class ThemeAccessibilityTests: XCTestCase {
     // light and dark mode; decorative dim and intentionally disabled text
     // have a different purpose.
     func testEnabledTextContrastAcrossSurfaces() {
-        let foregrounds = [Theme.text, Theme.muted, Theme.accent, Theme.done, Theme.danger]
+        let foregrounds = [Theme.text, Theme.muted, Theme.accent, Theme.signal, Theme.done, Theme.danger]
             + BrandPalette.categorical
         for style in styles {
             for foreground in foregrounds {
@@ -31,6 +31,23 @@ final class ThemeAccessibilityTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(contrast(Theme.onAccent, Theme.accent, style), 4.5)
             // Older call sites label accent fills with the page background.
             XCTAssertGreaterThanOrEqual(contrast(Theme.bg, Theme.accent, style), 4.5)
+        }
+    }
+
+    func testSignalActionTextContrast() {
+        for style in styles {
+            XCTAssertGreaterThanOrEqual(contrast(Theme.onSignal, Theme.signal, style), 4.5)
+        }
+    }
+
+    /// The week fort card is navy in both modes: its text keeps 4.5:1 and
+    /// its towers keep the 3:1 graphics minimum.
+    func testWeekFortContrastOnNavy() {
+        for style in styles {
+            for text in [BrandPalette.fortOrangeText, BrandPalette.fortLabel] {
+                XCTAssertGreaterThanOrEqual(contrast(text, BrandPalette.fortNavy, style), 4.5)
+            }
+            XCTAssertGreaterThanOrEqual(contrast(BrandPalette.fortOrange, BrandPalette.fortNavy, style), 3)
         }
     }
 

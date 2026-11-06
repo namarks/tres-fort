@@ -18,6 +18,12 @@ enum BrandPalette {
     static let accent = dynamic(light: 0x37577F, dark: 0x83A4CE)
     /// Text and icons on an accent fill.
     static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x0E1927)
+    /// The brand's orange (the fort in the app icon), for primary actions:
+    /// a fill under `onSignal`, or text on any surface. Darker in light mode
+    /// so white labels and text on light surfaces keep 4.5:1.
+    static let signal = dynamic(light: 0xC22D0C, dark: 0xEE694F)
+    /// Text and icons on a signal fill.
+    static let onSignal = dynamic(light: 0xFFFFFF, dark: 0x0E1927)
     static let done = dynamic(light: 0x31693F, dark: 0x82C38F)
     static let danger = dynamic(light: 0xAF3C3A, dark: 0xEB827B)
 
@@ -25,6 +31,17 @@ enum BrandPalette {
     /// background, so they use the dark-mode values directly.
     static let liveBackground = Color(red: 0x10 / 255, green: 0x14 / 255, blue: 0x19 / 255)
     static let liveAccent = Color(red: 0x83 / 255, green: 0xA4 / 255, blue: 0xCE / 255)
+
+    /// The fort: the app icon's navy and orange, the same in light and dark
+    /// mode. Today's week card draws each trained day as an orange tower.
+    static let fortNavy = fixed(0x15273E)
+    /// Towers and marks on fortNavy (graphics only, 4:1 on navy).
+    static let fortOrange = fixed(0xED4929)
+    /// Text on fortNavy: orange (4.9:1) and a quiet ink blue (5.9:1).
+    static let fortOrangeText = fixed(0xEE694F)
+    static let fortLabel = fixed(0x83A4CE)
+    /// A planned day's tower, and the card's edge on a dark page.
+    static let fortIdle = fixed(0x2C4362)
 
     /// Six categorical colors for telling things apart (group members,
     /// activity kinds), never for emphasis. Same OKLCH lightness and chroma at
@@ -38,6 +55,11 @@ enum BrandPalette {
         dynamic(light: 0x6D5398, dark: 0xC2A7F4),  // violet, hue 300
         dynamic(light: 0x8E4771, dark: 0xEA9BC7),  // plum, hue 345
     ]
+
+    /// One color for both appearances.
+    static func fixed(_ rgb: UInt32) -> Color {
+        Color(UIColor(rgb: rgb))
+    }
 
     static func dynamic(light: UInt32, dark: UInt32) -> Color {
         Color(UIColor { traits in

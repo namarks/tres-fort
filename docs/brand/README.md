@@ -16,3 +16,15 @@ changing the SVG:
 - `website/public/assets/app-icon.png`
 - `web/public/assets/app-icon.png`
 - `plugins/tres-fort/assets/icon.png`
+
+## In the app
+
+The app's screens keep the Ink palette (`ios/Shared/BrandPalette.swift`).
+The brand orange appears in two places only:
+
+- `signal` fills primary actions (`WorkoutPrimaryButtonStyle`, Join, the
+  Group add button): `#C22D0C` in light mode under white text, `#EE694F` in
+  dark mode under navy text, both 4.5:1 or better.
+- Today's week card (`WeekFortView`) is the icon in miniature: a navy card
+  where every day you trained raises an orange tower, planned days stand as
+  dark towers and rest days stay low.

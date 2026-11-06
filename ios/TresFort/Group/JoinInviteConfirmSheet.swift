@@ -48,15 +48,15 @@ struct JoinInviteConfirmSheet: View {
                             HStack {
                                 Spacer()
                                 if joining {
-                                    ProgressView().tint(Theme.onAccent)
+                                    ProgressView().tint(Theme.onSignal)
                                 } else {
                                     Text("Join \(groupName)").font(.headline)
                                 }
                                 Spacer()
                             }
                             .padding(.vertical, 15)
-                            .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12))
-                            .foregroundStyle(Theme.onAccent)
+                            .background(Theme.signal, in: RoundedRectangle(cornerRadius: 12))
+                            .foregroundStyle(Theme.onSignal)
                         }
                         .disabled(joining)
                     }

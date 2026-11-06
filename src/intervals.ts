@@ -753,3 +753,64 @@ export async function fetchActivityRouteStreams(
     },
   };
 }
+
+/**
+ * One activity's chart streams as intervals.icu sends them, index for index
+ * (docs/plans/run-detail-charts P0): seconds from the start, cumulative
+ * meters, heart rate, altitude and GPS positions. A stream intervals.icu
+ * didn't send is null. Read only: nothing here is stored.
+ */
+export interface IntervalsChartStreams {
+  time: (number | null)[] | null;
+  distance: (number | null)[] | null;
+  heartrate: (number | null)[] | null;
+  altitude: (number | null)[] | null;
+  lat: (number | null)[] | null;
+  lon: (number | null)[] | null;
+}
+
+/**
+ * GET /api/v1/activity/{id}/streams with the time, distance, heartrate,
+ * altitude and latlng streams. `value` is null when intervals.icu has none
+ * of them for the activity (a manual entry).
+ */
+export async function fetchActivityChartStreams(
+  apiKey: string | null | undefined,
+  activityId: string,
+  deps: WriteDeps = {},
+): Promise<IntervalsWriteResult<IntervalsChartStreams | null>> {
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader) return { ok: false, reason: 'disabled' };
+  const url =
+    `https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}` +
+    '/streams?types=time,distance,heartrate,altitude,latlng';
+  const r = await intervalsRequest(url, 'GET', authHeader, undefined, {
+    ...deps,
+    timeoutMs: deps.timeoutMs ?? 15_000,
+  });
+  if (!r.ok) return r;
+  if (!Array.isArray(r.value)) return { ok: false, reason: 'parse' };
+  const byType = new Map<string, Record<string, unknown>>();
+  for (const stream of r.value) {
+    if (isRecord(stream) && typeof stream.type === 'string') byType.set(stream.type, stream);
+  }
+  const numbers = (v: unknown): (number | null)[] | null =>
+    Array.isArray(v) ? v.map((x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)) : null;
+  const latlng = byType.get('latlng');
+  let lat = numbers(latlng?.data);
+  let lon = numbers(latlng?.data2);
+  if (!lat || !lon || lat.length !== lon.length) {
+    lat = null;
+    lon = null;
+  }
+  const value: IntervalsChartStreams = {
+    time: numbers(byType.get('time')?.data),
+    distance: numbers(byType.get('distance')?.data),
+    heartrate: numbers(byType.get('heartrate')?.data),
+    altitude: numbers(byType.get('altitude')?.data),
+    lat,
+    lon,
+  };
+  const any = value.distance || value.heartrate || value.altitude || value.lat;
+  return { ok: true, value: any ? value : null };
+}

@@ -204,6 +204,7 @@ struct PlannedRunRecordView: View {
                 if !routeSegments.isEmpty {
                     ActivityRouteThumbnail(segments: routeSegments)
                 }
+                ActivityChartsSection(activity: run, access: routeAccess)
                 if let rateEffort, run.offersEffortRating {
                     EffortRatingControl(activity: run) { effort in
                         await rateEffort(run.id, effort)

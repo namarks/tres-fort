@@ -112,6 +112,7 @@ import {
   type HeartRateRecovery,
   getActivityRoute,
   getIntervalsActivityRoute,
+  getActivityStreams,
   saveHealthKitRoute,
   deleteRecordedRun,
   deleteRecordedRunUpload,
@@ -1743,6 +1744,21 @@ apiRoutes.get('/activities/:id/route', async (c) => {
     });
   }
   if (provider.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);
+  return c.json({ error: 'not_found' }, 404);
+});
+
+// GET /api/activities/:id/streams — pace, heart rate and elevation series of
+// one of the member's activities, ready to chart (docs/plans/run-detail-charts
+// P0; shape in src/activityStreams.ts). An intervals.icu activity is read from
+// intervals.icu and not stored; a run recorded in the app or an Apple Health
+// run uses the route Tres Fort keeps. 404 when there is nothing to chart; 502
+// when intervals.icu can't answer now and Tres Fort has no route, so a client
+// tries again later. Only the member's own activities are ever served.
+apiRoutes.get('/activities/:id/streams', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const found = await getActivityStreams(c.env.DB, c.env, c.get('userId'), c.req.param('id'));
+  if (found.ok) return c.json({ activity_id: found.activity_id, source: found.source, streams: found.streams });
+  if (found.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);
   return c.json({ error: 'not_found' }, 404);
 });
 

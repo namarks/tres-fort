@@ -190,6 +190,12 @@ integration or social breadth.
   route itself, with intervals.icu an optional copy. P6 maps runs the app
   didn't record. P7 keeps a strap's heart rate live on the run summary and
   records how far it falls one and two minutes after the stop.
+- [Run detail charts](run-detail-charts/plan.md) — **active**; pace, heart
+  rate and elevation charts for a run in the app and on the web, from
+  intervals.icu streams read live or the route Tres Fort keeps, with a
+  private heart-rate series kept for recorded and Apple Health runs. P0's
+  chart series endpoint, P1's charts in the app and P2's charts on the web
+  are in the repository.
 - [Planned runs with pace and heart rate targets](planned-runs/plan.md) —
   **active**; the coach or the member plans runs with steps and pace or
   heart rate targets in the Tres Fort plan, and the recorder follows them

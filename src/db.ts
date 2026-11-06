@@ -9,6 +9,8 @@ import { heartRateStreamSummary, powerStreamSummary, type Sample } from './train
 import type { FitActivity } from './fitFile';
 import type { TcxRun } from './tcxFile';
 import { decodeRoute, encodeRoute, parseStoredRoute, routePointCount, type EncodedRoute } from './activityRoute';
+import { buildActivityStreams, trackFromRoute, type ActivityStreams } from './activityStreams';
+import type { Fetcher } from './intervals';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { createIntervalsRouteService } from './services/intervalsRoute';
@@ -58,6 +60,7 @@ import type {
   User,
   Weekday,
   WeeklySchedule,
+  Env,
 } from './types';
 import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
 import {
@@ -9036,8 +9039,8 @@ export const {
 } = createIntervalsActivityWriteService({
   resolveIntervalsCredential, syncExternalActivities,
 });
-export const { getIntervalsActivityRoute } = createIntervalsRouteService({ resolveIntervalsCredential });
-export type { IntervalsRouteResult } from './services/intervalsRoute';
+export const { getIntervalsActivityRoute, getIntervalsActivityStreams } = createIntervalsRouteService({ resolveIntervalsCredential });
+export type { IntervalsRouteResult, IntervalsStreamsResult } from './services/intervalsRoute';
 
 /** HealthKit encodes the device-local wall clock as UTC-like epoch ms. */
 export function healthKitDateMatchesStart(date: string, startMs: number | null): boolean {
@@ -9595,6 +9598,33 @@ export async function getActivityRoute(
         }
       : null,
   };
+}
+
+export type ActivityStreamsResult =
+  | { ok: true; activity_id: string; source: 'intervals' | 'recording' | 'healthkit'; streams: ActivityStreams }
+  | { ok: false; reason: 'not_found' | 'unavailable' };
+
+/**
+ * Pace, heart rate and elevation series for one of the member's activities
+ * (docs/plans/run-detail-charts P0). An intervals.icu activity is read from
+ * intervals.icu, which has the watch's heart rate; when intervals.icu can't
+ * give one, or for a run recorded in the app or an Apple Health run, the
+ * route Tres Fort keeps gives pace and elevation. Only the member's own
+ * activities are ever read, and nothing is stored.
+ */
+export async function getActivityStreams(
+  db: D1Database,
+  env: Env,
+  userId: string,
+  activityId: string,
+  deps: { fetcher?: Fetcher } = {},
+): Promise<ActivityStreamsResult> {
+  const provider = await getIntervalsActivityStreams(db, env, userId, activityId, deps);
+  if (provider.ok) return { ok: true, activity_id: activityId, source: 'intervals', streams: provider.streams };
+  const stored = await getActivityRoute(db, userId, activityId);
+  const streams = stored?.route ? buildActivityStreams(trackFromRoute(stored.route)) : null;
+  if (stored && streams) return { ok: true, activity_id: stored.activity_id, source: stored.source, streams };
+  return { ok: false, reason: provider.reason };
 }
 
 export type HealthKitRouteResult =

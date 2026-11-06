@@ -16,6 +16,8 @@ import { describeWriteError } from './editing';
 import { WorkoutsPage, type Catalog, type Write } from './WorkoutEditor';
 import { AwayDates, DateActions, RoutineEditor } from './CalendarEditing';
 import { RouteMap } from './RouteMapView';
+import { ActivityCharts } from './ActivityChartsView';
+import { chartableActivities } from './activityCharts';
 import { routableActivityIds } from './routeMap';
 import {
   activityLoads,
@@ -272,6 +274,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
   const loads = useMemo(() => activityLoads(state), [state]);
   const sports = useMemo(() => activitySports(state), [state]);
   const routable = useMemo(() => routableActivityIds(state), [state]);
+  const chartable = useMemo(() => chartableActivities(state), [state]);
 
   return (
     <>
@@ -327,6 +330,7 @@ function CalendarView({ state, write, busy, onEditWorkout }: {
             loads={loads}
             sports={sports}
             routable={routable}
+            chartable={chartable}
             onEditWorkout={onEditWorkout}
             actions={(
               <DateActions date={selected} today={today} cell={selectedCell} workout={workoutFor(selectedCell, workouts)}
@@ -382,10 +386,11 @@ function DayDetail(props: {
   sports: Map<string, string>;
   /** Completed activities that may have a route. */
   routable: Set<string>;
+  chartable: Map<string, string>;
   onEditWorkout: (id: string) => void;
   actions: ReactNode;
 }) {
-  const { date, cell, workout, trip, miles, loads, sports, routable, onEditWorkout, actions } = props;
+  const { date, cell, workout, trip, miles, loads, sports, routable, chartable, onEditWorkout, actions } = props;
   return (
     <aside className="detail" aria-labelledby="detail-title">
       <h2 id="detail-title">{formatLongDate(date)}</h2>
@@ -439,6 +444,9 @@ function DayDetail(props: {
                     {load ? ` · load ${Math.round(load.load)}${method ? ` (${method})` : ''}` : ''}
                   </div>
                   {item.completed && routable.has(item.id) ? <RouteMap activityId={item.id} label={`Route of ${title}`} /> : null}
+                  {item.completed && chartable.has(item.id)
+                    ? <ActivityCharts activityId={item.id} kind={chartable.get(item.id)!} miles={miles} />
+                    : null}
                 </li>
               );
             })}

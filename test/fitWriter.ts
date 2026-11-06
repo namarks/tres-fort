@@ -98,6 +98,8 @@ export function activityFit(opts: {
   seconds: number;
   sport?: number;
   hr?: number | null;
+  /** False leaves average and maximum heart rate out of the session. */
+  sessionHr?: boolean;
   power?: number | null;
   step?: number;
   localOffsetSec?: number | null;
@@ -122,7 +124,9 @@ export function activityFit(opts: {
     { num: 22, type: 'uint16' },
   ]).data(2, [
     start + opts.seconds, start, opts.sport ?? 2, 0, opts.seconds * 1000, opts.seconds * 1000,
-    Math.round((opts.distanceM ?? 0) * 100), 600, opts.hr ?? null, opts.hr === null || opts.hr === undefined ? null : opts.hr + 10,
+    Math.round((opts.distanceM ?? 0) * 100), 600,
+    opts.sessionHr === false ? null : opts.hr ?? null,
+    opts.sessionHr === false || opts.hr === null || opts.hr === undefined ? null : opts.hr + 10,
     opts.power ?? null, opts.normalizedPower ?? null, 120,
   ]);
   const end = start + opts.seconds;

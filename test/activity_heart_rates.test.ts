@@ -11,6 +11,7 @@ import {
   decodeHeartRate, encodeHeartRate, MAX_HEART_RATE_POINTS, parseStoredHeartRate,
 } from '../src/heartRateSeries';
 import { issueAppJwt } from '../src/auth';
+import { parseFit } from '../src/fitFile';
 import { activityFit } from './fitWriter';
 
 const BASE = 'https://tres-fort.test';
@@ -210,6 +211,13 @@ describe('Apple Health workouts keep their heart rate', () => {
     });
     expect(del.status).toBeLessThan(300);
     expect(await kept(activityId)).toBeNull();
+  });
+
+  it('takes a .fit workout\'s average heart rate from its records when the session leaves it out', () => {
+    // The app and web offer a chart by the workout's average heart rate.
+    const fit = parseFit(activityFit({ start: '2026-10-25T03:00:00Z', seconds: 600, hr: 150, sessionHr: false }));
+    expect(fit).toMatchObject({ avg_hr: 150, max_hr: 150 });
+    expect(parseFit(activityFit({ start: '2026-10-25T03:00:00Z', seconds: 600, hr: 150 }))).toMatchObject({ avg_hr: 150, max_hr: 160 });
   });
 
   it('includes the series in the account export', async () => {

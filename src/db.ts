@@ -10,6 +10,7 @@ import type { FitActivity } from './fitFile';
 import type { TcxRun } from './tcxFile';
 import { decodeRoute, encodeRoute, parseStoredRoute, routePointCount, type EncodedRoute } from './activityRoute';
 import { buildActivityStreams, trackFromRoute, type ActivityStreams } from './activityStreams';
+import { decodeHeartRate, encodeHeartRate, parseStoredHeartRate, type EncodedHeartRate } from './heartRateSeries';
 import type { Fetcher } from './intervals';
 import { addAthleteThreshold, deleteAthleteThreshold, type ThresholdInput } from './services/athleteThresholds';
 import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
@@ -1298,6 +1299,7 @@ export async function deleteUserAccount(
     db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM activity_routes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM activity_heart_rates WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
@@ -2494,6 +2496,7 @@ export async function exportUserData(
     db.prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?1').bind(userId),
     db.prepare('SELECT id,sport,metric,value,effective_date,source,created_at,deleted_at FROM athlete_thresholds WHERE user_id=?1 ORDER BY created_at,id').bind(userId),
     db.prepare('SELECT activity_id,point_count,route,created_at FROM activity_routes WHERE user_id=?1 ORDER BY created_at,activity_id').bind(userId),
+    db.prepare('SELECT activity_id,point_count,series,created_at FROM activity_heart_rates WHERE user_id=?1 ORDER BY created_at,activity_id').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2562,6 +2565,11 @@ export async function exportUserData(
       activity_routes: rowsAt(22).map((row) => ({
         ...row,
         route: typeof row.route === 'string' ? parseStoredRoute(row.route) : null,
+      })),
+      // Runs' heart-rate series in src/heartRateSeries.ts's encoding.
+      activity_heart_rates: rowsAt(23).map((row) => ({
+        ...row,
+        series: typeof row.series === 'string' ? parseStoredHeartRate(row.series) : null,
       })),
     },
     group_memberships: memberships,
@@ -9147,6 +9155,24 @@ export async function upsertHealthKitActivity(
   const sport = sportForHealthKitType(healthKitTypeOf(input.raw), input.kind);
   const name = (input.name === null || input.name === 'Workout') && sport !== 'other'
     ? sportLabel(sport) : input.name;
+  // A run's heart rate is also kept as a series for its chart
+  // (run-detail-charts P3). Streams sent without heart rate clear it; a push
+  // with no streams keeps it, like the summaries.
+  const heartRate = streamsSent && input.kind === 'run' && input.streams?.heart_rate
+    ? encodeHeartRate(input.streams.heart_rate) : null;
+  const heartRateStatements = [
+    ...(heartRate ? [keepHeartRateStatement(db, userId, id, heartRate, { replace: true })] : []),
+    db
+      .prepare(
+        `DELETE FROM activity_heart_rates
+          WHERE activity_id = ?1 AND user_id = ?2
+            AND (?3 = 1 OR NOT EXISTS (
+              SELECT 1 FROM external_activities a
+               WHERE a.id = ?1 AND a.user_id = ?2 AND a.kind = 'run'
+                 AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)))`,
+      )
+      .bind(id, userId, streamsSent && !heartRate ? 1 : 0),
+  ];
   await db.batch([
     db
     .prepare(
@@ -9231,6 +9257,7 @@ export async function upsertHealthKitActivity(
       sport,
     ),
     reconcileNativeHealthKitStatement(db, userId, ts),
+    ...heartRateStatements,
   ]);
   // Existing cross-source dedup: if this workout also exists from
   // intervals.icu, retire the HealthKit copy so it isn't shown/counted twice.
@@ -9417,6 +9444,49 @@ export interface HeartRateRecovery {
   after_120s: number | null;
 }
 
+/**
+ * Keep a run's heart-rate series (docs/plans/run-detail-charts P3, migration
+ * 0068) for the member's activity `activityId`, only while it is a run the
+ * member hasn't deleted. `replace` lets a later Apple Health push revise it;
+ * a recording's first series is kept.
+ */
+function keepHeartRateStatement(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+  series: EncodedHeartRate,
+  { replace }: { replace: boolean },
+): D1PreparedStatement {
+  const conflict = replace
+    ? `ON CONFLICT(activity_id) DO UPDATE SET
+         point_count = excluded.point_count, series = excluded.series, created_at = excluded.created_at
+        WHERE activity_heart_rates.user_id = excluded.user_id
+          AND activity_heart_rates.series IS NOT excluded.series`
+    : 'ON CONFLICT DO NOTHING';
+  return db
+    .prepare(
+      `INSERT INTO activity_heart_rates (activity_id,user_id,point_count,series,created_at)
+       SELECT a.id, a.user_id, ?3, ?4, ?5 FROM external_activities a
+        WHERE a.id = ?1 AND a.user_id = ?2 AND a.kind = 'run'
+          AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)
+       ${conflict}`,
+    )
+    .bind(activityId, userId, series.dt.length, JSON.stringify(series), now());
+}
+
+/** Forget the heart-rate series of every activity of the member's that is
+ * no longer a run they keep: deleted by them, or no longer a run. */
+function forgetHeartRatesStatement(db: D1Database, userId: string): D1PreparedStatement {
+  return db
+    .prepare(
+      `DELETE FROM activity_heart_rates
+        WHERE user_id = ?1 AND activity_id IN (
+          SELECT id FROM external_activities
+           WHERE user_id = ?1 AND ((deleted_at IS NOT NULL AND duplicate_of IS NULL) OR kind <> 'run'))`,
+    )
+    .bind(userId);
+}
+
 export interface RecordedRunStoreResult {
   activity: ExternalActivityRow;
   /** This recording was already stored. */
@@ -9460,8 +9530,14 @@ export async function storeRecordedRun(
     return { activity: (await read()) ?? stored, deduplicated: true, deleted: false };
   };
   const recovery = input.recovery ?? null;
+  const heartRate = encodeHeartRate(input.run.hr);
   const existing = await read();
   if (existing) {
+    // A retry can carry the heart rate a first attempt from an older build
+    // didn't keep; a series already kept is never replaced.
+    if (heartRate && !memberDeleted(existing)) {
+      await keepHeartRateStatement(db, userId, id, heartRate, { replace: false }).run();
+    }
     // A retry can carry the recovery an earlier attempt didn't have yet;
     // a value already kept is never replaced.
     if (recovery && !memberDeleted(existing) && existing.recovery_hr_at_stop == null) {
@@ -9519,6 +9595,7 @@ export async function storeRecordedRun(
         .bind(id, userId, routePointCount(route), JSON.stringify(route), ts),
     );
   }
+  if (heartRate) statements.push(keepHeartRateStatement(db, userId, id, heartRate, { replace: false }));
   const [inserted] = await db.batch(statements);
   // Losing a race to the same recording id.
   if ((inserted!.meta.changes ?? 0) === 0) {
@@ -9605,12 +9682,43 @@ export type ActivityStreamsResult =
   | { ok: false; reason: 'not_found' | 'unavailable' };
 
 /**
+ * The heart-rate series Tres Fort keeps for one of the member's runs
+ * (run-detail-charts P3): the activity's own, or one dedup hid behind it.
+ * `preferred` (the activity whose route is drawn) comes first, then a run
+ * recorded in the app. Null when none is kept.
+ */
+async function getStoredHeartRate(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+  preferred: string | null,
+): Promise<{ activity_id: string; source: 'recording' | 'healthkit'; series: EncodedHeartRate } | null> {
+  const row = await db
+    .prepare(
+      `SELECT a.id AS activity_id, a.source, h.series
+         FROM external_activities a
+         JOIN activity_heart_rates h ON h.activity_id = a.id AND h.user_id = a.user_id
+        WHERE a.user_id = ?1
+          AND (a.id = ?2 OR a.duplicate_of = ?2)
+          AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)
+          AND a.source IN ('recording','healthkit')
+        ORDER BY a.id IS ?3 DESC, a.source = 'recording' DESC, a.id = ?2 DESC, a.id
+        LIMIT 1`,
+    )
+    .bind(userId, activityId, preferred)
+    .first<{ activity_id: string; source: 'recording' | 'healthkit'; series: string }>();
+  const series = row ? parseStoredHeartRate(row.series) : null;
+  return row && series ? { activity_id: row.activity_id, source: row.source, series } : null;
+}
+
+/**
  * Pace, heart rate and elevation series for one of the member's activities
- * (docs/plans/run-detail-charts P0). An intervals.icu activity is read from
- * intervals.icu, which has the watch's heart rate; when intervals.icu can't
- * give one, or for a run recorded in the app or an Apple Health run, the
- * route Tres Fort keeps gives pace and elevation. Only the member's own
- * activities are ever read, and nothing is stored.
+ * (docs/plans/run-detail-charts P0, P3). An intervals.icu activity is read
+ * from intervals.icu, which has the watch's heart rate; when intervals.icu
+ * can't give one, or for a run recorded in the app or an Apple Health run,
+ * the route Tres Fort keeps gives pace and elevation and the heart-rate
+ * series it keeps gives heart rate. Only the member's own activities are
+ * ever read, and nothing is stored.
  */
 export async function getActivityStreams(
   db: D1Database,
@@ -9622,8 +9730,13 @@ export async function getActivityStreams(
   const provider = await getIntervalsActivityStreams(db, env, userId, activityId, deps);
   if (provider.ok) return { ok: true, activity_id: activityId, source: 'intervals', streams: provider.streams };
   const stored = await getActivityRoute(db, userId, activityId);
-  const streams = stored?.route ? buildActivityStreams(trackFromRoute(stored.route)) : null;
-  if (stored && streams) return { ok: true, activity_id: stored.activity_id, source: stored.source, streams };
+  const heart = await getStoredHeartRate(db, userId, activityId, stored?.activity_id ?? null);
+  const track = stored?.route ? trackFromRoute(stored.route) : [];
+  const streams = track.length > 0 || heart
+    ? buildActivityStreams(track, heart ? decodeHeartRate(heart.series) : [], { heartRateClock: 'moving' })
+    : null;
+  const charted = stored?.route ? stored : heart;
+  if (charted && streams) return { ok: true, activity_id: charted.activity_id, source: charted.source, streams };
   return { ok: false, reason: provider.reason };
 }
 
@@ -9774,6 +9887,9 @@ export async function deleteRecordedRun(
             AND json_extract(raw, '$.external_id') = ?4`,
       )
       .bind(id, userId, ts, intervalsCopy),
+    // The recording's heart rate, and that of the Apple Health copies just
+    // tombstoned.
+    forgetHeartRatesStatement(db, userId),
   ]);
   if ((updated!.meta.changes ?? 0) === 0) return null;
   await dedupeHealthKitAgainstIntervals(db, userId);

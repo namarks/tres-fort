@@ -335,7 +335,9 @@ final class HealthKitSyncModel: ObservableObject {
     /// Runs and rides imported before the app sent detail streams are pushed
     /// again, once, with their heart-rate and power samples so they get a
     /// stream-based load; a second pass does the same, once, for the other
-    /// sports scored from heart rate (sport-activities P1). A sync that
+    /// sports scored from heart rate (sport-activities P1), and a third for
+    /// runs, whose heart rate the server now keeps for their charts
+    /// (run-detail-charts P3). A sync that
     /// started without an anchor has just pushed everything with streams, so
     /// it only records the passes as done. A failed detail read leaves a pass
     /// pending, so a later sync retries it; workouts the anchor already passed
@@ -351,6 +353,9 @@ final class HealthKitSyncModel: ObservableObject {
             (AccountLocalState.healthSportStreamsBackfillKey(userID: accountID), { w in
                 !enduranceKinds.contains(Self.kind(for: w.workoutActivityType))
                     && Sports.scoresHeartRate(Sports.sport(for: w.workoutActivityType))
+            }),
+            (AccountLocalState.healthRunHeartRateBackfillKey(userID: accountID), { w in
+                Self.kind(for: w.workoutActivityType) == "run"
             }),
         ]
         var pushed = false

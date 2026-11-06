@@ -197,7 +197,7 @@ and diagnostic practices before finalizing the declaration.
 |---|---|---|
 | Apple identity, optional name, relay/ordinary email | Sign in with Apple; account profile | User ID, name, email; linked to user; app functionality |
 | Exercises, sets, durations, training load | Shared training service and history | Fitness; linked to user; app functionality |
-| Imported heart-rate/health workout summaries and provider health metrics | Optional HealthKit workout uploads and full Intervals activity/event responses | Health and Fitness; linked to user; app functionality |
+| Imported heart-rate/health workout summaries, runs' heart-rate readings and provider health metrics | Optional HealthKit workout uploads, recorded runs and full Intervals activity/event responses | Health and Fitness; linked to user; app functionality |
 | Intervals device/gear metadata | Full provider responses may contain power-meter serial/device identifiers, names, gear and route references; no personal payload inspected | Device ID and Other User Content as applicable; linked to user; app functionality; verify the provider data inventory before attestation |
 | Other retained Intervals metadata | Full responses also retain source/model identifiers, route references, weather summaries and processing timestamps | Other Data Types; linked to user; app functionality; no inferred location coordinates or downloaded attachment content |
 | Apple Health body-weight view | Separate Read weight control; samples stay in process memory and are not backend/coach/group/export data | Not collected by this local-only path; Health is still declared for uploaded workout/provider data |

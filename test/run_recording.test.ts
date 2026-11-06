@@ -248,6 +248,24 @@ describe('POST /api/activities/recordings', () => {
       intervals_activity_id: null, intervals: { status: 'not_connected' },
     });
     expect((await route(member.jwt, activityId)).status).toBe(200);
+    // Its heart rate is kept for the charts (run-detail-charts P3): a
+    // reading every five seconds of moving time, the pause taken out (the
+    // second track starts where the first ended).
+    const kept = await env.DB.prepare('SELECT point_count, series FROM activity_heart_rates WHERE activity_id = ?1')
+      .bind(activityId).first<{ point_count: number; series: string }>();
+    expect(kept?.point_count).toBe(119);
+    const series = JSON.parse(kept!.series);
+    expect(series.dt.slice(0, 3)).toEqual([0, 5, 5]);
+    expect(series.dt[60]).toBe(5);
+    expect(new Set(series.bpm)).toEqual(new Set([150]));
+    const charts = await SELF.fetch(`${BASE}/api/activities/${encodeURIComponent(activityId)}/streams`, {
+      headers: { Authorization: `Bearer ${member.jwt}` },
+    });
+    expect(charts.status).toBe(200);
+    const body = await charts.json<any>();
+    expect(body).toMatchObject({ activity_id: activityId, source: 'recording' });
+    expect(body.streams.heart_rate.filter((v: number | null) => v !== null).every((v: number) => v === 150)).toBe(true);
+    expect(body.streams.moving_s).toBe(590);
     const again = await post(member.jwt, recordingForm({ id, date: DATE }, tcxFile(id)));
     expect(again).toMatchObject({ status: 200, body: { deduplicated: true, intervals: { status: 'not_connected' } } });
   });
@@ -465,6 +483,9 @@ describe('a recorded run among other copies of the same run', () => {
     const left = await env.DB.prepare('SELECT COUNT(*) AS n FROM activity_routes WHERE activity_id = ?1')
       .bind(recording).first<{ n: number }>();
     expect(left?.n).toBe(0);
+    const heart = await env.DB.prepare('SELECT COUNT(*) AS n FROM activity_heart_rates WHERE user_id = ?1')
+      .bind(member.id).first<{ n: number }>();
+    expect(heart?.n).toBe(0);
     // The Health copy stays gone, even when dedup runs again.
     await dedupeHealthKitAgainstIntervals(env.DB, member.id);
     const gone = await state(health);

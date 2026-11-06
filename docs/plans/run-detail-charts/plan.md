@@ -66,26 +66,49 @@ group views or coach tools.
     `web/src/activityCharts.ts`), as inline SVG in the Ink palette for light
     and dark. Pointing at or touching any chart reads all of them at that
     point; with no pointer each shows its average.
-- [ ] **P3 — Heart rate for recorded and Apple Health runs**
-  - A new migration adds a private per-activity heart-rate series table in
-    a compact delta encoding, filled from the recorder's TCX upload, `.fit`
-    imports and the Apple Health stream push, which today keep only
-    summaries. Account export includes it; account and activity deletion
-    remove it. The endpoint merges it with the stored route.
-  - The app re-sends the last year of Apple Health runs' heart-rate streams
-    once, so past runs get the chart.
-  - Privacy policy and App Store privacy answers updated for the stored
-    heart-rate series.
+- [x] **P3 — Heart rate for recorded and Apple Health runs**
+  - Migration 0068 adds `activity_heart_rates`, one private row per run in
+    the encoding of `src/heartRateSeries.ts`: one whole-bpm reading per
+    second of moving time, delta-coded. It is filled from the recorder's
+    TCX upload (a retry can add it to a run stored without one, never
+    replace it) and from an Apple Health run's heart-rate stream push (a
+    later push replaces it, streams with no heart rate clear it, a push
+    without streams keeps it). Only runs keep one, as the owner approved;
+    `.fit` imports keep summaries only (a `.fit` run is usually also on
+    intervals.icu, which is read live). Account export includes it;
+    account deletion, deleting a recorded run (with its Apple Health
+    copies) and a Health workout that stops being a run remove it.
+  - The endpoint charts it with the stored route, or alone over moving
+    time for a run with no route. Both sources already take pauses out of
+    its clock, so it is laid on the route's moving time.
+  - The app re-sends the last year of Apple Health runs once (a third
+    one-time streams pass), so past Health runs get the chart. Runs
+    recorded in the app before this release keep no series: the app
+    deleted their files once the upload was acknowledged.
+  - Privacy policy (website and the Worker's `/privacy`) and the app's
+    Apple Health settings text say runs' heart-rate readings are kept,
+    private, and how they are deleted. The App Privacy label already
+    declares Health and Fitness data linked to the member for app
+    functionality, so its answers don't change.
+- [ ] **P4 — Release and check on device**
+  - On the owner's written go-ahead for each: apply migration 0068 and
+    deploy the API, deploy `tres-fort-web` and the website (privacy
+    policy), and upload a TestFlight build after the release check passes
+    on its commit.
+  - On device: an intervals.icu run, a run recorded in the app and an
+    Apple Health run each show their charts, heart rate included; then
+    archive this plan.
 
 ## Execution frontier
 
-- P3
+- P4
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3 | coordinates_with | plan:run-recorder | The recorder's upload and summary screen are changing in the same release window; P3 takes the next free migration number after theirs. |
+| P3 | coordinates_with | plan:run-recorder | The recorder's upload and summary screen changed in the same release window; P3 took migration 0068, after their 0067. |
+| P4 | gated_by | external:owner-release-approval | Production migration, deploys and client distribution each need the owner's written go-ahead. |
 | P3 | coordinates_with | plan:app-store-submission | Storing a heart-rate series changes the App Privacy answers. |
 
 P1 and P2 draw the series P0 serves; P3 adds heart rate to the same
@@ -93,11 +116,10 @@ series, so it can follow P1 or run beside it.
 
 ## Next step
 
-**Now (@agent):** Build P3, the heart-rate series for recorded and Apple
-Health runs, after the run summary work's migration lands. P0 reaches
-production with the next API deploy, P1 with the next TestFlight build and
-P2 with the next `tres-fort-web` deploy, each on the owner's written
-go-ahead.
+**Now (@owner):** Approve the release in writing: apply migration 0068 and
+deploy the API, deploy `tres-fort-web` and the website (privacy policy),
+and upload a TestFlight build. Then check a recorded run and an Apple
+Health run show heart rate on device, and archive this plan.
 
 ## Verification evidence
 
@@ -113,6 +135,13 @@ go-ahead.
   points, speed for a ride, heart-rate-only activities over moving time,
   the percentile clamp, the scrub read-out, the per-account store and which
   activities ask for series.
+- P3: `test/activity_heart_rates.test.ts` covers the encoding, readings on
+  moving time lined up with a route across a pause, heart rate alone, an
+  Apple Health run's series with and without its route (404 for another
+  member), replacing, keeping and clearing it on later pushes, non-runs,
+  and the export; `test/run_recording.test.ts` covers a recorded run's
+  series, its chart and its removal with the run;
+  `test/account_deletion.test.ts` covers account deletion.
 - P2: `web/test/activityCharts.test.ts` covers kilometers and miles, speed
   for a ride, heart rate over moving time, nothing to draw, line breaks and
   reversed pace, the percentile clamp, the read-out and which activities

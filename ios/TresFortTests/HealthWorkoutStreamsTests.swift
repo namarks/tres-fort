@@ -102,10 +102,13 @@ final class HealthWorkoutStreamsTests: XCTestCase {
         }
         XCTAssertTrue(push(kind: "ride", streams: nil).missedStreams)
         XCTAssertFalse(push(kind: "ride", streams: [:]).missedStreams)
-        XCTAssertFalse(push(kind: "swim", streams: nil).missedStreams)
+        // Every workout reads heart rate now, so a missing read is retried
+        // for swims, sports and other workouts too.
+        XCTAssertTrue(push(kind: "swim", streams: nil).missedStreams)
+        XCTAssertFalse(push(kind: "swim", streams: [:]).missedStreams)
         var soccer = push(kind: "other", streams: nil)
         soccer.sport = "soccer"
         XCTAssertTrue(soccer.missedStreams)
-        XCTAssertFalse(push(kind: "other", streams: nil).missedStreams)
+        XCTAssertTrue(push(kind: "other", streams: nil).missedStreams)
     }
 }

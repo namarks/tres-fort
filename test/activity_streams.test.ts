@@ -145,6 +145,32 @@ describe('route and provider samples', () => {
     expect(total).toBeLessThan(900);
   });
 
+  it('walks no GPS distance across a recording gap, as the clock counts no time', () => {
+    // 300 s at 3 m/s, a 240 s gap moving 500 m, then 300 s at 3 m/s; no
+    // distance stream, so distance comes from the positions.
+    const meters = (m: number) => m / 111_195;
+    const time: number[] = [];
+    const lat: number[] = [];
+    for (let i = 0; i <= 300; i++) { time.push(i); lat.push(45 + meters(3 * i)); }
+    for (let i = 0; i <= 300; i++) { time.push(540 + i); lat.push(45 + meters(900 + 500 + 3 * i)); }
+    const { track } = samplesFromProvider({
+      time, distance: null, heartrate: null, altitude: null, lat, lon: lat.map(() => -122),
+    });
+    const s = buildActivityStreams(track)!;
+    expect(s.moving_s).toBe(600);
+    expect(s.total_distance_m).toBeGreaterThan(1790);
+    expect(s.total_distance_m).toBeLessThan(1810);
+    expect(s.speed_mps!.every((v) => v !== null && v < 3.2)).toBe(true);
+  });
+
+  it('drops distance a provider counted across a pause', () => {
+    const first = steady(300, 3);
+    const second = steady(300, 3, { t: 540, d: 1400 });
+    const s = buildActivityStreams([...first, ...second])!;
+    expect(s.total_distance_m).toBe(1800);
+    expect(s.speed_mps!.every((v) => v !== null && Math.abs(v - 3) < 0.05)).toBe(true);
+  });
+
   it('prefers the provider distance stream and falls back to GPS positions', () => {
     const withDistance = samplesFromProvider({
       time: [0, 1, 2], distance: [0, 3, 6], heartrate: [140, null, 142], altitude: null,

@@ -76,7 +76,8 @@ export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: 
 /**
  * Meters walked along GPS fixes, leg by leg. A leg faster than a person
  * moves is a bad fix: it adds nothing and the next leg is measured from the
- * last good fix, so neither the jump nor the return counts. When fixes keep
+ * last good fix, so neither the jump nor the return counts. Nothing is
+ * walked across a recording gap longer than a pause. When fixes keep
  * disagreeing with the last good one for longer than a pause, the walker
  * starts again from the newest fix instead of rejecting the rest.
  */
@@ -94,8 +95,11 @@ class GpsDistance {
   /** Add the leg to a fix at `t` seconds; the total so far. */
   add(t: number, lat: number, lon: number): number {
     const last = this.last;
-    if (!last) {
+    // A recording gap is a pause, as the clock counts it: whatever ground
+    // was covered across it is not walked.
+    if (!last || t - last.t > PAUSE_GAP_S) {
       this.last = { t, lat, lon };
+      this.rejectedSince = null;
       return this.meters;
     }
     const leg = haversineMeters(last.lat, last.lon, lat, lon);
@@ -187,6 +191,8 @@ export function samplesFromProvider(s: ProviderStreams): { track: TrackSample[];
 interface Clock {
   /** Moving seconds at elapsed `t`, or null inside a pause. */
   moving(t: number): number | null;
+  /** Which unpaused stretch elapsed `t` falls in, or null inside a pause. */
+  stretch(t: number): number | null;
   total: number;
 }
 
@@ -207,20 +213,25 @@ function clockFrom(timeline: readonly TrackSample[]): Clock {
   }
   const last = stretches[stretches.length - 1];
   const total = last ? last.movingBefore + (last.end - last.start) : 0;
+  const find = (t: number): number | null => {
+    let lo = 0;
+    let hi = stretches.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const s = stretches[mid]!;
+      if (t < s.start) hi = mid - 1;
+      else if (t > s.end) lo = mid + 1;
+      else return mid;
+    }
+    return null;
+  };
   return {
     total,
     moving(t: number) {
-      let lo = 0;
-      let hi = stretches.length - 1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const s = stretches[mid]!;
-        if (t < s.start) hi = mid - 1;
-        else if (t > s.end) lo = mid + 1;
-        else return s.movingBefore + (t - s.start);
-      }
-      return null;
+      const i = find(t);
+      return i === null ? null : stretches[i]!.movingBefore + (t - stretches[i]!.start);
     },
+    stretch: find,
   };
 }
 
@@ -311,16 +322,23 @@ export function buildActivityStreams(
   // the rest of the activity.
   const lastD = new Array<number | null>(count).fill(null);
   const lastM = new Array<number>(count).fill(0);
-  let accepted: { d: number; m: number } | null = null;
+  // Ground a provider's distance counted across a pause is dropped, as the
+  // clock drops the time: the first reading after a pause continues from the
+  // last accepted one.
+  let accepted: { d: number; m: number; stretch: number } | null = null;
+  let offset = 0;
   for (const s of track) {
     if (s.d === null) continue;
     const m = clock.moving(s.t);
-    if (m === null) continue;
-    if (accepted && (s.d < accepted.d || s.d - accepted.d > MAX_SPEED_MPS * Math.max(1, m - accepted.m))) continue;
-    accepted = { d: s.d, m };
+    const stretch = clock.stretch(s.t);
+    if (m === null || stretch === null) continue;
+    if (accepted && stretch !== accepted.stretch) offset = s.d - accepted.d;
+    const d = s.d - offset;
+    if (accepted && (d < accepted.d || d - accepted.d > MAX_SPEED_MPS * Math.max(1, m - accepted.m))) continue;
+    accepted = { d, m, stretch };
     const b = Math.min(count - 1, Math.floor(m / width));
-    if (lastD[b] === null || s.d >= lastD[b]!) {
-      lastD[b] = s.d;
+    if (lastD[b] === null || d >= lastD[b]!) {
+      lastD[b] = d;
       lastM[b] = m;
     }
   }

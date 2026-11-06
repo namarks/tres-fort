@@ -33,6 +33,21 @@ describe('activityCharts', () => {
     expect(c.formatX(1.5)).toBe('1.50 km');
   });
 
+  it('averages pace from moving time and distance, not the points', () => {
+    // 300 s at 2 m/s then 300 s at 4 m/s: 1,800 m in 600 s is 5:33 a km.
+    const t = Array.from({ length: 120 }, (_, i) => i * 5 + 2.5);
+    const c = activityCharts({
+      v: 1, t, distance_m: t.map((x) => (x < 300 ? 2 * x : 600 + 4 * (x - 300))),
+      speed_mps: t.map((x) => (x < 300 ? 2 : 4)), heart_rate: null, elevation_m: null,
+      moving_s: 600, total_distance_m: 1800, elevation_gain_m: null,
+    }, 'run', false)!;
+    const pace = c.series[0]!;
+    expect(pace.format(pace.average!)).toBe('5:33 /km');
+    const ride = activityCharts({ ...streams }, 'ride', false)!;
+    expect(ride.series[0]!.average).toBeCloseTo(0.205 / (60 / 3600));
+    expect(ride.series[1]!.average).toBeCloseTo(148.82, 1);
+  });
+
   it('shows speed for a ride and feet with miles', () => {
     const c = activityCharts(streams, 'ride', true)!;
     const speed = c.series[0]!;

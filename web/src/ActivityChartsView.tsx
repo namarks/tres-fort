@@ -1,7 +1,7 @@
 import { useEffect, useState, type PointerEvent } from 'react';
 import { fetchActivityStreams } from './api';
 import {
-  activityCharts, average, linePaths, nearestIndex, valueDomain, type ActivityStreams, type Charts, type Series,
+  activityCharts, linePaths, nearestIndex, valueDomain, type ActivityStreams, type Charts, type Series,
 } from './activityCharts';
 
 const WIDTH = 320;
@@ -64,7 +64,7 @@ function SeriesChart({ charts, series, index, onPoint, onLeave }: {
   const paths = linePaths(charts.xs, series.values, WIDTH, HEIGHT, series.reversed);
   const domain = valueDomain(series.values);
   const reading = index === null ? null : series.values[index] ?? null;
-  const mean = average(series.values);
+  const mean = series.average;
   const x0 = charts.xs[0] ?? 0;
   const x1 = charts.xs[charts.xs.length - 1] ?? 1;
   const cursor = index === null || x1 === x0 ? null : ((charts.xs[index]! - x0) / (x1 - x0)) * WIDTH;

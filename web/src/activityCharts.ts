@@ -40,6 +40,9 @@ export interface Series {
   format: (v: number) => string;
   /** Axis label: the value without its unit. */
   tick: (v: number) => string;
+  /** The value shown with no point picked: for pace or speed, the whole
+   * activity's, from moving time and distance; otherwise the mean. */
+  average: number | null;
 }
 
 export interface Charts {
@@ -97,26 +100,33 @@ export function activityCharts(s: ActivityStreams, kind: string, miles: boolean)
       return mps >= SLOWEST_MOVING_MPS ? unit / mps : null;
     }));
     const speedUnit = miles ? 'mph' : 'km/h';
+    const units = (s.total_distance_m ?? 0) / unit;
+    const overall = units > 0 && s.moving_s > 0
+      ? (ride ? units / (s.moving_s / 3600) : s.moving_s / units)
+      : average(values);
     if (values.some((v) => v !== null)) {
       series.push(ride
-        ? { key: 'pace', title: 'Speed', values, reversed: false,
+        ? { key: 'pace', title: 'Speed', values, reversed: false, average: overall,
             format: (v) => `${v.toFixed(1)} ${speedUnit}`, tick: (v) => v.toFixed(0) }
-        : { key: 'pace', title: 'Pace', values, reversed: true,
+        : { key: 'pace', title: 'Pace', values, reversed: true, average: overall,
             format: (v) => `${formatPace(v)} /${unitName}`, tick: formatPace });
     }
   }
   if (s.heart_rate?.some((v) => v !== null)) {
     series.push({ key: 'heart_rate', title: 'Heart rate', values: s.heart_rate, reversed: false,
+      average: average(s.heart_rate),
       format: (v) => `${Math.round(v)} bpm`, tick: (v) => `${Math.round(v)}` });
   }
   if (s.elevation_m?.some((v) => v !== null)) {
     const toUnit = miles ? FEET_PER_METER : 1;
     const elevUnit = miles ? 'ft' : 'm';
     const climb = s.elevation_gain_m === null ? null : Math.round(s.elevation_gain_m * toUnit);
+    const elevation = s.elevation_m.map((v) => (v === null ? null : v * toUnit));
     series.push({
       key: 'elevation',
       title: climb === null ? 'Elevation' : `Elevation · ${climb} ${elevUnit} climb`,
-      values: s.elevation_m.map((v) => (v === null ? null : v * toUnit)),
+      values: elevation,
+      average: average(elevation),
       reversed: false,
       format: (v) => `${Math.round(v)} ${elevUnit}`,
       tick: (v) => `${Math.round(v)}`,

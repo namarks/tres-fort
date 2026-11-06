@@ -54,6 +54,14 @@ final class ActivityChartsTests: XCTestCase {
         XCTAssertEqual(series.elevationUnit, "ft")
     }
 
+    func testAveragePaceIsMovingTimeOverDistance() throws {
+        // 60 s over 205 m: 4:52.7 a kilometer, whatever the points average.
+        let series = try XCTUnwrap(ActivityChartSeries(streams: try decode().streams, kind: "run", unit: .kilometers))
+        XCTAssertEqual(series.paceAverage ?? 0, 60 / 0.205, accuracy: 1e-6)
+        let ride = try XCTUnwrap(ActivityChartSeries(streams: try decode().streams, kind: "ride", unit: .kilometers))
+        XCTAssertEqual(ride.paceAverage ?? 0, 0.205 / (60.0 / 3600), accuracy: 1e-6)
+    }
+
     func testARideShowsSpeedNotPace() throws {
         let series = try XCTUnwrap(ActivityChartSeries(streams: try decode().streams, kind: "ride", unit: .miles))
         XCTAssertTrue(series.paceIsSpeed)

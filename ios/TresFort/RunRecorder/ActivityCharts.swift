@@ -123,6 +123,9 @@ struct ActivityChartSeries: Equatable {
     /// Seconds per mile or kilometer; for a ride, mph or km/h.
     let pace: [Point]
     let paceIsSpeed: Bool
+    /// The whole activity's pace or speed, from moving time and distance;
+    /// averaging the points would weigh slow stretches too heavily.
+    let paceAverage: Double?
     let heartRate: [Point]
     /// Feet with miles, meters with kilometers.
     let elevation: [Point]
@@ -160,6 +163,13 @@ struct ActivityChartSeries: Equatable {
             return unit.meters / mps
         }
         pace = Self.points(xs, Self.clampedToPercentiles(paceValues))
+        if let meters = s.total_distance_m, meters > 0, s.moving_s > 0 {
+            paceAverage = kind == "ride"
+                ? (meters / unit.meters) / (s.moving_s / 3600)
+                : s.moving_s / (meters / unit.meters)
+        } else {
+            paceAverage = nil
+        }
         heartRate = Self.points(xs, (0..<n).map { at(s.heart_rate, $0) })
         let toUnit = unit == .miles ? Self.feetPerMeter : 1
         elevation = Self.points(xs, (0..<n).map { at(s.elevation_m, $0).map { $0 * toUnit } })
@@ -265,7 +275,7 @@ struct ActivityChartsView: View {
         VStack(alignment: .leading, spacing: 14) {
             if !series.pace.isEmpty {
                 chart(title: series.paceIsSpeed ? "Speed" : "Pace", points: series.pace,
-                      color: Theme.accent, reversed: !series.paceIsSpeed,
+                      color: Theme.accent, reversed: !series.paceIsSpeed, average: series.paceAverage,
                       value: series.paceText, axisLabel: { v in
                           series.paceIsSpeed ? String(format: "%.0f", v) : RunFormat.pace(v)
                       })
@@ -295,10 +305,11 @@ struct ActivityChartsView: View {
                        points: [ActivityChartSeries.Point],
                        color: Color,
                        reversed: Bool,
+                       average overall: Double? = nil,
                        value: @escaping (Double) -> String,
                        axisLabel: @escaping (Double) -> String) -> some View {
         let reading = selectedX.flatMap { ActivityChartSeries.nearest(points, to: $0) }
-        let average = points.map(\.y).reduce(0, +) / Double(max(1, points.count))
+        let average = overall ?? points.map(\.y).reduce(0, +) / Double(max(1, points.count))
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title.uppercased())

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- Très Fort app icon: a cream fort with an orange gate on dark navy.
+  <!-- Très Fort app icon: an orange fort on dark navy.
        Full-bleed square; iOS applies the rounded mask. -->
   <rect width="1024" height="1024" fill="#15273e"/>
-  <path fill="#f4f0e6" d="M212 250h130v140h111V250h118v140h111V250h130v774H212z"/>
-  <path fill="#ed4929" d="M432 1024V840a80 80 0 0 1 160 0v184z"/>
+  <path fill="#ed4929" d="M212 250h130v140h111V250h118v140h111V250h130v774H212z"/>
+  <path fill="#15273e" d="M432 1024V840a80 80 0 0 1 160 0v184z"/>
 </svg>

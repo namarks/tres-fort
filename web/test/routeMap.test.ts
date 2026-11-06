@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, fetchActivityRoute, fetchMapToken, type StateResponse } from '../src/api';
 import { MAPKIT_LIBRARIES, MAPKIT_SCRIPT, MapUnavailableError, startMapKit, type MapKitApi } from '../src/mapkit';
-import { drawableSegments, routableActivityIds, routeOutline } from '../src/routeMap';
+import { drawableSegments, recoveryText, routableActivityIds, routeOutline } from '../src/routeMap';
 
 /** The shape src/activityRoute.ts serves: two segments split by a pause. */
 const ROUTE = {
@@ -159,5 +159,20 @@ describe('loading Apple Maps', () => {
     await expect(startMapKit({
       fetchToken: async () => 'mapkit-token', appendScript: async () => undefined, current: () => undefined,
     }, vi.fn())).rejects.toBeInstanceOf(MapUnavailableError);
+  });
+});
+
+describe('heart rate recovery after a recorded run', () => {
+  it('says how far heart rate fell one and two minutes after the stop', () => {
+    expect(recoveryText({ at_stop: 165, after_60s: 137, after_120s: 121 })).toBe('28 bpm in 1 min · 44 in 2 min');
+    expect(recoveryText({ at_stop: 165, after_60s: 137, after_120s: null })).toBe('28 bpm in 1 min');
+    expect(recoveryText({ at_stop: 150, after_60s: null, after_120s: 130 })).toBe('20 bpm in 2 min');
+    expect(recoveryText({ at_stop: 120, after_60s: 124, after_120s: null })).toBe('+4 bpm in 1 min');
+  });
+
+  it('says nothing without a reading after the stop', () => {
+    expect(recoveryText(null)).toBeNull();
+    expect(recoveryText(undefined)).toBeNull();
+    expect(recoveryText({ at_stop: 150, after_60s: null, after_120s: null })).toBeNull();
   });
 });

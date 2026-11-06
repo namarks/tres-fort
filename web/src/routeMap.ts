@@ -21,6 +21,34 @@ export interface ActivityRouteResponse {
   recording_id: string | null;
   /** Null for a run recorded without GPS fixes. */
   route: unknown;
+  /** Heart rate at the stop of a run recorded in the app, and one and two
+   * minutes later (run-recorder P7). Absent from an older API. */
+  heart_rate_recovery?: HeartRateRecovery | null;
+}
+
+export interface HeartRateRecovery {
+  at_stop: number;
+  after_60s: number | null;
+  after_120s: number | null;
+}
+
+/**
+ * How far heart rate fell after the run, the way the iPhone app says it:
+ * "28 bpm in 1 min · 44 in 2 min". Null when nothing after the stop was
+ * measured. A reading that rose says so with a plus sign.
+ */
+export function recoveryText(recovery: HeartRateRecovery | null | undefined): string | null {
+  if (!recovery) return null;
+  const drop = (after: number) => {
+    const d = recovery.at_stop - after;
+    return d >= 0 ? `${d}` : `+${-d}`;
+  };
+  const parts: string[] = [];
+  if (recovery.after_60s !== null) parts.push(`${drop(recovery.after_60s)} bpm in 1 min`);
+  if (recovery.after_120s !== null) {
+    parts.push(parts.length > 0 ? `${drop(recovery.after_120s)} in 2 min` : `${drop(recovery.after_120s)} bpm in 2 min`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 /** Where a run's route can come from (docs/plans/run-recorder P5 and P6). */

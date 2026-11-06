@@ -60,6 +60,10 @@ struct RecordedRun: Codable, Equatable, Identifiable {
     /// such a run leaves this iPhone's upload queue; any other run is its only
     /// copy. Nil in runs saved before this was recorded.
     var savedToHealth: Bool? = nil
+    /// Heart rate at the stop and one and two minutes later, read from the
+    /// strap after the run ended (P7). Never part of the run's own figures.
+    /// Nil without a strap, and in runs saved before this.
+    var recovery: HeartRateRecovery? = nil
 
     /// The server compares UUIDs case-insensitively; send one stable spelling.
     var uploadID: String { id.uuidString.lowercased() }

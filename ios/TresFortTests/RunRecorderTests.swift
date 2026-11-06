@@ -529,6 +529,111 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertTrue(model.heartRateMonitor.isConnected, "The strap stays on while the recorder is open")
     }
 
+    // MARK: - After the run (P7)
+
+    /// A run worth saving with the strap connected, ending at 165 bpm.
+    private func endRunWithStrap() async throws -> RunRecorderModel {
+        saveStrap()
+        let model = makeModel()
+        model.opened()
+        central.send(.bluetooth(.on))
+        central.send(.connected(strap.id))
+        await model.start()
+        coverGround()
+        central.send(.heartRate(strap.id, 150))
+        clock = clock.addingTimeInterval(1)
+        central.send(.heartRate(strap.id, 165))
+        await model.end()
+        XCTAssertEqual(model.phase, .finished)
+        return model
+    }
+
+    private func after(_ seconds: TimeInterval, from stop: Date, bpm: Int) {
+        clock = stop.addingTimeInterval(seconds)
+        central.send(.heartRate(strap.id, bpm))
+    }
+
+    /// The upload a finished cool-down starts runs on its own task.
+    private func waitForUpload(count: Int = 1) async {
+        var tries = 0
+        while api.uploaded.count < count && tries < 200 {
+            tries += 1
+            await Task.yield()
+        }
+    }
+
+    func testTheStrapStaysLiveAfterTheRunAndItsRecoveryIsSaved() async throws {
+        let model = try await endRunWithStrap()
+        let stop = clock
+        let saved = try XCTUnwrap(model.run)
+        XCTAssertTrue(model.isMeasuringRecovery)
+        XCTAssertEqual(model.recovery?.atStop, 165)
+        XCTAssertEqual(api.uploaded.count, 0, "The run waits for its cool-down")
+        await model.uploadPending()
+        XCTAssertEqual(api.uploaded.count, 0, "A foreground upload doesn't send it early either")
+
+        after(30, from: stop, bpm: 150)
+        XCTAssertEqual(model.liveHeartRate(at: clock), 150)
+        after(60, from: stop, bpm: 137)
+        after(121, from: stop, bpm: 121)
+        XCTAssertFalse(model.isMeasuringRecovery)
+        await waitForUpload()
+
+        let uploaded = try XCTUnwrap(api.uploaded.first)
+        XCTAssertEqual(uploaded.recovery, HeartRateRecovery(atStop: 165, after60s: 137, after120s: 121))
+        // The cool-down changes nothing about the run itself.
+        XCTAssertEqual(uploaded.heartRates, saved.heartRates)
+        XCTAssertEqual(uploaded.endedAt, stop)
+        XCTAssertEqual(uploaded.movingSeconds, saved.movingSeconds)
+        XCTAssertEqual(uploaded.distanceMeters, saved.distanceMeters)
+        XCTAssertEqual(engine.calls.last, "end")
+        XCTAssertEqual(engine.heartRates.count, 2, "Readings after the stop never reach the Health workout")
+
+        // The strap keeps showing live until five minutes after the stop.
+        after(200, from: stop, bpm: 112)
+        XCTAssertEqual(model.liveHeartRate(at: clock), 112)
+        clock = stop.addingTimeInterval(300)
+        XCTAssertNil(model.liveHeartRate(at: clock))
+    }
+
+    func testDoneDuringTheCoolDownSendsWhatItMeasured() async throws {
+        let model = try await endRunWithStrap()
+        let stop = clock
+        after(61, from: stop, bpm: 138)
+        XCTAssertTrue(model.isMeasuringRecovery)
+        model.reset()
+        await waitForUpload()
+        XCTAssertEqual(api.uploaded.first?.recovery, HeartRateRecovery(atStop: 165, after60s: 138, after120s: nil))
+        XCTAssertNil(model.recovery)
+        XCTAssertEqual(try store().all(), [])
+    }
+
+    func testADroppedStrapEndsTheCoolDownAndTheRunStillUploads() async throws {
+        let model = try await endRunWithStrap()
+        let stop = clock
+        after(20, from: stop, bpm: 152)
+        central.send(.disconnected(strap.id))
+        XCTAssertNil(model.liveHeartRate(at: clock), "The summary falls back to the run's own heart rate")
+        model.tickRecovery()
+        XCTAssertFalse(model.isMeasuringRecovery)
+        await waitForUpload()
+        let uploaded = try XCTUnwrap(api.uploaded.first)
+        XCTAssertNil(uploaded.recovery, "Nothing was read a minute after the stop")
+    }
+
+    func testWithoutAStrapTheRunUploadsAtOnce() async throws {
+        let model = makeModel()
+        await model.start()
+        coverGround()
+        engine.onMetrics?(.init(distanceMeters: 300, movingSeconds: 90,
+                                heartRate: .init(timestamp: clock, beatsPerMinute: 150)))
+        await model.end()
+        XCTAssertNil(model.recovery)
+        XCTAssertFalse(model.isMeasuringRecovery)
+        XCTAssertNil(model.liveHeartRate(at: clock))
+        XCTAssertEqual(api.uploaded.count, 1)
+    }
+
     func testTheStrapConnectsWhileTheRecorderIsOpenOrARunRecords() async throws {
         saveStrap()
         let model = makeModel()

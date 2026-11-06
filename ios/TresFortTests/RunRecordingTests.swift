@@ -143,6 +143,27 @@ final class RunRecordingTests: XCTestCase {
         ].joined())
     }
 
+    func testMultipartBodyCarriesHeartRateRecovery() throws {
+        var run = makeRun()
+        run.recovery = HeartRateRecovery(atStop: 165, after60s: 137, after120s: nil)
+        let body = try XCTUnwrap(String(
+            data: APIClient.recordingMultipartBody(run, tcx: Data(), boundary: "B"), encoding: .utf8))
+        XCTAssertTrue(body.contains("name=\"recovery_hr_at_stop\"\r\n\r\n165\r\n"))
+        XCTAssertTrue(body.contains("name=\"recovery_hr_after_60s\"\r\n\r\n137\r\n"))
+        XCTAssertFalse(body.contains("recovery_hr_after_120s"))
+        let plain = try XCTUnwrap(String(
+            data: APIClient.recordingMultipartBody(makeRun(), tcx: Data(), boundary: "B"), encoding: .utf8))
+        XCTAssertFalse(plain.contains("recovery_hr"))
+    }
+
+    func testARunSavedBeforeRecoveryStillLoads() throws {
+        let data = try JSONEncoder().encode(makeRun())
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json["recovery"] = nil
+        let old = try JSONSerialization.data(withJSONObject: json)
+        XCTAssertNil(try JSONDecoder().decode(RecordedRun.self, from: old).recovery)
+    }
+
     func testMultipartBodyOmitsABlankName() throws {
         let body = try XCTUnwrap(String(
             data: APIClient.recordingMultipartBody(makeRun(name: "  "), tcx: Data(), boundary: "B"), encoding: .utf8))

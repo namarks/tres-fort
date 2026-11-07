@@ -124,12 +124,34 @@ final class RunTargetCoachTests: XCTestCase {
         XCTAssertEqual(RunPlanFormat.spoken(steps[0], index: 0, count: steps.count, unit: .miles),
                        "Step 1 of 10. 10 minutes warm-up.")
         XCTAssertEqual(RunPlanFormat.spoken(steps[1], index: 1, count: steps.count, unit: .kilometers),
-                       "Step 2 of 10. Rep 1 of 4. 800 meters at 4:05 to 4:15 per kilometer.")
+                       "Step 2 of 10. Rep 1 of 4. 800 meters at 4 minutes 5 seconds to 4 minutes 15 seconds per kilometer.")
         XCTAssertEqual(RunPlanFormat.spoken(steps[2], index: 2, count: steps.count, unit: .miles),
                        "Step 3 of 10. Rep 1 of 4. 1 minute 30 seconds recovery.")
         XCTAssertEqual(RunPlanFormat.spoken(steps[9], index: 9, count: steps.count, unit: .miles),
                        "Step 10 of 10. 1 mile at 150 beats per minute.")
         XCTAssertEqual(RunPlanFormat.spokenDistance(5_000, unit: .miles), "3.11 miles")
         XCTAssertEqual(RunPlanFormat.spokenDistance(5_000, unit: .kilometers), "5 kilometers")
+    }
+
+    /// The speech voice reads "7:00" as "seven o'clock", so paces are words.
+    func testPaceTargetsAreSpokenAsMinutesAndSeconds() {
+        // 7:00 per mile is 261 s/km.
+        XCTAssertEqual(RunPlanFormat.spokenTarget(.pace(fastestSecondsPerKm: 261, slowestSecondsPerKm: 261),
+                                                  unit: .miles),
+                       "7 minutes per mile")
+        // 6:34 to 6:50 per mile.
+        XCTAssertEqual(RunPlanFormat.spokenTarget(.pace(fastestSecondsPerKm: 245, slowestSecondsPerKm: 255),
+                                                  unit: .miles),
+                       "6 minutes 34 seconds to 6 minutes 50 seconds per mile")
+        XCTAssertEqual(RunPlanFormat.spokenTarget(.pace(fastestSecondsPerKm: 300, slowestSecondsPerKm: 300),
+                                                  unit: .kilometers),
+                       "5 minutes per kilometer")
+        let step = RunPlan(items: [
+            .step(.init(kind: .work, durationSeconds: 1_200, distanceMeters: nil,
+                        target: .pace(fastestSecondsPerKm: 261, slowestSecondsPerKm: 261))),
+        ]).expandedSteps[0]
+        let spoken = RunPlanFormat.spoken(step, index: 0, count: 1, unit: .miles)
+        XCTAssertEqual(spoken, "Step 1 of 1. 20 minutes at 7 minutes per mile.")
+        XCTAssertFalse(spoken.contains(":"))
     }
 }

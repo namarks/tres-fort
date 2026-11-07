@@ -30,6 +30,8 @@ private final class FakeRunEngine: RunWorkoutEngine {
     func resume() { calls.append("resume") }
     func addRoute(_ locations: [CLLocation]) { route += locations }
     func addHeartRate(_ sample: RecordedRun.HeartRateSample) { heartRates.append(sample) }
+    private(set) var elevationAscended: Double?
+    func setElevationAscended(_ meters: Double) { elevationAscended = meters }
     func end(at date: Date) async throws -> RunWorkoutEnd {
         calls.append("end")
         if let endError { throw endError }
@@ -60,6 +62,16 @@ private final class FakeLocationSource: RunLocationSource {
         running = false
         warm = false
     }
+}
+
+@MainActor
+private final class FakeAltimeter: RunAltimeter {
+    var onAltitude: ((RecordedRun.AltitudeSample) -> Void)?
+    private(set) var calls: [String] = []
+
+    func requestAccess() async { calls.append("access") }
+    func start() { calls.append("start") }
+    func stop() { calls.append("stop") }
 }
 
 @MainActor
@@ -102,6 +114,9 @@ final class RunRecorderTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_793_000_000)
     private var engine: FakeRunEngine!
     private var location: FakeLocationSource!
+    private var altimeter: FakeAltimeter!
+    /// What `GET /api/me/thresholds` answers; nil fails.
+    private var thresholdRows: [AthleteThreshold]? = []
     private var api: RecorderUploadStub!
     private var liveActivity: FakeLiveActivity!
     private var speaker: FakeSpeaker!
@@ -119,6 +134,8 @@ final class RunRecorderTests: XCTestCase {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("run-recorder-\(UUID())")
         engine = FakeRunEngine()
         location = FakeLocationSource()
+        altimeter = FakeAltimeter()
+        thresholdRows = []
         api = RecorderUploadStub()
         liveActivity = FakeLiveActivity()
         speaker = FakeSpeaker()
@@ -147,6 +164,11 @@ final class RunRecorderTests: XCTestCase {
             makeLocation: { [unowned self] in
                 self.locationsMade += 1
                 return self.location
+            },
+            makeAltimeter: { [unowned self] in self.altimeter },
+            loadThresholds: { [unowned self] _ in
+                guard let rows = self.thresholdRows else { throw URLError(.notConnectedToInternet) }
+                return rows
             },
             now: { [unowned self] in self.clock },
             defaults: defaults,
@@ -560,6 +582,68 @@ final class RunRecorderTests: XCTestCase {
             tries += 1
             await Task.yield()
         }
+    }
+
+    // MARK: - Load and climb (P7)
+
+    private func threshold(_ metric: ThresholdMetric, _ value: Double, from date: String = "2026-01-01",
+                           sport: ThresholdSport = .run) -> AthleteThreshold {
+        AthleteThreshold(id: UUID().uuidString, sport: sport.rawValue, metric: metric.rawValue, value: value,
+                         effective_date: date, source: "member", created_at: 0)
+    }
+
+    func testTheSummaryScoresTheRunFromTheRunThresholdsAndKeepsThemForOfflineRuns() async throws {
+        let ride = threshold(.heartRate, 150, sport: .ride)
+        thresholdRows = [ride]
+        let model = try await endRunWithStrap()
+        await model.refreshThresholds()
+        XCTAssertNil(model.load, "A cycling threshold never scores a run")
+        XCTAssertFalse(model.hasRunThresholds)
+        thresholdRows = [ride, threshold(.heartRate, 163)]
+        await model.refreshThresholds()
+        XCTAssertTrue(model.hasRunThresholds)
+        // Two readings cover too little, so 91 s at an average of 157.5 against 163.
+        XCTAssertEqual(model.load, RunLoad.Result(load: 2, method: .averageHeartRate))
+
+        // The next recorder on this iPhone has them before it reaches the server.
+        thresholdRows = nil
+        let offline = makeModel()
+        XCTAssertEqual(offline.thresholds.count, 2)
+        await offline.refreshThresholds()
+        XCTAssertEqual(offline.thresholds.count, 2, "A failed refresh keeps what it had")
+        XCTAssertNil(offline.load, "No saved run yet")
+    }
+
+    func testTheBarometerRecordsTheClimbAndHealthGetsIt() async throws {
+        let model = makeModel()
+        await model.start()
+        XCTAssertEqual(altimeter.calls, ["access", "start"])
+        let start = clock
+        func reading(_ seconds: TimeInterval, _ meters: Double) {
+            altimeter.onAltitude?(.init(timestamp: start.addingTimeInterval(seconds), meters: meters))
+        }
+        reading(1, 0)
+        reading(10, 2)
+        reading(10, 50)
+        reading(20, 6)
+        clock = start.addingTimeInterval(25)
+        model.pause()
+        clock = start.addingTimeInterval(40)
+        reading(30, 30)
+        model.resume()
+        reading(41, 30)
+        reading(50, 33)
+        XCTAssertEqual(model.run?.altitudes?.map(\.meters), [0, 2, 6, 30, 30, 33],
+                       "Readings while paused are kept; a repeated time is not")
+        coverGround()
+        await model.end()
+        XCTAssertEqual(altimeter.calls.last, "stop")
+        // 6 m before the pause and 3 m after it; the 24 m while paused never counts.
+        XCTAssertEqual(engine.elevationAscended, 9)
+        let saved = try XCTUnwrap(api.uploaded.first)
+        XCTAssertEqual(RunAltitude.climb(saved), 9)
+        reading(60, 40)
+        XCTAssertEqual(model.run?.altitudes?.count, 6, "Nothing joins the run after it ends")
     }
 
     func testTheStrapStaysLiveAfterTheRunAndItsRecoveryIsSaved() async throws {

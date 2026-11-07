@@ -60,6 +60,10 @@ extension APIClient: RecordingUploadAPI {
             if let bpm = recovery.after60s { field("recovery_hr_after_60s", "\(bpm)") }
             if let bpm = recovery.after120s { field("recovery_hr_after_120s", "\(bpm)") }
         }
+        // The barometer's climb (P7), in meters to a tenth.
+        if let climb = RunAltitude.climb(run), climb.isFinite {
+            field("elevation_gain_m", String(format: "%.1f", min(max(climb, 0), 10_000)))
+        }
         body.append(Data(
             ("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(run.uploadID).tcx\"\r\n"
              + "Content-Type: application/vnd.garmin.tcx+xml\r\n\r\n").utf8))

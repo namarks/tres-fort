@@ -77,7 +77,7 @@ enum ThresholdMetric: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-struct AthleteThreshold: Decodable, Identifiable, Equatable {
+struct AthleteThreshold: Codable, Identifiable, Equatable {
     let id: String
     let sport: String
     let metric: String

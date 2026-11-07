@@ -39,6 +39,9 @@ protocol RunWorkoutEngine: AnyObject {
     func addRoute(_ locations: [CLLocation])
     /// A reading from the member's Bluetooth strap, saved with the workout.
     func addHeartRate(_ sample: RecordedRun.HeartRateSample)
+    /// The climb the barometer measured (P7), saved with the workout as its
+    /// elevation gain. Set before `end`.
+    func setElevationAscended(_ meters: Double)
     /// Ends the session and saves the workout and its route to Health.
     /// Returns the builder's final totals and whether Health kept it all.
     func end(at date: Date) async throws -> RunWorkoutEnd
@@ -46,6 +49,10 @@ protocol RunWorkoutEngine: AnyObject {
     /// Reattaches a session that survived the app being stopped, refilling the
     /// route from the checkpoint. Nil when no session is running.
     func recover(route: [CLLocation]) async -> RunWorkoutRecovery?
+}
+
+extension RunWorkoutEngine {
+    func setElevationAscended(_ meters: Double) {}
 }
 
 enum RunWorkoutEngineError: LocalizedError {
@@ -83,6 +90,8 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
     private var sentRoute = false
     private var sentHeartRate = false
     private var heartRateRefused = false
+    /// The barometer's climb, saved as the workout's elevation gain.
+    private var elevationAscended: Double?
 
     /// Strap readings go to the builder in batches.
     private static let heartRateBatch = 10
@@ -174,6 +183,13 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         do {
             try await builder.endCollection(at: date)
             let totals = Self.metrics(from: builder)
+            // Health shows it as the workout's elevation gain; the workout
+            // saves without it if Health refuses.
+            if let elevationAscended {
+                try? await builder.addMetadata([
+                    HKMetadataKeyElevationAscended: HKQuantity(unit: .meter(), doubleValue: elevationAscended),
+                ])
+            }
             let workout = try await builder.finishWorkout()
             // The route is saved separately, and a failure there leaves the
             // workout in Health without it.
@@ -233,8 +249,13 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         heartRateRefused = false
     }
 
+    func setElevationAscended(_ meters: Double) {
+        elevationAscended = meters.isFinite && meters >= 0 ? meters : nil
+    }
+
     private func clear() {
         heartRates = []
+        elevationAscended = nil
         sentRoute = false
         sentHeartRate = false
         heartRateRefused = false

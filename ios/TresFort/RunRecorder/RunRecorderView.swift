@@ -216,9 +216,10 @@ struct RunRecorderView: View {
     }
 
     /// The saved run (P7): time, distance and average pace frozen at the
-    /// stop, the run's average heart rate, and the strap's reading live
-    /// while it streams, or the run's maximum once it doesn't. The pace
-    /// at the stop meant nothing after the run, so it isn't shown.
+    /// stop, its training load and barometer climb, and the strap's reading
+    /// live while it streams, or the run's average heart rate once it
+    /// doesn't. The pace at the stop meant nothing after the run, so it
+    /// isn't shown.
     private var summary: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let run = model.run
@@ -226,6 +227,7 @@ struct RunRecorderView: View {
             let moving = run.map { $0.movingSeconds > 0 ? $0.movingSeconds : $0.activeSeconds(at: context.date) } ?? 0
             let meters = run?.distanceMeters ?? 0
             let unit = model.unit
+            let load = model.load
             VStack(spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     stat("Time", RunFormat.duration(moving), large: true, id: "time")
@@ -235,18 +237,35 @@ struct RunRecorderView: View {
                     stat("Avg /\(unit.abbreviation)",
                          RunFormat.pace(RunPace.average(movingSeconds: moving, meters: meters, unit: unit)),
                          id: "averagePace")
-                    stat("Avg HR", Self.bpm(run?.averageHeartRate), id: "averageHeartRate")
+                    stat("Load", load.map { "\($0.load)" } ?? "–", id: "load")
+                    stat("Climb \(Self.climbUnit(unit))", Self.climb(run.flatMap(RunAltitude.climb), unit: unit),
+                         id: "climb")
                     if let live = model.liveHeartRate(at: context.date) {
-                        stat("Heart rate", Self.bpm(live), live: true, id: "heartRate")
+                        stat("HR", Self.bpm(live), live: true, id: "heartRate")
                     } else {
-                        stat("Max HR", Self.bpm(run?.maximumHeartRate), id: "heartRate")
+                        stat("Avg HR", Self.bpm(run?.averageHeartRate), id: "heartRate")
                     }
+                }
+                if load == nil && !model.hasRunThresholds {
+                    Text("Add your running threshold heart rate in Profile → Training thresholds to see each run’s load.")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("runRecorder.loadHint")
                 }
                 if let recovery = model.recovery {
                     recoveryCard(recovery, at: context.date)
                 }
             }
         }
+    }
+
+    private static func climbUnit(_ unit: RunDistanceUnit) -> String { unit == .miles ? "ft" : "m" }
+
+    /// Feet with miles, meters with kilometers; a dash without the barometer.
+    private static func climb(_ meters: Double?, unit: RunDistanceUnit) -> String {
+        guard let meters else { return "–" }
+        return "\(Int((unit == .miles ? meters * 3.28084 : meters).rounded()))"
     }
 
     /// The cool-down while it's measured, then how far heart rate fell.

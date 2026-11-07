@@ -55,12 +55,17 @@ struct RunGlanceView: View {
                 .monospacedDigit()
                 .minimumScaleFactor(0.4)
                 .lineLimit(1)
-            Text(metric.title(model.unit).uppercased())
+            Text(title(metric, at: date).uppercased())
                 .font(Theme.mono(13))
                 .foregroundStyle(Theme.muted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
+    }
+
+    private func title(_ metric: RunMetric, at date: Date) -> String {
+        guard metric == .heartRate else { return metric.title(model.unit) }
+        return RunRecorderView.heartRateTitle(model.heartRateSourceLabel(at: date))
     }
 
     private func value(_ metric: RunMetric, at date: Date) -> String {

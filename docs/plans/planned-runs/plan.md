@@ -101,9 +101,10 @@ intervals.icu, which stays the store of completed runs.
     Spoken step and target cues are P3.
 - [x] **P3 — Spoken cues**
   - Each step is announced as it starts, including the first and a skipped
-    one: "Step 2 of 10. Rep 1 of 4. 800 meters at 6 minutes 34 seconds to
-    6 minutes 50 seconds per mile." Paces are said in words, because the
-    speech voice reads "7:00" as a time of day.
+    one: "Step 2 of 10. Rep 1 of 4. 800 meters at 6 34 to 6 50 a mile."
+    Paces are said the short way a runner says them ("6 oh 5", "7 minutes"
+    on the minute), never as "6:34", which the speech voice reads as a time
+    of day. Split announcements use the same form.
     The end of the plan says "Plan complete."
   - `RunTargetCoach` says when pace or heart rate leaves the step's target
     ("Speed up", "Ease off", "Heart rate high. Ease off", "Heart rate low.
@@ -128,7 +129,8 @@ intervals.icu, which stays the store of completed runs.
     then 3 mi at 147–153 bpm): 3.29 mi, 25:37 moving, average 150 bpm. It
     found the gaps P7 closes. On 2026-11-07, an interval run on TestFlight
     build 66 heard target paces read as clock times ("7:00" as "seven
-    o'clock"); step announcements now say "7 minutes per mile". The rest
+    o'clock"); paces are now spoken the short way, "6 30 a mile", as the
+    owner asked. The rest
     of the interval session check (step timing, cue usefulness, the
     intervals.icu upload) is still to report.
 - [x] **P5 — Plan runs in the app**
@@ -254,7 +256,7 @@ migration, since P5 saves through the existing slot route.
 - P3: `RunTargetCoachTests` covers the margins, settling, holding, a gap
   in readings, stale GPS, the 30-second gap between cues, back-on-target and heart rate cues, a new step starting
   fresh, and the spoken step wording in miles and kilometers, with paces
-  as minutes and seconds rather than clock times.
+  spoken the short way rather than as clock times.
   `RunRecorderTests` covers a planned run speaking its first and next
   steps, one heart rate cue, and the end of the plan.
 - P6: `RunPlanTests` covers the total with repeats counted, the step type,

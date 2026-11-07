@@ -317,6 +317,37 @@ describe('POST /api/activities/recordings', () => {
     }
   });
 
+  it('keeps the climb the app measured with its barometer, and fills it on a retry (P7)', async () => {
+    const member = await memberJwt();
+    const id = crypto.randomUUID();
+    const activityId = `recording:activity:${member.id}:${id}`;
+    const climb = async (activity: string) => (await env.DB
+      .prepare('SELECT elevation_gain_m FROM external_activities WHERE id = ?1')
+      .bind(activity).first<{ elevation_gain_m: number | null }>())!.elevation_gain_m;
+    expect((await post(member.jwt, recordingForm({ id, date: DATE, elevation_gain_m: '42.5' }, tcxFile(id)))).status)
+      .toBe(201);
+    expect(await climb(activityId)).toBe(42.5);
+    // A retry never replaces a kept climb.
+    await post(member.jwt, recordingForm({ id, date: DATE, elevation_gain_m: '10' }, tcxFile(id)));
+    expect(await climb(activityId)).toBe(42.5);
+
+    const plain = crypto.randomUUID();
+    const plainId = `recording:activity:${member.id}:${plain}`;
+    await post(member.jwt, recordingForm({ id: plain, date: DATE }, tcxFile(plain)));
+    expect(await climb(plainId)).toBeNull();
+    await post(member.jwt, recordingForm({ id: plain, date: DATE, elevation_gain_m: '0' }, tcxFile(plain)));
+    expect(await climb(plainId)).toBe(0);
+
+    for (const value of ['high', '-3', '12.25', '10001', '1e3']) {
+      const bad = crypto.randomUUID();
+      const res = await post(member.jwt, recordingForm({ id: bad, date: DATE, elevation_gain_m: value }, tcxFile(bad)));
+      expect(res).toEqual({ status: 400, body: { error: 'invalid_elevation_gain' } });
+      const kept = await env.DB.prepare('SELECT COUNT(*) AS n FROM external_activities WHERE external_id = ?1')
+        .bind(bad).first<{ n: number }>();
+      expect(kept!.n).toBe(0);
+    }
+  });
+
   it('keeps the run and reports a write rejection without disconnecting the read credential', async () => {
     const jwt = await devJwt();
     const id = crypto.randomUUID();

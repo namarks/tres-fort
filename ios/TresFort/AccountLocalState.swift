@@ -81,6 +81,13 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-routes.v1.\(userID)"
     }
 
+    /// The member's training thresholds the run recorder keeps to score a
+    /// run's load offline (run-recorder P7). A plain preference, outside the
+    /// protected store's prefixes, read straight from UserDefaults.
+    static func runThresholdsKey(userID: String) -> String {
+        "runRecorder.thresholds.\(userID)"
+    }
+
     static func appleCredentialUserKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
@@ -161,6 +168,7 @@ enum AccountLocalState {
             healthSportStreamsBackfillKey(userID: userID),
             healthHeartRateBackfillKey(userID: userID),
             healthRoutesKey(userID: userID),
+            runThresholdsKey(userID: userID),
         ]
         var erased = true
         do { try StationRecordingStore.deleteAccountRecordings(accountID: userID) }

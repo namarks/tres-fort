@@ -78,6 +78,8 @@ class AppStorePackagingTests(unittest.TestCase):
         self.assertEqual(info['UIBackgroundModes'], ['location', 'audio', 'bluetooth-central'])
         self.assertIn('heart rate monitor', info['NSBluetoothAlwaysUsageDescription'])
         self.assertIn('NSBluetoothAlwaysUsageDescription', text)
+        self.assertIn('barometer', info['NSMotionUsageDescription'])
+        self.assertIn('NSMotionUsageDescription', text)
         self.assertIn('Remove run recorder location keys', text)
         self.assertIn('Delete :${key}', text)
         self.assertIn('DEBUG APP_STORE_BUILD', text)

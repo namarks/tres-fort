@@ -23,6 +23,13 @@ struct RecordedRun: Codable, Equatable, Identifiable {
         var beatsPerMinute: Double
     }
 
+    /// The iPhone's barometer: meters above where it started reading, which
+    /// follows hills far more closely than GPS altitude (P7).
+    struct AltitudeSample: Codable, Equatable {
+        var timestamp: Date
+        var meters: Double
+    }
+
     /// A pause the member or auto-pause started; `end` stays nil until the
     /// run resumes.
     struct Pause: Codable, Equatable {
@@ -64,6 +71,10 @@ struct RecordedRun: Codable, Equatable, Identifiable {
     /// strap after the run ended (P7). Never part of the run's own figures.
     /// Nil without a strap, and in runs saved before this.
     var recovery: HeartRateRecovery? = nil
+    /// Barometer readings while the run recorded (P7): the climb, and the
+    /// shape of the uploaded run's elevation. Nil on an iPhone without a
+    /// barometer, when Motion & Fitness is off, and in runs saved before this.
+    var altitudes: [AltitudeSample]? = nil
 
     /// The server compares UUIDs case-insensitively; send one stable spelling.
     var uploadID: String { id.uuidString.lowercased() }

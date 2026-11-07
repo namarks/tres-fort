@@ -9525,6 +9525,8 @@ export async function storeRecordedRun(
     name: string | null;
     run: TcxRun;
     recovery?: HeartRateRecovery | null;
+    /** Meters climbed while moving, from the iPhone's barometer (P7). */
+    elevation_gain_m?: number | null;
   },
 ): Promise<RecordedRunStoreResult> {
   const recordingId = input.recording_id.toLowerCase();
@@ -9543,6 +9545,7 @@ export async function storeRecordedRun(
     return { activity: (await read()) ?? stored, deduplicated: true, deleted: false };
   };
   const recovery = input.recovery ?? null;
+  const elevationGain = input.elevation_gain_m ?? null;
   const heartRate = encodeHeartRate(input.run.hr, input.run.hr_start_ms);
   const existing = await read();
   if (existing) {
@@ -9561,6 +9564,16 @@ export async function storeRecordedRun(
             WHERE id = ?1 AND user_id = ?2 AND recovery_hr_at_stop IS NULL`,
         )
         .bind(id, userId, recovery.at_stop, recovery.after_60s, recovery.after_120s)
+        .run();
+    }
+    // Likewise the climb from a build that read the barometer.
+    if (elevationGain !== null && !memberDeleted(existing) && existing.elevation_gain_m == null) {
+      await db
+        .prepare(
+          `UPDATE external_activities SET elevation_gain_m = ?3
+            WHERE id = ?1 AND user_id = ?2 AND elevation_gain_m IS NULL`,
+        )
+        .bind(id, userId, elevationGain)
         .run();
     }
     return returnStored(existing);
@@ -9584,7 +9597,7 @@ export async function storeRecordedRun(
             start_date_utc_ms,source_timezone,stream_np_w,stream_hr_rms,stream_hr_sec,sport,
             recovery_hr_at_stop,recovery_hr_after_60s,recovery_hr_after_120s)
          VALUES (?1,?2,'recording',?3,?4,?5,'run',?6,?7,?8,?9,NULL,NULL,?10,?11,NULL,NULL,
-                 ?12,NULL,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18,'run',?19,?20,?21)
+                 ?12,?22,?13,?14,NULL,1,NULL,?15,?16,NULL,?17,?18,'run',?19,?20,?21)
          ON CONFLICT DO NOTHING`,
       )
       .bind(
@@ -9595,6 +9608,7 @@ export async function storeRecordedRun(
         JSON.stringify({ source: 'recording' }), ts,
         run.start_utc_ms, local.zone, hr?.rms_bpm ?? null, hr ? Math.round(hr.seconds) : null,
         recovery?.at_stop ?? null, recovery?.after_60s ?? null, recovery?.after_120s ?? null,
+        elevationGain,
       ),
   ];
   if (route) {

@@ -17,6 +17,8 @@ import UIKit
 /// or a run records, and its readings join the run. After a saved run the
 /// strap keeps feeding the summary live, and its readings one and two
 /// minutes after the stop are kept as the run's heart rate recovery (P7).
+/// The barometer records the run's climb, and the summary scores the run's
+/// training load from the member's run thresholds (P7).
 @MainActor
 final class RunRecorderModel: ObservableObject {
     enum Phase: Equatable {
@@ -69,6 +71,9 @@ final class RunRecorderModel: ObservableObject {
     /// The plan slot the recorder was opened for, if any. It stays through
     /// the run and clears when the member closes the recorder.
     @Published var plannedRun: PlannedRun?
+    /// The member's thresholds, kept on this iPhone so a run recorded
+    /// offline still shows its load. Refreshed when the recorder opens.
+    @Published private(set) var thresholds: [AthleteThreshold] = []
     /// The planned workout a saved run marked done, by name. Nil until then.
     @Published private(set) var completedWorkoutName: String?
     /// The steps the recording run follows, read from its checkpoint. Empty
@@ -139,6 +144,8 @@ final class RunRecorderModel: ObservableObject {
     private let onPlannedRunSaved: @MainActor (String, String, Int) async -> Bool
     private let makeEngine: @MainActor () -> RunWorkoutEngine?
     private let makeLocation: @MainActor () -> RunLocationSource
+    private let makeAltimeter: @MainActor () -> RunAltimeter
+    private let loadThresholds: @MainActor (String) async throws -> [AthleteThreshold]
     private let now: @MainActor () -> Date
     private let defaults: UserDefaults
     private let liveActivity: RunLiveActivityPresenting
@@ -147,6 +154,10 @@ final class RunRecorderModel: ObservableObject {
     private var cachedStore: RunRecordingStore?
     private var engine: RunWorkoutEngine?
     private var location: RunLocationSource?
+    private var altimeter: RunAltimeter?
+    /// Added to this altimeter session's readings so they carry on from the
+    /// run's last kept reading, also after the app was stopped mid-run.
+    private var altitudeBase: Double?
     /// GPS started when the recorder opened, handed to the run on start.
     private var warmLocation: RunLocationSource?
     private var lastCheckpoint: Date?
@@ -204,6 +215,8 @@ final class RunRecorderModel: ObservableObject {
          onPlannedRunSaved: @escaping @MainActor (String, String, Int) async -> Bool = { _, _, _ in false },
          makeEngine: (@MainActor () -> RunWorkoutEngine?)? = nil,
          makeLocation: (@MainActor () -> RunLocationSource)? = nil,
+         makeAltimeter: (@MainActor () -> RunAltimeter)? = nil,
+         loadThresholds: (@MainActor (String) async throws -> [AthleteThreshold])? = nil,
          now: @escaping @MainActor () -> Date = Date.init,
          defaults: UserDefaults = .standard,
          liveActivity: RunLiveActivityPresenting? = nil,
@@ -221,6 +234,8 @@ final class RunRecorderModel: ObservableObject {
             return HealthRunWorkoutEngine()
         }
         self.makeLocation = makeLocation ?? { CoreLocationRunSource() }
+        self.makeAltimeter = makeAltimeter ?? { BarometerRunAltimeter() }
+        self.loadThresholds = loadThresholds ?? { token in try await APIClient().athleteThresholds(jwt: token) }
         self.now = now
         self.defaults = defaults
         self.liveActivity = liveActivity ?? SystemRunLiveActivity()
@@ -233,6 +248,10 @@ final class RunRecorderModel: ObservableObject {
         let metrics = (defaults.stringArray(forKey: RunRecorderModel.glanceMetricsKey) ?? [])
             .compactMap(RunMetric.init(rawValue:))
         glanceMetrics = metrics.isEmpty ? RunMetric.glanceDefault : metrics
+        if let key = thresholdsCacheKey, let data = defaults.data(forKey: key),
+           let cached = try? JSONDecoder().decode([AthleteThreshold].self, from: data) {
+            thresholds = cached
+        }
     }
 
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
@@ -256,6 +275,41 @@ final class RunRecorderModel: ObservableObject {
     func opened() {
         isOpen = true
         heartRateMonitor.connectSaved()
+        Task { await refreshThresholds() }
+    }
+
+    // MARK: - Training load
+
+    /// Erased with the account (`AccountLocalState.clear`).
+    private var thresholdsCacheKey: String? { accountID.map { AccountLocalState.runThresholdsKey(userID: $0) } }
+
+    /// Reads the member's thresholds and keeps them for the next run. A
+    /// failure keeps the ones from before, and an answer that arrives after
+    /// the account signed out or was deleted is dropped, so it can't put
+    /// back what deleting the account erased.
+    func refreshThresholds() async {
+        guard let token = jwt(), let rows = try? await loadThresholds(token), jwt() != nil else { return }
+        thresholds = rows
+        if let key = thresholdsCacheKey, let data = try? JSONEncoder().encode(rows) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    /// The saved run's training load, scored as Tres Fort scores it from
+    /// the run thresholds in effect on its date. Nil before the run is saved
+    /// and when there is nothing to score it against.
+    var load: RunLoad.Result? {
+        guard phase == .finished, let run, run.isFinished else { return nil }
+        let heartRate = AthleteThresholdHistory.inEffect(thresholds, sport: .run, metric: .heartRate, on: run.date)
+        let pace = AthleteThresholdHistory.inEffect(thresholds, sport: .run, metric: .pace, on: run.date)
+        return RunLoad.estimate(run, movingSeconds: run.movingSeconds,
+                                thresholdHeartRate: heartRate?.value, thresholdPacePerKm: pace?.value)
+    }
+
+    /// Whether the member set a run threshold heart rate or pace at all.
+    var hasRunThresholds: Bool {
+        thresholds.contains { $0.sport == ThresholdSport.run.rawValue
+            && ($0.metric == ThresholdMetric.heartRate.rawValue || $0.metric == ThresholdMetric.pace.rawValue) }
     }
 
     /// The recorder closed. A run that records keeps its GPS and strap.
@@ -353,6 +407,8 @@ final class RunRecorderModel: ObservableObject {
         } catch {
             return fail("Allow Apple Health access to record a run. \(error.localizedDescription)")
         }
+        let altimeter = makeAltimeter()
+        await altimeter.requestAccess()
         let startedAt = now()
         var run = RecordedRun(startedAt: startedAt)
         // The uploaded run carries the planned workout's name.
@@ -367,8 +423,8 @@ final class RunRecorderModel: ObservableObject {
             engine.discard()
             return fail("The workout didn’t start. \(error.localizedDescription)")
         }
-        bind(engine: engine, location: location)
         self.run = run
+        bind(engine: engine, location: location, altimeter: altimeter)
         follow(run)
         splits = RunSplitTracker(unit: unit)
         phase = .running
@@ -464,6 +520,7 @@ final class RunRecorderModel: ObservableObject {
         self.run = run
         var savedToHealth = false
         if let engine {
+            if let climb = RunAltitude.climb(run) { engine.setElevationAscended(climb) }
             do {
                 let ended = try await engine.end(at: endedAt)
                 apply(ended.metrics)
@@ -610,15 +667,19 @@ final class RunRecorderModel: ObservableObject {
         phase = .failed(message)
     }
 
-    private func bind(engine: RunWorkoutEngine, location: RunLocationSource) {
+    private func bind(engine: RunWorkoutEngine, location: RunLocationSource, altimeter: RunAltimeter) {
         self.engine = engine
         self.location = location
+        self.altimeter = altimeter
+        altitudeBase = nil
         warmLocation = nil
         engine.onMetrics = { [weak self] in self?.apply($0) }
         engine.onFailure = { [weak self] in self?.engineFailed($0) }
         location.onLocations = { [weak self] in self?.handle($0) }
         heartRateMonitor.onSample = { [weak self] in self?.record($0) }
         heartRateMonitor.connectSaved()
+        altimeter.onAltitude = { [weak self] in self?.recordAltitude($0) }
+        altimeter.start()
         RunRecorderControl.handler = { [weak self] id, action in
             await self?.control(recordingID: id, action: action) ?? false
         }
@@ -629,6 +690,10 @@ final class RunRecorderModel: ObservableObject {
         engine?.onFailure = nil
         location?.onLocations = nil
         heartRateMonitor.onSample = nil
+        altimeter?.stop()
+        altimeter?.onAltitude = nil
+        altimeter = nil
+        altitudeBase = nil
         // A run recovered or finished from the Lock Screen, with the
         // recorder closed, lets the strap go.
         if !isOpen { heartRateMonitor.release() }
@@ -692,6 +757,20 @@ final class RunRecorderModel: ObservableObject {
         latestHeartRate = sample
         self.run = run
         engine?.addHeartRate(sample)
+    }
+
+    /// A barometer reading. Readings while paused are kept, and the climb
+    /// leaves them out, as the uploaded track leaves out paused GPS fixes.
+    func recordAltitude(_ sample: RecordedRun.AltitudeSample) {
+        guard phase == .running || phase == .paused, var run, sample.meters.isFinite,
+              sample.timestamp >= run.startedAt else { return }
+        var altitudes = run.altitudes ?? []
+        guard altitudes.last.map({ sample.timestamp > $0.timestamp }) ?? true else { return }
+        let base = altitudeBase ?? (altitudes.last?.meters ?? 0) - sample.meters
+        altitudeBase = base
+        altitudes.append(.init(timestamp: sample.timestamp, meters: sample.meters + base))
+        run.altitudes = altitudes
+        self.run = run
     }
 
     func handle(_ locations: [CLLocation]) {
@@ -925,11 +1004,11 @@ final class RunRecorderModel: ObservableObject {
         if let engine = makeEngine(),
            let state = await engine.recover(route: unfinished.points.map(Self.location(from:))) {
             let location = warmLocation ?? makeLocation()
-            bind(engine: engine, location: location)
             var run = unfinished
             if state == .running { run.closePause(at: now()) }
             if state == .paused && !run.isPaused { run.pauses.append(.init(start: now(), end: nil)) }
             self.run = run
+            bind(engine: engine, location: location, altimeter: makeAltimeter())
             follow(run)
             splits = RunSplitTracker(unit: unit, meters: run.distanceMeters,
                                      movingSeconds: run.activeSeconds(at: now()))

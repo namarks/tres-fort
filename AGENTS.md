@@ -313,8 +313,9 @@ chat start) and a **prompt** (`coach_brief`).
   private to the member: never in group views or coach tools. A recording
   can carry the strap's heart rate at the stop and one and two minutes
   later (`recovery_hr_*`, migration 0067), served with its route; those
-  minutes never count toward the run's time, heart rate or load. The file then
-  goes to intervals.icu only when the member has connected it.
+  minutes never count toward the run's time, heart rate or load. It can
+  carry the climb the iPhone's barometer measured (`elevation_gain_m`).
+  The file then goes to intervals.icu only when the member has connected it.
   `GET /api/activities/:id/route` also serves the route the app sent for an
   Apple Health run (`PUT /api/activities/healthkit/:id/route`, kept in
   `activity_routes`) and reads an intervals.icu run's track from

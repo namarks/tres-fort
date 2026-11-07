@@ -261,6 +261,17 @@ final class LocalPersistenceTests: XCTestCase {
         XCTAssertTrue(ActivityOutboxStore.load(userID: "a", defaults: local).isEmpty)
     }
 
+    func testAccountDeletionErasesTheRunRecordersThresholds() throws {
+        let h = harness(), local = h.open()
+        let mine = AccountLocalState.runThresholdsKey(userID: "a")
+        let other = AccountLocalState.runThresholdsKey(userID: "b")
+        h.preferences.set(Data("[threshold rows]".utf8), forKey: mine)
+        h.preferences.set(Data("[other rows]".utf8), forKey: other)
+        XCTAssertTrue(AccountLocalState.clear(userID: "a", defaults: local))
+        XCTAssertNil(h.preferences.object(forKey: mine))
+        XCTAssertNotNil(h.preferences.object(forKey: other))
+    }
+
     private func activity(_ id: String) -> PendingActivity {
         PendingActivity(id: id, date: "2026-09-10", type: "walk", title: nil,
                         duration_minutes: 10, notes: "Private training", logged_at: 2_000_000_000_000)

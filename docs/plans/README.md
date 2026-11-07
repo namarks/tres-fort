@@ -188,8 +188,9 @@ integration or social breadth.
   checked on the owner's iPhone. P4 adds auto-pause and a glanceable
   running display. P5 has Tres Fort keep each recorded run and its GPS
   route itself, with intervals.icu an optional copy. P6 maps runs the app
-  didn't record. P7 keeps a strap's heart rate live on the run summary and
-  records how far it falls one and two minutes after the stop.
+  didn't record. P7 keeps a strap's heart rate live on the run summary,
+  records how far it falls one and two minutes after the stop, and shows
+  the run's training load and its climb from the iPhone's barometer.
 - [Run detail charts](run-detail-charts/plan.md) — **active**; pace, heart
   rate and elevation charts for a run in the app and on the web, from
   intervals.icu streams read live or the route Tres Fort keeps, with a

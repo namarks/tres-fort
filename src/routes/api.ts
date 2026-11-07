@@ -1648,6 +1648,19 @@ function recordingRecovery(form: FormData): HeartRateRecovery | null | 'invalid'
   return { at_stop: atStop, after_60s: after60, after_120s: after120 };
 }
 
+/** More than anyone climbs in a day on foot. */
+const MAX_ELEVATION_GAIN_M = 10_000;
+
+/** The optional `elevation_gain_m` field: meters climbed while moving, which
+ * the app reads from the iPhone's barometer (P7). Whole or tenths of a meter. */
+function recordingElevationGain(form: FormData): number | null | 'invalid' {
+  const value = form.get('elevation_gain_m');
+  if (value === null) return null;
+  if (typeof value !== 'string' || !/^\d{1,5}(\.\d)?$/.test(value)) return 'invalid';
+  const meters = Number(value);
+  return meters <= MAX_ELEVATION_GAIN_M ? meters : 'invalid';
+}
+
 apiRoutes.post('/activities/recordings', async (c) => {
   let form: FormData;
   try {
@@ -1665,6 +1678,8 @@ apiRoutes.post('/activities/recordings', async (c) => {
   }
   const recovery = recordingRecovery(form);
   if (recovery === 'invalid') return c.json({ error: 'invalid_recovery' }, 400);
+  const elevationGain = recordingElevationGain(form);
+  if (elevationGain === 'invalid') return c.json({ error: 'invalid_elevation_gain' }, 400);
   // The Workers FormData typing omits File entries; check at runtime.
   const file = form.get('file') as unknown;
   if (!(file instanceof File) || file.size === 0) {
@@ -1685,6 +1700,7 @@ apiRoutes.post('/activities/recordings', async (c) => {
   const trimmedName = name && name.trim().length > 0 ? name.trim() : null;
   const stored = await storeRecordedRun(c.env.DB, userId, {
     recording_id: recordingId, date, name: trimmedName, run, recovery,
+    elevation_gain_m: elevationGain,
   });
   const kept = { recording_id: recordingId, activity_id: stored.activity.id };
   // A run the member deleted from Tres Fort is not sent anywhere again.

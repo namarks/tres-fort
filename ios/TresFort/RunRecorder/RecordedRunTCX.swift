@@ -5,7 +5,9 @@ import Foundation
 /// workout builder's totals: the lap holds moving time and distance, and each
 /// track point holds a cumulative distance scaled to that total, so the
 /// uploaded run matches what the recorder showed. Each pause starts a new
-/// track, and the distance covered while paused never counts.
+/// track, and the distance covered while paused never counts. Altitude
+/// follows the barometer when the run has its readings (P7), set at the
+/// level GPS measured, so hills don't shimmer with GPS noise.
 enum RecordedRunTCX {
     /// A heart-rate sample further than this from a track point is not
     /// attached to it, so a gap in HR stays a gap instead of a stale value.
@@ -32,6 +34,8 @@ enum RecordedRunTCX {
 
         """
         let heartRates = run.heartRates.sorted { $0.timestamp < $1.timestamp }
+        let altitudes = RunAltitude.fusedAltitudes(run, points: tracks.flatMap { $0 })
+        var pointIndex = 0
         var hrIndex = 0
         var distance = 0.0
         for track in tracks {
@@ -41,7 +45,9 @@ enum RecordedRunTCX {
                 xml += "          <Trackpoint><Time>\(timestamp(point.timestamp))</Time>"
                 xml += "<Position><LatitudeDegrees>\(coordinate(point.latitude))</LatitudeDegrees>"
                 xml += "<LongitudeDegrees>\(coordinate(point.longitude))</LongitudeDegrees></Position>"
-                if let altitude = point.altitude, altitude.isFinite {
+                let altitude = altitudes.map { $0[pointIndex] } ?? point.altitude
+                pointIndex += 1
+                if let altitude, altitude.isFinite {
                     xml += "<AltitudeMeters>\(decimal(altitude))</AltitudeMeters>"
                 }
                 xml += "<DistanceMeters>\(decimal(distance))</DistanceMeters>"
@@ -61,6 +67,31 @@ enum RecordedRunTCX {
         """
         return Data(xml.utf8)
     }
+
+    /// The heart rate the Worker reads back from this file (`parseTcx` in
+    /// `src/tcxFile.ts`): each track point's whole-bpm reading on moving
+    /// time, at the whole second the file states, each track carrying on
+    /// where the last one ended. The run summary scores load from it, so
+    /// it matches the load the Worker gives the upload (P7).
+    static func heartRateStream(_ run: RecordedRun) -> [(t: Double, v: Double)] {
+        let heartRates = run.heartRates.sorted { $0.timestamp < $1.timestamp }
+        var index = 0
+        var offset = 0.0
+        var stream: [(t: Double, v: Double)] = []
+        for track in segments(run) {
+            guard let first = track.first, let last = track.last else { continue }
+            let trackStart = wholeSecond(first.timestamp)
+            for point in track {
+                guard let bpm = nearestHeartRate(to: point.timestamp, in: heartRates, from: &index) else { continue }
+                stream.append((offset + max(0, wholeSecond(point.timestamp) - trackStart), Double(bpm)))
+            }
+            offset += max(0, wholeSecond(last.timestamp) - trackStart)
+        }
+        return stream
+    }
+
+    /// The file states times to the second.
+    private static func wholeSecond(_ date: Date) -> Double { date.timeIntervalSince1970.rounded(.down) }
 
     /// Track points split into runs of moving time. A point recorded inside a
     /// pause is dropped, and a point after a pause starts a new segment.

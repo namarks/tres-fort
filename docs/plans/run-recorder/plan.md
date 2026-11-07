@@ -1,6 +1,6 @@
 # Run recorder on iPhone
 
-Slug: run-recorder · Status: active · Updated: 2026-11-06 · Theme: connected-training
+Slug: run-recorder · Status: active · Updated: 2026-11-07 · Theme: connected-training
 
 ## Goal
 
@@ -298,16 +298,18 @@ coach sees it in the same place as Garmin runs.
     Apple Watch never streams live to the iPhone recorder; heart rate after
     the stop on a Watch belongs to the Watch recorder
     ([apple-watch](../apple-watch/plan.md) P2).
-  - [x] **(a) The summary after the stop** (in the repository)
+  - [x] **(a) The summary after the stop** (live since the 2026-11-06
+    release, TestFlight build 66)
     - Time, distance and average pace stay frozen at the stop. The pace tile
       gives way to the run's average heart rate. The strap's reading shows
-      live, marked LIVE, until Done, the strap drops or five minutes pass;
-      then the tile shows the run's maximum heart rate. Without a strap both
-      come from the run's own readings.
+      live, marked LIVE, until Done, the strap drops or five minutes pass.
+      Since (c) the tiles are average pace, load, climb and heart rate: live
+      while the strap streams, then the run's average. Without a strap it
+      comes from the run's own readings.
     - Readings after the stop never join the run, so moving time, distance,
       average and maximum heart rate, load and the Apple Health workout are
       the same as before.
-  - [x] **(b) Heart rate recovery** (in the repository)
+  - [x] **(b) Heart rate recovery** (live since the 2026-11-06 release)
     - When the strap is connected and read the heart rate within 5 seconds
       of the stop, a "Cooling down" card counts two minutes and asks the
       member to stand or walk easy, so runs compare. The reading nearest one
@@ -328,11 +330,45 @@ coach sees it in the same place as Garmin runs.
     - Apple Health's Cardio Recovery (`heartRateRecoveryOneMinute`) is
       written by the Apple Watch only after workouts recorded in Apple's
       Workout app, so it never exists for a recorder run and isn't read.
-  - [ ] **(c) Confirm on the device**
+  - [x] **(c) Training load on the summary** (in the repository; the
+    owner chose it for the summary on 2026-11-07)
+    - The summary shows the run's load the moment it stops, scored on the
+      iPhone the way the Worker scores a recording (`RunLoad`, mirroring
+      `src/trainingLoad.ts`) on the heart rate the uploaded TCX carries
+      (each track point's reading, as `parseTcx` reads it back): heart rate
+      over moving time against the run threshold heart rate in effect on
+      the run's date, then average pace against threshold pace, then
+      average heart rate. The recorder reads
+      `GET /api/me/thresholds` when it opens and keeps the rows on the
+      iPhone, so a run recorded offline still shows its load. The tile
+      names the method ("Load · HR", "pace" or "avg HR"). Without a run
+      threshold the tile shows "–" and says where to add one. The Worker
+      still scores the uploaded run itself, and an intervals.icu copy can
+      later win with intervals.icu's own load.
+  - [x] **(d) Climb from the barometer** (in the repository)
+    - The iPhone's barometer (`CMAltimeter` relative altitude, Motion &
+      Fitness permission asked as the run starts) is read while the run
+      records and kept in the checkpoint. A recovered run carries on from
+      its last reading.
+    - Climb counts a rise once it clears 3 m above the last low point, as
+      the Worker counts a chart's elevation gain, per stretch between
+      pauses, so a hill walked up while paused never counts. The summary
+      shows it in feet with miles and meters with kilometers.
+    - The uploaded TCX's altitude follows the barometer, set at the level
+      GPS measured (the median difference), so intervals.icu, the map's
+      elevation chart and the stored route lose GPS altitude noise.
+      `POST /api/activities/recordings` takes an optional `elevation_gain_m`
+      (0 to 10,000, tenths) into the recording's `elevation_gain_m`; a
+      retry fills it when missing and never replaces it. The Apple Health
+      workout carries it as its elevation gain.
+    - The App Store build strips `NSMotionUsageDescription` with the other
+      recorder keys.
+  - [ ] **(e) Confirm on the device**
     - On a TestFlight build with the owner's strap: heart rate stays live
       after the stop, the cool-down keeps two readings, and the run's card
-      shows them after the upload. Needs migration 0067 in production before
-      the API deploy.
+      shows them after the upload (build 66). With the next build: the
+      load matches the run's load in Activity, the Motion & Fitness prompt
+      appears once, and the climb looks right on a hilly route.
 
 ## Execution frontier
 
@@ -366,9 +402,10 @@ done once deleting a recorded run is seen on the device. P6 is done once
 maps of an intervals.icu run and of a Strava run show on the device, after
 allowing Health's workout-route access on build 65.
 
-P7(a) and (b) are in the repository and need, each on the owner's written
-go-ahead, migration 0067 in production before an API and web deploy, and a
-TestFlight build; then (c) is a run with the strap.
+P7(a) and (b) are live since the 2026-11-06 release (migration 0067, API
+c2252e44, TestFlight build 66). P7(c) and (d) are in the repository and
+need, each on the owner's written go-ahead, an API deploy (no migration)
+and a TestFlight build; then (e) is a run with the strap on a hilly route.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -488,6 +525,17 @@ the scene delegate is left to P3's force-quit check.
   dropped strap, and a run without a strap uploading at once.
   `RunRecordingTests` covers the multipart fields and runs saved before
   them. `web/test/routeMap.test.ts` covers the web's recovery text.
+  For (c) and (d), `RunSummaryStatsTests` covers the heart rate, pace and
+  average heart rate loads, scoring only readings the upload carries,
+  readings while paused, the 3 m climb rule,
+  climbs while paused, blending readings, the barometer set at GPS's level,
+  the TCX altitude, the `elevation_gain_m` field and runs saved before the
+  barometer. `LocalPersistenceTests` covers account deletion erasing the
+  cached thresholds. `RunRecorderTests` covers the load from the run
+  thresholds in effect, thresholds kept for an offline run, the barometer's readings
+  joining the run, the climb reaching Apple Health and the upload, and
+  nothing joining after the stop. `test/run_recording.test.ts` covers
+  keeping, filling and refusing `elevation_gain_m`.
 - P3 feedback: `RunRecorderTests` covers GPS warm-up when the recorder
   opens, and strap readings joining the run and the Health workout without
   the builder's echo counting twice. `HeartRateMonitorTests` covers parsing

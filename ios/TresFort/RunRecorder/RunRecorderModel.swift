@@ -114,7 +114,6 @@ final class RunRecorderModel: ObservableObject {
     static let autoPauseKey = "runRecorder.autoPause"
     static let glanceKey = "runRecorder.glance"
     static let glanceMetricsKey = "runRecorder.glanceMetrics"
-    static let thresholdsKey = "runRecorder.thresholds"
 
     /// Seconds between checkpoints while route points arrive.
     static let checkpointInterval: TimeInterval = 10
@@ -281,7 +280,8 @@ final class RunRecorderModel: ObservableObject {
 
     // MARK: - Training load
 
-    private var thresholdsCacheKey: String? { accountID.map { "\(Self.thresholdsKey).\($0)" } }
+    /// Erased with the account (`AccountLocalState.clear`).
+    private var thresholdsCacheKey: String? { accountID.map { AccountLocalState.runThresholdsKey(userID: $0) } }
 
     /// Reads the member's thresholds and keeps them for the next run. A
     /// failure keeps the ones from before.

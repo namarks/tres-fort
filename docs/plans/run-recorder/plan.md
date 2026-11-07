@@ -330,7 +330,7 @@ coach sees it in the same place as Garmin runs.
     - Apple Health's Cardio Recovery (`heartRateRecoveryOneMinute`) is
       written by the Apple Watch only after workouts recorded in Apple's
       Workout app, so it never exists for a recorder run and isn't read.
-  - [x] **(c) Training load on the summary** (in the repository; the
+  - [x] **(c) Training load on the summary** (live, build 67; the
     owner chose it for the summary on 2026-11-07)
     - The summary shows the run's load the moment it stops, scored on the
       iPhone the way the Worker scores a recording (`RunLoad`, mirroring
@@ -345,7 +345,7 @@ coach sees it in the same place as Garmin runs.
       threshold the tile shows "–" and says where to add one. The Worker
       still scores the uploaded run itself, and an intervals.icu copy can
       later win with intervals.icu's own load.
-  - [x] **(d) Climb from the barometer** (in the repository)
+  - [x] **(d) Climb from the barometer** (live, build 67)
     - The iPhone's barometer (`CMAltimeter` relative altitude, Motion &
       Fitness permission asked as the run starts) is read while the run
       records and kept in the checkpoint. A recovered run carries on from
@@ -363,7 +363,7 @@ coach sees it in the same place as Garmin runs.
       workout carries it as its elevation gain.
     - The App Store build strips `NSMotionUsageDescription` with the other
       recorder keys.
-  - [x] **(e) Name the heart rate's source** (in the repository)
+  - [x] **(e) Name the heart rate's source** (live, build 67)
     - Apple Health's live workout feed also carries heart rate from
       headphones that measure it (AirPods Pro 3, Powerbeats Pro 2) or a
       watch; the owner saw it on 2026-11-07 with no strap on. A connected
@@ -413,9 +413,11 @@ maps of an intervals.icu run and of a Strava run show on the device, after
 allowing Health's workout-route access on build 65.
 
 P7(a) and (b) are live since the 2026-11-06 release (migration 0067, API
-c2252e44, TestFlight build 66). P7(c), (d) and (e) are in the repository and
-need, each on the owner's written go-ahead, an API deploy (no migration)
-and a TestFlight build; then (f) is a run with the strap on a hilly route.
+c2252e44, TestFlight build 66). P7(c), (d) and (e) are live since the
+2026-11-07 release from main f510586 with the owner's written go-ahead
+(migration 0069, API 57095f2e with rollback c2252e44, web e43c9de1 with
+rollback b0b81935, TestFlight build 67; the full release check passed on
+that commit). (f) is a run on build 67 with the strap on a hilly route.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls

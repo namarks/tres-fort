@@ -248,12 +248,19 @@ struct ActivityChartSeries: Equatable {
     }
 }
 
-/// Reads an activity's chart series when its card appears and draws them;
-/// nothing until they arrive, and nothing for an activity with none.
-struct ActivityChartsSection: View {
-    let activity: ExternalActivity
+/// Reads an activity's chart series when its card appears and hands them to
+/// `content`: nil until they arrive, and nil for an activity with none.
+///
+/// The read hangs off `content`, the whole card, which is always on screen.
+/// It must not hang off the charts themselves: they are empty until the
+/// series arrive, and SwiftUI never runs a `.task` on an empty view (an
+/// `if` in a `Group` that is false), so the series were never asked for.
+struct WithActivityStreams<Content: View>: View {
+    let activity: ExternalActivity?
     let access: ActivityRouteAccess?
-    @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
+    /// The shared store unless a test passes its own.
+    var store: ActivityStreamsStore? = nil
+    @ViewBuilder let content: (_ streams: ActivityStreams?) -> Content
     @State private var loaded: Loaded?
 
     private struct Loaded {
@@ -261,20 +268,29 @@ struct ActivityChartsSection: View {
         let streams: ActivityStreams
     }
 
+    var body: some View {
+        content(loaded?.activityID == activity?.id ? loaded?.streams : nil)
+            .task(id: activity?.id) {
+                guard let activity, activity.mayHaveStreams, let access else { return }
+                let response = await (store ?? .shared).streams(for: activity.id, access: access)
+                guard !Task.isCancelled else { return }
+                loaded = response.map { Loaded(activityID: activity.id, streams: $0.streams) }
+            }
+    }
+}
+
+/// An activity's charts from the series `WithActivityStreams` read, in the
+/// member's unit; nothing when there are none.
+struct ActivityChartsSection: View {
+    let activity: ExternalActivity
+    let streams: ActivityStreams?
+    @AppStorage(RunDistanceUnit.preferenceKey) private var unitRaw = RunDistanceUnit.miles.rawValue
+
     private var unit: RunDistanceUnit { RunDistanceUnit(rawValue: unitRaw) ?? .miles }
 
     var body: some View {
-        Group {
-            if let loaded, loaded.activityID == activity.id,
-               let series = ActivityChartSeries(streams: loaded.streams, kind: activity.kind, unit: unit) {
-                ActivityChartsView(series: series)
-            }
-        }
-        .task(id: activity.id) {
-            guard activity.mayHaveStreams, let access else { return }
-            let response = await ActivityStreamsStore.shared.streams(for: activity.id, access: access)
-            guard !Task.isCancelled else { return }
-            loaded = response.map { Loaded(activityID: activity.id, streams: $0.streams) }
+        if let streams, let series = ActivityChartSeries(streams: streams, kind: activity.kind, unit: unit) {
+            ActivityChartsView(series: series)
         }
     }
 }

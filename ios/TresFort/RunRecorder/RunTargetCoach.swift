@@ -90,7 +90,7 @@ struct RunTargetCoach: Equatable {
 }
 
 extension RunPlanFormat {
-    /// "Step 3 of 9. Rep 1 of 4. 800 meters at 6:34 to 6:50 per mile."
+    /// "Step 3 of 9. Rep 1 of 4. 800 meters at 6 34 to 6 50 a mile."
     static func spoken(_ step: RunPlan.ExpandedStep, index: Int, count: Int, unit: RunDistanceUnit) -> String {
         var parts = ["Step \(index + 1) of \(count)."]
         if let round = step.round, let rounds = step.rounds { parts.append("Rep \(round) of \(rounds).") }
@@ -120,14 +120,16 @@ extension RunPlanFormat {
         return text + " " + unit.spokenName + (text == "1" ? "" : "s")
     }
 
-    /// "6:34 to 6:50 per mile", "130 to 145 beats per minute".
+    /// "6 34 to 6 50 a mile", "7 minutes a mile", "130 to 145 beats per
+    /// minute". Paces never use "7:00", which the speech voice reads as a
+    /// time of day ("seven o'clock").
     static func spokenTarget(_ target: RunPlan.Target, unit: RunDistanceUnit) -> String {
         switch target {
         case .pace(let fastest, let slowest):
             let scale = unit.meters / 1_000
-            let low = RunFormat.pace(Double(fastest) * scale)
-            let high = RunFormat.pace(Double(slowest) * scale)
-            return (low == high ? low : "\(low) to \(high)") + " per \(unit.spokenName)"
+            let low = RunSplit.spokenPace(Double(fastest) * scale)
+            let high = RunSplit.spokenPace(Double(slowest) * scale)
+            return (low == high ? low : "\(low) to \(high)") + " a \(unit.spokenName)"
         case .heartRate(let low, let high):
             return (low == high ? "\(low)" : "\(low) to \(high)") + " beats per minute"
         }

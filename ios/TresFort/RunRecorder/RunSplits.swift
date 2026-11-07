@@ -10,10 +10,25 @@ struct RunSplit: Equatable {
     /// Moving seconds per unit over the whole run so far.
     var averagePace: Double
 
-    /// "Mile 3. Split 8 minutes 32 seconds. Average pace 8 minutes 41 seconds per mile."
+    /// "Mile 3. Split 8 32. Average pace 8 41 a mile."
     var spokenText: String {
-        "\(unit.spokenName.capitalized) \(number). Split \(Self.spoken(seconds)). "
-            + "Average pace \(Self.spoken(averagePace)) per \(unit.spokenName)."
+        "\(unit.spokenName.capitalized) \(number). Split \(Self.spokenPace(seconds)). "
+            + "Average pace \(Self.spokenPace(averagePace)) a \(unit.spokenName)."
+    }
+
+    /// A pace or split time the way a runner says it: "6 30", "6 oh 5", or
+    /// "7 minutes" on the minute. Never "6:30", which the speech voice reads
+    /// as a time of day ("six thirty" is fine, "seven o'clock" is not). An
+    /// hour or more falls back to words.
+    static func spokenPace(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        guard total >= 60, total < 3600 else { return spoken(seconds) }
+        let minutes = total / 60, rest = total % 60
+        switch rest {
+        case 0: return "\(minutes) minute\(minutes == 1 ? "" : "s")"
+        case 1..<10: return "\(minutes) oh \(rest)"
+        default: return "\(minutes) \(rest)"
+        }
     }
 
     static func spoken(_ seconds: Double) -> String {

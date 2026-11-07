@@ -12,6 +12,20 @@ Worker deployment and client rollout; provider expansion below remains a proposa
 
 > ## Implementation status (kept current as we build)
 >
+> - **Garmin access update (2026-11-07).** The Garmin rows below predate
+>   Garmin's October 2026 program change and are superseded. Starter Access is
+>   now self-service in the Garmin developer portal, with no Garmin review:
+>   Activity, Health, Women's Health, Training and Courses APIs, push-only
+>   delivery, no historical data, up to 1,000 connected users. The owner
+>   created the Tres Fort company account there under nick@tresfort.app and
+>   began registering a Starter app (Activity API, identifiable users, no data
+>   sales). Garmin does not answer the section 5.2(o) question for
+>   self-service tiers; the app form says
+>   Garmin data may not train, evaluate or improve AI models, so Garmin-sourced
+>   data stays out of MCP until the agreement is reviewed. No plan yet covers
+>   building the direct import, and intervals.icu warned on 2026-10-09 that it
+>   will likely stop passing Garmin data through its API.
+>
 > - **Phase 0 — multi-source substrate: ✅ DONE & tested.** Migration `0027`
 >   adds dedup columns (`canonical`, `duplicate_of`); the intervals reconcile
 >   soft-delete + count are **source-scoped to `'intervals'`** (`src/db.ts`

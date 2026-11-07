@@ -117,6 +117,10 @@ final class RunRecorderTests: XCTestCase {
     private var altimeter: FakeAltimeter!
     /// What `GET /api/me/thresholds` answers; nil fails.
     private var thresholdRows: [AthleteThreshold]? = []
+    /// Runs while the thresholds request is out.
+    private var duringThresholdsLoad: (() -> Void)?
+    /// The account signed out or was deleted.
+    private var signedOut = false
     private var api: RecorderUploadStub!
     private var liveActivity: FakeLiveActivity!
     private var speaker: FakeSpeaker!
@@ -136,6 +140,8 @@ final class RunRecorderTests: XCTestCase {
         location = FakeLocationSource()
         altimeter = FakeAltimeter()
         thresholdRows = []
+        duringThresholdsLoad = nil
+        signedOut = false
         api = RecorderUploadStub()
         liveActivity = FakeLiveActivity()
         speaker = FakeSpeaker()
@@ -153,7 +159,7 @@ final class RunRecorderTests: XCTestCase {
     private func makeModel(jwt: String? = "jwt") -> RunRecorderModel {
         RunRecorderModel(
             accountID: "user-a", baseURL: base, api: api,
-            jwt: { jwt },
+            jwt: { [unowned self] in self.signedOut ? nil : jwt },
             onUnauthorized: { [unowned self] in self.unauthorized += 1 },
             onUploaded: { [unowned self] in self.uploads += 1 },
             onPlannedRunSaved: { [unowned self] slot, date, seconds in
@@ -167,6 +173,7 @@ final class RunRecorderTests: XCTestCase {
             },
             makeAltimeter: { [unowned self] in self.altimeter },
             loadThresholds: { [unowned self] _ in
+                self.duringThresholdsLoad?()
                 guard let rows = self.thresholdRows else { throw URLError(.notConnectedToInternet) }
                 return rows
             },
@@ -620,6 +627,15 @@ final class RunRecorderTests: XCTestCase {
         await offline.refreshThresholds()
         XCTAssertEqual(offline.thresholds.count, 2, "A failed refresh keeps what it had")
         XCTAssertNil(offline.load, "No saved run yet")
+    }
+
+    func testThresholdsThatArriveAfterTheAccountIsGoneAreDropped() async throws {
+        let model = makeModel()
+        thresholdRows = [threshold(.heartRate, 163)]
+        duringThresholdsLoad = { [unowned self] in self.signedOut = true }
+        await model.refreshThresholds()
+        XCTAssertTrue(model.thresholds.isEmpty)
+        XCTAssertNil(defaults.data(forKey: AccountLocalState.runThresholdsKey(userID: "user-a")))
     }
 
     func testTheBarometerRecordsTheClimbAndHealthGetsIt() async throws {

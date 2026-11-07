@@ -284,9 +284,11 @@ final class RunRecorderModel: ObservableObject {
     private var thresholdsCacheKey: String? { accountID.map { AccountLocalState.runThresholdsKey(userID: $0) } }
 
     /// Reads the member's thresholds and keeps them for the next run. A
-    /// failure keeps the ones from before.
+    /// failure keeps the ones from before, and an answer that arrives after
+    /// the account signed out or was deleted is dropped, so it can't put
+    /// back what deleting the account erased.
     func refreshThresholds() async {
-        guard let token = jwt(), let rows = try? await loadThresholds(token) else { return }
+        guard let token = jwt(), let rows = try? await loadThresholds(token), jwt() != nil else { return }
         thresholds = rows
         if let key = thresholdsCacheKey, let data = try? JSONEncoder().encode(rows) {
             defaults.set(data, forKey: key)

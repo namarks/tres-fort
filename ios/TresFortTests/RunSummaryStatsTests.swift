@@ -13,9 +13,14 @@ final class RunSummaryStatsTests: XCTestCase {
         return run
     }
 
-    private func readings(every step: Int, through last: Int, bpm: Double) -> [RecordedRun.HeartRateSample] {
-        stride(from: 0, through: last, by: step).map {
-            .init(timestamp: start.addingTimeInterval(TimeInterval($0)), beatsPerMinute: bpm)
+    /// A track point and a strap reading every `step` seconds, as the
+    /// recorder keeps them; the Worker reads heart rate off the points.
+    private func record(every step: Int, through last: Int, bpm: Double, into run: inout RecordedRun) {
+        for second in stride(from: 0, through: last, by: step) {
+            let time = start.addingTimeInterval(TimeInterval(second))
+            run.points.append(.init(timestamp: time, latitude: 45.5 + Double(second) * 0.00001,
+                                    longitude: -122.6, altitude: nil, horizontalAccuracy: 5))
+            run.heartRates.append(.init(timestamp: time, beatsPerMinute: bpm))
         }
     }
 
@@ -27,25 +32,46 @@ final class RunSummaryStatsTests: XCTestCase {
 
     func testHeartRateLoadIsOneHundredForAnHourAtThreshold() {
         var recorded = run()
-        recorded.heartRates = readings(every: 5, through: 1795, bpm: 163)
+        record(every: 5, through: 1795, bpm: 163, into: &recorded)
         // 359 gaps of 5 s and the last reading's 1 s: 1,796 s at threshold.
         XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1800, thresholdHeartRate: 163, thresholdPacePerKm: 300),
                        RunLoad.Result(load: 50, method: .heartRate))
-        recorded.heartRates = readings(every: 5, through: 1795, bpm: 163 * 1.1)
-        XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1800, thresholdHeartRate: 163,
+        var harder = run()
+        record(every: 5, through: 1795, bpm: 179.3, into: &harder)
+        XCTAssertEqual(RunLoad.estimate(harder, movingSeconds: 1800, thresholdHeartRate: 163,
                                         thresholdPacePerKm: nil)?.load, 60)
+    }
+
+    func testTheLoadUsesTheHeartRateTheUploadCarries() {
+        var recorded = run()
+        record(every: 5, through: 1795, bpm: 163, into: &recorded)
+        // A strap reading with no track point within 5 s never reaches the
+        // Worker, so it never counts here either.
+        recorded.heartRates.append(.init(timestamp: start.addingTimeInterval(1797.5), beatsPerMinute: 220))
+        recorded.points.removeLast(90)
+        let stream = RecordedRunTCX.heartRateStream(recorded)
+        XCTAssertEqual(stream.count, 270)
+        XCTAssertNil(RunLoad.heartRateSummary(stream, movingSeconds: 1800),
+                     "1,346 s of readings cover too little of 30 minutes")
+        XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1800, thresholdHeartRate: 163, thresholdPacePerKm: nil),
+                       RunLoad.Result(load: 50, method: .averageHeartRate))
     }
 
     func testReadingsWhilePausedNeverCount() {
         var recorded = run()
         recorded.endedAt = start.addingTimeInterval(2100)
         recorded.pauses = [.init(start: start.addingTimeInterval(600), end: start.addingTimeInterval(900))]
-        recorded.heartRates = readings(every: 5, through: 2095, bpm: 163)
-        recorded.heartRates += [.init(timestamp: start.addingTimeInterval(700), beatsPerMinute: 200)]
-        let summary = RunLoad.heartRateSummary(recorded, movingSeconds: 1800)
+        record(every: 5, through: 2095, bpm: 163, into: &recorded)
+        recorded.heartRates.removeAll { $0.timestamp == start.addingTimeInterval(700) }
+        recorded.heartRates.append(.init(timestamp: start.addingTimeInterval(700), beatsPerMinute: 200))
+        recorded.heartRates.sort { $0.timestamp < $1.timestamp }
+        let stream = RecordedRunTCX.heartRateStream(recorded)
+        XCTAssertFalse(stream.contains { $0.v == 200 })
+        let summary = RunLoad.heartRateSummary(stream, movingSeconds: 1800)
         XCTAssertEqual(summary?.rms, 163)
-        XCTAssertEqual(summary?.seconds, 1796, "The gap across the pause is 5 s of moving time")
-        XCTAssertEqual(recorded.movingOffset(at: start.addingTimeInterval(1000)), 700)
+        // The second track starts where the first ended (595 s), so its
+        // first reading repeats that second and is dropped, as the Worker does.
+        XCTAssertEqual(summary?.seconds, 1791)
     }
 
     func testPaceThenAverageHeartRateWhenTheReadingsCoverTooLittle() {
@@ -55,13 +81,18 @@ final class RunSummaryStatsTests: XCTestCase {
         XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1500, thresholdHeartRate: 163, thresholdPacePerKm: 300),
                        RunLoad.Result(load: 42, method: .pace))
         recorded.distanceMeters = 0
-        recorded.heartRates = [.init(timestamp: start, beatsPerMinute: 150),
-                               .init(timestamp: start.addingTimeInterval(1), beatsPerMinute: 166)]
+        record(every: 1, through: 0, bpm: 150, into: &recorded)
+        recorded.heartRates.append(.init(timestamp: start.addingTimeInterval(1), beatsPerMinute: 166))
+        recorded.points.append(.init(timestamp: start.addingTimeInterval(1), latitude: 45.50001, longitude: -122.6,
+                                     altitude: nil, horizontalAccuracy: 5))
         // 25 minutes at an average of 158 against 163.
         XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1500, thresholdHeartRate: 163, thresholdPacePerKm: 300),
                        RunLoad.Result(load: 39, method: .averageHeartRate))
         XCTAssertNil(RunLoad.estimate(recorded, movingSeconds: 1500, thresholdHeartRate: nil, thresholdPacePerKm: nil))
         XCTAssertNil(RunLoad.estimate(recorded, movingSeconds: 1500, thresholdHeartRate: 0, thresholdPacePerKm: .nan))
+        recorded.points = []
+        XCTAssertNil(RunLoad.estimate(recorded, movingSeconds: 1500, thresholdHeartRate: 163, thresholdPacePerKm: nil),
+                     "Without track points the upload carries no heart rate")
     }
 
     // MARK: - Climb

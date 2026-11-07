@@ -334,9 +334,11 @@ coach sees it in the same place as Garmin runs.
     owner chose it for the summary on 2026-11-07)
     - The summary shows the run's load the moment it stops, scored on the
       iPhone the way the Worker scores a recording (`RunLoad`, mirroring
-      `src/trainingLoad.ts`): heart rate over moving time against the run
-      threshold heart rate in effect on the run's date, then average pace
-      against threshold pace, then average heart rate. The recorder reads
+      `src/trainingLoad.ts`) on the heart rate the uploaded TCX carries
+      (each track point's reading, as `parseTcx` reads it back): heart rate
+      over moving time against the run threshold heart rate in effect on
+      the run's date, then average pace against threshold pace, then
+      average heart rate. The recorder reads
       `GET /api/me/thresholds` when it opens and keeps the rows on the
       iPhone, so a run recorded offline still shows its load. Without a run
       threshold the tile shows "–" and says where to add one. The Worker
@@ -523,11 +525,13 @@ the scene delegate is left to P3's force-quit check.
   `RunRecordingTests` covers the multipart fields and runs saved before
   them. `web/test/routeMap.test.ts` covers the web's recovery text.
   For (c) and (d), `RunSummaryStatsTests` covers the heart rate, pace and
-  average heart rate loads, readings while paused, the 3 m climb rule,
+  average heart rate loads, scoring only readings the upload carries,
+  readings while paused, the 3 m climb rule,
   climbs while paused, blending readings, the barometer set at GPS's level,
   the TCX altitude, the `elevation_gain_m` field and runs saved before the
-  barometer. `RunRecorderTests` covers the load from the run thresholds in
-  effect, thresholds kept for an offline run, the barometer's readings
+  barometer. `LocalPersistenceTests` covers account deletion erasing the
+  cached thresholds. `RunRecorderTests` covers the load from the run
+  thresholds in effect, thresholds kept for an offline run, the barometer's readings
   joining the run, the climb reaching Apple Health and the upload, and
   nothing joining after the stop. `test/run_recording.test.ts` covers
   keeping, filling and refusing `elevation_gain_m`.

@@ -68,6 +68,31 @@ enum RecordedRunTCX {
         return Data(xml.utf8)
     }
 
+    /// The heart rate the Worker reads back from this file (`parseTcx` in
+    /// `src/tcxFile.ts`): each track point's whole-bpm reading on moving
+    /// time, at the whole second the file states, each track carrying on
+    /// where the last one ended. The run summary scores load from it, so
+    /// it matches the load the Worker gives the upload (P7).
+    static func heartRateStream(_ run: RecordedRun) -> [(t: Double, v: Double)] {
+        let heartRates = run.heartRates.sorted { $0.timestamp < $1.timestamp }
+        var index = 0
+        var offset = 0.0
+        var stream: [(t: Double, v: Double)] = []
+        for track in segments(run) {
+            guard let first = track.first, let last = track.last else { continue }
+            let trackStart = wholeSecond(first.timestamp)
+            for point in track {
+                guard let bpm = nearestHeartRate(to: point.timestamp, in: heartRates, from: &index) else { continue }
+                stream.append((offset + max(0, wholeSecond(point.timestamp) - trackStart), Double(bpm)))
+            }
+            offset += max(0, wholeSecond(last.timestamp) - trackStart)
+        }
+        return stream
+    }
+
+    /// The file states times to the second.
+    private static func wholeSecond(_ date: Date) -> Double { date.timeIntervalSince1970.rounded(.down) }
+
     /// Track points split into runs of moving time. A point recorded inside a
     /// pause is dropped, and a point after a pause starts a new segment.
     static func segments(_ run: RecordedRun) -> [[RecordedRun.RoutePoint]] {

@@ -595,14 +595,22 @@ final class RunRecorderTests: XCTestCase {
     func testTheSummaryScoresTheRunFromTheRunThresholdsAndKeepsThemForOfflineRuns() async throws {
         let ride = threshold(.heartRate, 150, sport: .ride)
         thresholdRows = [ride]
-        let model = try await endRunWithStrap()
+        let model = makeModel()
+        await model.start()
+        let start = clock
+        location.onLocations?([fix(0, seconds: 0), fix(1, seconds: 10)])
+        model.record(.init(timestamp: start, beatsPerMinute: 150))
+        model.record(.init(timestamp: start.addingTimeInterval(10), beatsPerMinute: 166))
+        coverGround()
+        await model.end()
+        XCTAssertEqual(model.phase, .finished)
         await model.refreshThresholds()
         XCTAssertNil(model.load, "A cycling threshold never scores a run")
         XCTAssertFalse(model.hasRunThresholds)
         thresholdRows = [ride, threshold(.heartRate, 163)]
         await model.refreshThresholds()
         XCTAssertTrue(model.hasRunThresholds)
-        // Two readings cover too little, so 91 s at an average of 157.5 against 163.
+        // Two readings cover too little, so 90 s at an average of 158 against 163.
         XCTAssertEqual(model.load, RunLoad.Result(load: 2, method: .averageHeartRate))
 
         // The next recorder on this iPhone has them before it reaches the server.

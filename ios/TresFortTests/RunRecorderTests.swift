@@ -470,7 +470,7 @@ final class RunRecorderTests: XCTestCase {
         clock = clock.addingTimeInterval(470)
         engine.onMetrics?(.init(distanceMeters: 3_219, movingSeconds: 950, heartRate: nil))
         XCTAssertEqual(speaker.spoken.count, 1)
-        XCTAssertTrue(speaker.spoken[0].hasPrefix("Mile 2. Split 7 minutes 50 seconds."))
+        XCTAssertTrue(speaker.spoken[0].hasPrefix("Mile 2. Split 7 50."))
 
         // Nothing is spoken while paused, even if the distance settles.
         model.pause()

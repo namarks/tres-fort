@@ -237,7 +237,9 @@ struct RunRecorderView: View {
                     stat("Avg /\(unit.abbreviation)",
                          RunFormat.pace(RunPace.average(movingSeconds: moving, meters: meters, unit: unit)),
                          id: "averagePace")
-                    stat("Load", load.map { "\($0.load)" } ?? "–", id: "load")
+                    // Labeled with how it was scored, as the activity views do.
+                    stat(load.map { "Load · \($0.method.shortLabel)" } ?? "Load",
+                         load.map { "\($0.load)" } ?? "–", id: "load")
                     stat("Climb \(Self.climbUnit(unit))", Self.climb(run.flatMap(RunAltitude.climb), unit: unit),
                          id: "climb")
                     if let live = model.liveHeartRate(at: context.date) {
@@ -335,6 +337,7 @@ struct RunRecorderView: View {
                     Text("LIVE").font(Theme.mono(11, .bold)).foregroundStyle(Theme.accent)
                 }
                 Text(label.uppercased()).font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                    .lineLimit(1).minimumScaleFactor(0.7)
             }
         }
         .frame(maxWidth: .infinity)

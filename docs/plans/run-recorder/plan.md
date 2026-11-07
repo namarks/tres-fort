@@ -340,7 +340,8 @@ coach sees it in the same place as Garmin runs.
       the run's date, then average pace against threshold pace, then
       average heart rate. The recorder reads
       `GET /api/me/thresholds` when it opens and keeps the rows on the
-      iPhone, so a run recorded offline still shows its load. Without a run
+      iPhone, so a run recorded offline still shows its load. The tile
+      names the method ("Load · HR", "pace" or "avg HR"). Without a run
       threshold the tile shows "–" and says where to add one. The Worker
       still scores the uploaded run itself, and an intervals.icu copy can
       later win with intervals.icu's own load.

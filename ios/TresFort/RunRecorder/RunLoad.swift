@@ -12,6 +12,16 @@ enum RunLoad {
         case heartRate
         case pace
         case averageHeartRate
+
+        /// Short enough for the summary tile ("Load · HR"); the same
+        /// methods the activity views label in full.
+        var shortLabel: String {
+            switch self {
+            case .heartRate: "HR"
+            case .pace: "pace"
+            case .averageHeartRate: "avg HR"
+            }
+        }
     }
 
     struct Result: Equatable {

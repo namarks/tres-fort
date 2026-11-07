@@ -57,6 +57,12 @@ final class RunSummaryStatsTests: XCTestCase {
                        RunLoad.Result(load: 50, method: .averageHeartRate))
     }
 
+    func testTheTileSaysHowTheLoadWasScored() {
+        XCTAssertEqual(RunLoad.Method.heartRate.shortLabel, "HR")
+        XCTAssertEqual(RunLoad.Method.pace.shortLabel, "pace")
+        XCTAssertEqual(RunLoad.Method.averageHeartRate.shortLabel, "avg HR")
+    }
+
     func testReadingsWhilePausedNeverCount() {
         var recorded = finishedRun()
         recorded.endedAt = start.addingTimeInterval(2100)

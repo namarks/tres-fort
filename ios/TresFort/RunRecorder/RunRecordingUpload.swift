@@ -64,6 +64,8 @@ extension APIClient: RecordingUploadAPI {
         if let climb = RunAltitude.climb(run), climb.isFinite {
             field("elevation_gain_m", String(format: "%.1f", min(max(climb, 0), 10_000)))
         }
+        // A planned run's laps, one per step (planned-runs P9).
+        if let laps = RunLaps.uploadJSON(RunLaps.summaries(run)) { field("laps", laps) }
         body.append(Data(
             ("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(run.uploadID).tcx\"\r\n"
              + "Content-Type: application/vnd.garmin.tcx+xml\r\n\r\n").utf8))

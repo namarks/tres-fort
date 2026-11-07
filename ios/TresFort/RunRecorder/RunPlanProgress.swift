@@ -39,6 +39,10 @@ struct RunPlanProgress: Codable, Equatable {
     /// that falls between two updates can be placed between them.
     var lastSeconds: Double? = nil
     var lastMeters: Double? = nil
+    /// Each step the run has left so far, with where it started and ended,
+    /// so the saved run can show its laps (P9). Empty at the start; nil in
+    /// a run saved before laps were kept, which then has no laps.
+    var laps: [RunLapMark]? = []
 
     func isComplete(_ steps: [RunPlan.ExpandedStep]) -> Bool { stepIndex >= steps.count }
 
@@ -56,6 +60,7 @@ struct RunPlanProgress: Codable, Equatable {
         var changed = false
         while stepIndex < steps.count {
             let step = steps[stepIndex].step
+            let startSeconds = stepStartSeconds, startMeters = stepStartMeters
             if let duration = step.durationSeconds {
                 let end = stepStartSeconds + Double(duration)
                 guard movingSeconds >= end else { break }
@@ -74,6 +79,8 @@ struct RunPlanProgress: Codable, Equatable {
                 stepStartSeconds = movingSeconds
                 stepStartMeters = meters
             }
+            laps?.append(RunLapMark(stepIndex: stepIndex, startSeconds: startSeconds, startMeters: startMeters,
+                                    endSeconds: stepStartSeconds, endMeters: stepStartMeters, skipped: false))
             fromSeconds = max(fromSeconds, stepStartSeconds)
             fromMeters = max(fromMeters, stepStartMeters)
             stepIndex += 1
@@ -94,6 +101,9 @@ struct RunPlanProgress: Codable, Equatable {
     /// Ends the current step now and starts the next.
     mutating func skip(_ steps: [RunPlan.ExpandedStep], movingSeconds: Double, meters: Double) {
         guard stepIndex < steps.count else { return }
+        laps?.append(RunLapMark(stepIndex: stepIndex, startSeconds: stepStartSeconds, startMeters: stepStartMeters,
+                                endSeconds: max(movingSeconds, stepStartSeconds),
+                                endMeters: max(meters, stepStartMeters), skipped: true))
         stepIndex += 1
         stepStartSeconds = movingSeconds
         stepStartMeters = meters
@@ -117,6 +127,19 @@ struct RunPlanProgress: Codable, Equatable {
         }
         return nil
     }
+}
+
+/// Where one step of a planned run started and ended, in the run's moving
+/// seconds and meters (P9).
+struct RunLapMark: Codable, Equatable {
+    /// The step's index in `RunPlan.expandedSteps`.
+    var stepIndex: Int
+    var startSeconds: Double
+    var startMeters: Double
+    var endSeconds: Double
+    var endMeters: Double
+    /// The member moved on before the step was done.
+    var skipped: Bool
 }
 
 /// The plan a recording run follows, kept in its checkpoint.

@@ -2,6 +2,7 @@
 // map itself is drawn by RouteMapView.tsx.
 import { asEncodedRoute, decodeRoute } from '../../src/activityRoute';
 import type { StateResponse } from './api';
+import type { RunLap } from './runLaps';
 
 export interface LatLon {
   lat: number;
@@ -24,6 +25,9 @@ export interface ActivityRouteResponse {
   /** Heart rate at the stop of a run recorded in the app, and one and two
    * minutes later (run-recorder P7). Absent from an older API. */
   heart_rate_recovery?: HeartRateRecovery | null;
+  /** A planned run's laps, one per step (planned-runs P9). Absent from an
+   * older API. */
+  laps?: RunLap[] | null;
 }
 
 export interface HeartRateRecovery {

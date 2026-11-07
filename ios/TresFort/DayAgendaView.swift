@@ -705,17 +705,18 @@ struct DayAgendaView: View {
     /// and the route map of a run recorded in the app, which can be deleted
     /// here.
     private func activityCard(_ a: ExternalActivity) -> some View {
-        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments, recordingID, recovery in
+        WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments, recordingID, recovery, laps in
             activityCardContent(a, routeSegments: segments,
                                 recordedRunID: a.recordedRunID(routeRecordingID: recordingID),
-                                recovery: recovery)
+                                recovery: recovery, laps: laps)
         }
     }
 
     private func activityCardContent(_ a: ExternalActivity,
                                      routeSegments: [[CLLocationCoordinate2D]],
                                      recordedRunID: String?,
-                                     recovery: HeartRateRecovery?) -> some View {
+                                     recovery: HeartRateRecovery?,
+                                     laps: [ActivityLap]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: a.glyph)
@@ -754,6 +755,9 @@ struct DayAgendaView: View {
                 ActivityRouteThumbnail(segments: routeSegments)
             }
             ActivityChartsSection(activity: a, access: sync.activityRouteAccess)
+            if !laps.isEmpty {
+                RunLapsView(laps: laps, unit: RunDistanceUnit.preferred())
+            }
             if a.offersEffortRating {
                 EffortRatingControl(activity: a) { effort in
                     await sync.rateActivityEffort(activityID: a.id, effort: effort)

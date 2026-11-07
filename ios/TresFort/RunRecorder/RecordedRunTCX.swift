@@ -19,53 +19,128 @@ enum RecordedRunTCX {
         let totalDistance = run.distanceMeters > 0 ? run.distanceMeters : gpsDistance
         let scale = gpsDistance > 0 ? totalDistance / gpsDistance : 0
 
+        // Each point as the file states it, with its cumulative distance,
+        // altitude and heart rate.
+        let heartRates = run.heartRates.sorted { $0.timestamp < $1.timestamp }
+        let altitudes = RunAltitude.fusedAltitudes(run, points: tracks.flatMap { $0 })
+        var pointIndex = 0
+        var hrIndex = 0
+        var distance = 0.0
+        let encoded: [[FilePoint]] = tracks.map { track -> [FilePoint] in
+            track.enumerated().map { (i, point) -> FilePoint in
+                if i > 0 { distance += meters(track[i - 1], point) * scale }
+                let altitude = altitudes.map { $0[pointIndex] } ?? point.altitude
+                pointIndex += 1
+                return FilePoint(point: point, distance: distance, altitude: altitude,
+                                 heartRate: nearestHeartRate(to: point.timestamp, in: heartRates, from: &hrIndex))
+            }
+        }
+
         var xml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
           <Activities>
             <Activity Sport="Running">
               <Id>\(timestamp(run.startedAt))</Id>
-              <Lap StartTime="\(timestamp(run.startedAt))">
-                <TotalTimeSeconds>\(decimal(max(run.movingSeconds, 0)))</TotalTimeSeconds>
-                <DistanceMeters>\(decimal(totalDistance))</DistanceMeters>
-                <Calories>0</Calories>
-                <Intensity>Active</Intensity>
-                <TriggerMethod>Manual</TriggerMethod>
 
         """
-        let heartRates = run.heartRates.sorted { $0.timestamp < $1.timestamp }
-        let altitudes = RunAltitude.fusedAltitudes(run, points: tracks.flatMap { $0 })
-        var pointIndex = 0
-        var hrIndex = 0
-        var distance = 0.0
-        for track in tracks {
-            xml += "        <Track>\n"
-            for (i, point) in track.enumerated() {
-                if i > 0 { distance += meters(track[i - 1], point) * scale }
-                xml += "          <Trackpoint><Time>\(timestamp(point.timestamp))</Time>"
-                xml += "<Position><LatitudeDegrees>\(coordinate(point.latitude))</LatitudeDegrees>"
-                xml += "<LongitudeDegrees>\(coordinate(point.longitude))</LongitudeDegrees></Position>"
-                let altitude = altitudes.map { $0[pointIndex] } ?? point.altitude
-                pointIndex += 1
-                if let altitude, altitude.isFinite {
-                    xml += "<AltitudeMeters>\(decimal(altitude))</AltitudeMeters>"
-                }
-                xml += "<DistanceMeters>\(decimal(distance))</DistanceMeters>"
-                if let bpm = nearestHeartRate(to: point.timestamp, in: heartRates, from: &hrIndex) {
-                    xml += "<HeartRateBpm><Value>\(bpm)</Value></HeartRateBpm>"
-                }
-                xml += "</Trackpoint>\n"
+        for lap in fileLaps(run, tracks: encoded, totalDistance: totalDistance) {
+            xml += "      <Lap StartTime=\"\(timestamp(lap.start))\">\n"
+            xml += "        <TotalTimeSeconds>\(decimal(lap.seconds))</TotalTimeSeconds>\n"
+            xml += "        <DistanceMeters>\(decimal(lap.meters))</DistanceMeters>\n"
+            xml += "        <Calories>0</Calories>\n"
+            if let average = lap.averageHeartRate {
+                xml += "        <AverageHeartRateBpm><Value>\(average)</Value></AverageHeartRateBpm>\n"
             }
-            xml += "        </Track>\n"
+            if let maximum = lap.maxHeartRate {
+                xml += "        <MaximumHeartRateBpm><Value>\(maximum)</Value></MaximumHeartRateBpm>\n"
+            }
+            xml += "        <Intensity>\(lap.intensity)</Intensity>\n"
+            xml += "        <TriggerMethod>\(lap.trigger)</TriggerMethod>\n"
+            for track in lap.tracks {
+                xml += "        <Track>\n"
+                for point in track {
+                    xml += "          <Trackpoint><Time>\(timestamp(point.point.timestamp))</Time>"
+                    xml += "<Position><LatitudeDegrees>\(coordinate(point.point.latitude))</LatitudeDegrees>"
+                    xml += "<LongitudeDegrees>\(coordinate(point.point.longitude))</LongitudeDegrees></Position>"
+                    if let altitude = point.altitude, altitude.isFinite {
+                        xml += "<AltitudeMeters>\(decimal(altitude))</AltitudeMeters>"
+                    }
+                    xml += "<DistanceMeters>\(decimal(point.distance))</DistanceMeters>"
+                    if let bpm = point.heartRate {
+                        xml += "<HeartRateBpm><Value>\(bpm)</Value></HeartRateBpm>"
+                    }
+                    xml += "</Trackpoint>\n"
+                }
+                xml += "        </Track>\n"
+            }
+            xml += "      </Lap>\n"
         }
         xml += """
-              </Lap>
             </Activity>
           </Activities>
         </TrainingCenterDatabase>
 
         """
         return Data(xml.utf8)
+    }
+
+    private struct FilePoint {
+        var point: RecordedRun.RoutePoint
+        var distance: Double
+        var altitude: Double?
+        var heartRate: Int?
+    }
+
+    private struct FileLap {
+        var start: Date
+        var seconds: Double
+        var meters: Double
+        var averageHeartRate: Int? = nil
+        var maxHeartRate: Int? = nil
+        var intensity = "Active"
+        var trigger = "Manual"
+        var tracks: [[FilePoint]] = []
+    }
+
+    /// One lap holding the whole run, or a planned run's laps (planned-runs
+    /// P9), one per step, so intervals.icu shows each interval. A step that
+    /// ends mid-track splits it: the next lap's track starts on the point
+    /// the last one ended on, which the Worker reads as one stretch
+    /// (`parseTcx`), while a pause still starts a new track.
+    private static func fileLaps(_ run: RecordedRun, tracks: [[FilePoint]], totalDistance: Double) -> [FileLap] {
+        let summaries = RunLaps.summaries(run)
+        guard summaries.count > 1 else {
+            return [FileLap(start: run.startedAt, seconds: max(run.movingSeconds, 0), meters: totalDistance,
+                            tracks: tracks)]
+        }
+        var laps = summaries.enumerated().map { (index, summary) -> FileLap in
+            var lap = FileLap(start: index == 0 ? run.startedAt : RunLaps.date(run, atMoving: summary.startSeconds),
+                              seconds: summary.movingSeconds, meters: summary.meters,
+                              averageHeartRate: summary.averageHeartRate, maxHeartRate: summary.maxHeartRate)
+            if summary.step?.step.kind == .recovery { lap.intensity = "Resting" }
+            if summary.end == .completed {
+                lap.trigger = summary.step?.step.durationSeconds != nil ? "Time" : "Distance"
+            }
+            return lap
+        }
+        for track in tracks {
+            var lapIndex: Int?
+            var previous: FilePoint?
+            for point in track {
+                let moving = RunLaps.movingSeconds(run, at: point.point.timestamp)
+                let index = summaries.lastIndex(where: { $0.startSeconds <= moving }) ?? 0
+                if index != lapIndex {
+                    // The new lap's track starts where the last lap's ended.
+                    laps[index].tracks.append(previous.map { [$0] } ?? [])
+                    lapIndex = index
+                }
+                laps[index].tracks[laps[index].tracks.count - 1].append(point)
+                previous = point
+            }
+        }
+        // A step skipped the moment it began has nothing to show.
+        return laps.filter { $0.seconds >= 0.05 || $0.meters >= 0.05 || !$0.tracks.isEmpty }
     }
 
     /// The heart rate the Worker reads back from this file (`parseTcx` in

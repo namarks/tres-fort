@@ -2,15 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchActivityRoute } from './api';
 import { accentColor, drawRoute, loadMapKit, onMapKitFailure } from './mapkit';
 import { drawableSegments, recoveryText, routeOutline, type LatLon } from './routeMap';
+import { lapRows, type LapRow } from './runLaps';
 
 /**
  * A run's route under its card: Apple Maps when the site has a MapKit JS
  * token, otherwise (or when the map can't load) the route's shape on its
- * own. Shows nothing for an activity without a route, or while
- * intervals.icu can't send its track.
+ * own, then a planned run's laps. Shows nothing for an activity without a
+ * route, or while intervals.icu can't send its track.
  */
-export function RouteMap({ activityId, label }: { activityId: string; label: string }) {
-  const [loaded, setLoaded] = useState<{ id: string; segments: LatLon[][]; recovery: string | null } | null>(null);
+export function RouteMap({ activityId, label, miles }: { activityId: string; label: string; miles: boolean }) {
+  const [loaded, setLoaded] = useState<{
+    id: string; segments: LatLon[][]; recovery: string | null; laps: LapRow[];
+  } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -21,26 +24,50 @@ export function RouteMap({ activityId, label }: { activityId: string; label: str
             id: activityId,
             segments: found ? drawableSegments(found.route) : [],
             recovery: recoveryText(found?.heart_rate_recovery),
+            laps: lapRows(found?.laps, miles),
           });
         }
       })
       .catch(() => {
-        if (live) setLoaded({ id: activityId, segments: [], recovery: null });
+        if (live) setLoaded({ id: activityId, segments: [], recovery: null, laps: [] });
       });
     return () => {
       live = false;
     };
-  }, [activityId]);
+  }, [activityId, miles]);
 
   const current = loaded?.id === activityId ? loaded : null;
   const segments = current?.segments ?? [];
   const recovery = current?.recovery ?? null;
-  if (segments.length === 0 && recovery === null) return null;
+  const laps = current?.laps ?? [];
+  if (segments.length === 0 && recovery === null && laps.length === 0) return null;
   return (
     <>
       {recovery !== null ? <p className="route-recovery">Heart rate recovery: {recovery}</p> : null}
       {segments.length > 0 ? <RouteView key={activityId} segments={segments} label={label} /> : null}
+      {laps.length > 0 ? <LapList laps={laps} /> : null}
     </>
+  );
+}
+
+/** A planned run's laps: each step as it was run, against its target. */
+function LapList({ laps }: { laps: LapRow[] }) {
+  return (
+    <section className="run-laps" aria-label="Laps">
+      <h4>Laps</h4>
+      <ol>
+        {laps.map((lap, i) => (
+          <li key={i} className={`run-lap ${lap.kind ?? 'after'}`}>
+            <div className="run-lap-title">
+              {lap.title}
+              {lap.note ? <span className="muted"> · {lap.note}</span> : null}
+            </div>
+            <div className="run-lap-figures">{lap.figures}</div>
+            {lap.target ? <div className={`run-lap-target${lap.verdict === 'on_target' ? ' on-target' : ''}`}>{lap.target}</div> : null}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

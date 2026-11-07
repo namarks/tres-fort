@@ -63,6 +63,9 @@ struct ActivityRouteResponse: Decodable, Equatable {
     /// The recorded run's heart rate after the stop (P7). Nil for other
     /// routes, a run recorded without it, and from an older server.
     var heart_rate_recovery: HeartRateRecovery? = nil
+    /// A planned run's laps, one per step (planned-runs P9). Nil for other
+    /// routes, a run recorded without a plan, and from an older server.
+    var laps: [ActivityLap]? = nil
 }
 
 extension APIClient {
@@ -238,12 +241,13 @@ extension ExternalActivity {
 /// segments to `content`: none until the route arrives, and none for an
 /// activity that can't have one. `content` also gets the recording behind
 /// the route, if any, which is how the intervals.icu copy of a run recorded
-/// in the app is known to be one, and that recording's heart rate recovery.
+/// in the app is known to be one, that recording's heart rate recovery, and
+/// its laps when it followed a planned run.
 struct WithActivityRoute<Content: View>: View {
     let activity: ExternalActivity?
     let access: ActivityRouteAccess?
     @ViewBuilder let content: (_ segments: [[CLLocationCoordinate2D]], _ recordingID: String?,
-                               _ recovery: HeartRateRecovery?) -> Content
+                               _ recovery: HeartRateRecovery?, _ laps: [ActivityLap]) -> Content
     @State private var loaded: LoadedRoute?
 
     private struct LoadedRoute {
@@ -251,18 +255,20 @@ struct WithActivityRoute<Content: View>: View {
         let recordingID: String?
         let segments: [[CLLocationCoordinate2D]]
         let recovery: HeartRateRecovery?
+        let laps: [ActivityLap]
     }
 
     var body: some View {
         let current = loaded?.activityID == activity?.id ? loaded : nil
-        content(current?.segments ?? [], current?.recordingID, current?.recovery)
+        content(current?.segments ?? [], current?.recordingID, current?.recovery, current?.laps ?? [])
             .task(id: activity?.id) {
                 guard let activity, activity.mayHaveRoute, let access else { return }
                 let route = await ActivityRouteStore.shared.route(for: activity.id, access: access)
                 guard !Task.isCancelled else { return }
                 loaded = LoadedRoute(activityID: activity.id, recordingID: route?.recording_id,
                                      segments: route?.route?.drawableSegments ?? [],
-                                     recovery: route?.heart_rate_recovery)
+                                     recovery: route?.heart_rate_recovery,
+                                     laps: route?.laps ?? [])
             }
     }
 }

@@ -151,15 +151,15 @@ struct PlannedRunRecordView: View {
     private var unit: RunDistanceUnit { RunDistanceUnit(rawValue: unitRaw) ?? .miles }
 
     var body: some View {
-        WithActivityRoute(activity: run, access: routeAccess) { segments, recordingID, recovery in
+        WithActivityRoute(activity: run, access: routeAccess) { segments, recordingID, recovery, laps in
             record(routeSegments: segments,
                    recordedRunID: run?.recordedRunID(routeRecordingID: recordingID),
-                   recovery: recovery)
+                   recovery: recovery, laps: laps)
         }
     }
 
     private func record(routeSegments: [[CLLocationCoordinate2D]], recordedRunID: String?,
-                        recovery: HeartRateRecovery?) -> some View {
+                        recovery: HeartRateRecovery?, laps: [ActivityLap]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "figure.run")
@@ -205,6 +205,10 @@ struct PlannedRunRecordView: View {
                     ActivityRouteThumbnail(segments: routeSegments)
                 }
                 ActivityChartsSection(activity: run, access: routeAccess)
+                // Each step of the plan as it was run (P9).
+                if !laps.isEmpty {
+                    RunLapsView(laps: laps, unit: unit)
+                }
                 if let rateEffort, run.offersEffortRating {
                     EffortRatingControl(activity: run) { effort in
                         await rateEffort(run.id, effort)

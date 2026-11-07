@@ -466,14 +466,14 @@ describe('a recorded run among other copies of the same run', () => {
     const recording = `recording:activity:${member.id}:${id}`;
     expect(await route(member.jwt, recording)).toEqual({
       status: 200,
-      body: { activity_id: recording, source: 'recording', recording_id: id, route: null, heart_rate_recovery: null },
+      body: { activity_id: recording, source: 'recording', recording_id: id, route: null, heart_rate_recovery: null, laps: null },
     });
     const intervals = await insertActivity(member.id, 'intervals', 'i991', START_MS - 2_000);
     await dedupeHealthKitAgainstIntervals(env.DB, member.id);
     expect(await state(recording)).toMatchObject({ duplicate_of: intervals });
     expect(await route(member.jwt, intervals)).toEqual({
       status: 200,
-      body: { activity_id: recording, source: 'recording', recording_id: id, route: null, heart_rate_recovery: null },
+      body: { activity_id: recording, source: 'recording', recording_id: id, route: null, heart_rate_recovery: null, laps: null },
     });
     const stranger = await memberJwt();
     expect((await route(stranger.jwt, intervals)).status).toBe(404);

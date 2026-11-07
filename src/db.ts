@@ -80,6 +80,7 @@ import {
   runWorkoutWriteStatement,
 } from './workout-write-fence';
 import { RUN_EXERCISE_ID, parseRunSteps, serializeRunSteps } from './runSteps';
+import { parseRunLaps, serializeRunLaps, type RunLap } from './runLaps';
 import { emptyExerciseGroup, isGroupId, normalizeRemovedGroupMember, validateExerciseGroups, validatePlanExerciseGroups, type ExerciseGroupFields, type GroupConflict } from './exerciseGroups';
 export type { GroupConflict } from './exerciseGroups';
 const now = () => Date.now();
@@ -1300,6 +1301,7 @@ export async function deleteUserAccount(
     db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM activity_routes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM activity_heart_rates WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM activity_laps WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
@@ -2497,6 +2499,7 @@ export async function exportUserData(
     db.prepare('SELECT id,sport,metric,value,effective_date,source,created_at,deleted_at FROM athlete_thresholds WHERE user_id=?1 ORDER BY created_at,id').bind(userId),
     db.prepare('SELECT activity_id,point_count,route,created_at FROM activity_routes WHERE user_id=?1 ORDER BY created_at,activity_id').bind(userId),
     db.prepare('SELECT activity_id,point_count,series,created_at FROM activity_heart_rates WHERE user_id=?1 ORDER BY created_at,activity_id').bind(userId),
+    db.prepare('SELECT activity_id,lap_count,laps,created_at FROM activity_laps WHERE user_id=?1 ORDER BY created_at,activity_id').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2570,6 +2573,11 @@ export async function exportUserData(
       activity_heart_rates: rowsAt(23).map((row) => ({
         ...row,
         series: typeof row.series === 'string' ? parseStoredHeartRate(row.series) : null,
+      })),
+      // Planned runs' laps in src/runLaps.ts's shape (planned-runs P9).
+      activity_laps: rowsAt(24).map((row) => ({
+        ...row,
+        laps: typeof row.laps === 'string' ? parseRunLaps(row.laps) : null,
       })),
     },
     group_memberships: memberships,
@@ -9500,6 +9508,28 @@ function forgetHeartRatesStatement(db: D1Database, userId: string): D1PreparedSt
     .bind(userId);
 }
 
+/**
+ * Keep a planned run's laps (planned-runs P9, migration 0069) for the
+ * member's recording `activityId`, only while the member hasn't deleted it.
+ * The first laps kept stay.
+ */
+function keepLapsStatement(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+  laps: RunLap[],
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO activity_laps (activity_id,user_id,lap_count,laps,created_at)
+       SELECT a.id, a.user_id, ?3, ?4, ?5 FROM external_activities a
+        WHERE a.id = ?1 AND a.user_id = ?2 AND a.source = 'recording'
+          AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)
+       ON CONFLICT DO NOTHING`,
+    )
+    .bind(activityId, userId, laps.length, serializeRunLaps(laps), now());
+}
+
 export interface RecordedRunStoreResult {
   activity: ExternalActivityRow;
   /** This recording was already stored. */
@@ -9527,6 +9557,8 @@ export async function storeRecordedRun(
     recovery?: HeartRateRecovery | null;
     /** Meters climbed while moving, from the iPhone's barometer (P7). */
     elevation_gain_m?: number | null;
+    /** A planned run's laps, one per step it ran (planned-runs P9). */
+    laps?: RunLap[] | null;
   },
 ): Promise<RecordedRunStoreResult> {
   const recordingId = input.recording_id.toLowerCase();
@@ -9547,8 +9579,12 @@ export async function storeRecordedRun(
   const recovery = input.recovery ?? null;
   const elevationGain = input.elevation_gain_m ?? null;
   const heartRate = encodeHeartRate(input.run.hr, input.run.hr_start_ms);
+  const laps = input.laps && input.laps.length > 0 ? input.laps : null;
   const existing = await read();
   if (existing) {
+    // A retry can carry the laps of a build that didn't send them; laps
+    // already kept are never replaced.
+    if (laps && !memberDeleted(existing)) await keepLapsStatement(db, userId, id, laps).run();
     // A retry can carry the heart rate a first attempt from an older build
     // didn't keep; a series already kept is never replaced.
     if (heartRate && !memberDeleted(existing)) {
@@ -9623,6 +9659,7 @@ export async function storeRecordedRun(
     );
   }
   if (heartRate) statements.push(keepHeartRateStatement(db, userId, id, heartRate, { replace: false }));
+  if (laps) statements.push(keepLapsStatement(db, userId, id, laps));
   const [inserted] = await db.batch(statements);
   // Losing a race to the same recording id.
   if ((inserted!.meta.changes ?? 0) === 0) {
@@ -9649,6 +9686,9 @@ export interface StoredActivityRoute {
   /** The recorded run's heart rate after the stop (P7); null for a Health
    * route or a run recorded without it. */
   heart_rate_recovery: HeartRateRecovery | null;
+  /** A planned run's laps, one per step it ran (planned-runs P9); null for
+   * a Health route or a run recorded without a plan. */
+  laps: RunLap[] | null;
 }
 
 /**
@@ -9668,9 +9708,11 @@ export async function getActivityRoute(
   const row = await db
     .prepare(
       `SELECT a.id AS activity_id, a.source, a.external_id, r.route,
-              a.recovery_hr_at_stop, a.recovery_hr_after_60s, a.recovery_hr_after_120s
+              a.recovery_hr_at_stop, a.recovery_hr_after_60s, a.recovery_hr_after_120s,
+              l.laps
          FROM external_activities a
          LEFT JOIN activity_routes r ON r.activity_id = a.id AND r.user_id = a.user_id
+         LEFT JOIN activity_laps l ON l.activity_id = a.id AND l.user_id = a.user_id
         WHERE a.user_id = ?1
           AND (a.id = ?2 OR a.duplicate_of = ?2)
           AND (a.deleted_at IS NULL OR a.duplicate_of IS NOT NULL)
@@ -9687,6 +9729,7 @@ export async function getActivityRoute(
       recovery_hr_at_stop: number | null;
       recovery_hr_after_60s: number | null;
       recovery_hr_after_120s: number | null;
+      laps: string | null;
     }>();
   if (!row) return null;
   return {
@@ -9701,6 +9744,7 @@ export async function getActivityRoute(
           after_120s: row.recovery_hr_after_120s,
         }
       : null,
+    laps: row.source === 'recording' && row.laps !== null ? parseRunLaps(row.laps) : null,
   };
 }
 
@@ -9875,7 +9919,7 @@ export async function deleteRecordedRun(
                 synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
                 canonical = 1,
                 duplicate_of = NULL`;
-  const [updated, , health] = await db.batch([
+  const [updated, , , health] = await db.batch([
     db
       .prepare(
         `UPDATE external_activities
@@ -9885,6 +9929,7 @@ export async function deleteRecordedRun(
       )
       .bind(id, userId, ts),
     db.prepare('DELETE FROM activity_routes WHERE activity_id = ?1 AND user_id = ?2').bind(id, userId),
+    db.prepare('DELETE FROM activity_laps WHERE activity_id = ?1 AND user_id = ?2').bind(id, userId),
     db
       .prepare(
         `UPDATE external_activities

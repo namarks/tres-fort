@@ -11,6 +11,7 @@ import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
 import { isEffort, type Sample } from '../trainingLoad';
 import { parseFit, FitParseError, type FitActivity } from '../fitFile';
 import { parseTcx, TcxParseError, type TcxRun } from '../tcxFile';
+import { parseRunLaps, type RunLap } from '../runLaps';
 import { asEncodedRoute } from '../activityRoute';
 import { importFitActivity, deleteFitActivity, setActivityEffort } from '../db';
 import type { HealthKitStreams } from '../db';
@@ -1661,6 +1662,18 @@ function recordingElevationGain(form: FormData): number | null | 'invalid' {
   return meters <= MAX_ELEVATION_GAIN_M ? meters : 'invalid';
 }
 
+/** The optional `laps` field: a planned run's laps as JSON (planned-runs
+ * P9, src/runLaps.ts). */
+function recordingLaps(form: FormData): RunLap[] | null | 'invalid' {
+  const value = form.get('laps');
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length > MAX_RECORDING_LAPS_CHARS) return 'invalid';
+  return parseRunLaps(value) ?? 'invalid';
+}
+
+/** Room for every lap the plan limits allow. */
+const MAX_RECORDING_LAPS_CHARS = 128 * 1024;
+
 apiRoutes.post('/activities/recordings', async (c) => {
   let form: FormData;
   try {
@@ -1680,6 +1693,8 @@ apiRoutes.post('/activities/recordings', async (c) => {
   if (recovery === 'invalid') return c.json({ error: 'invalid_recovery' }, 400);
   const elevationGain = recordingElevationGain(form);
   if (elevationGain === 'invalid') return c.json({ error: 'invalid_elevation_gain' }, 400);
+  const laps = recordingLaps(form);
+  if (laps === 'invalid') return c.json({ error: 'invalid_laps' }, 400);
   // The Workers FormData typing omits File entries; check at runtime.
   const file = form.get('file') as unknown;
   if (!(file instanceof File) || file.size === 0) {
@@ -1700,7 +1715,7 @@ apiRoutes.post('/activities/recordings', async (c) => {
   const trimmedName = name && name.trim().length > 0 ? name.trim() : null;
   const stored = await storeRecordedRun(c.env.DB, userId, {
     recording_id: recordingId, date, name: trimmedName, run, recovery,
-    elevation_gain_m: elevationGain,
+    elevation_gain_m: elevationGain, laps,
   });
   const kept = { recording_id: recordingId, activity_id: stored.activity.id };
   // A run the member deleted from Tres Fort is not sent anywhere again.
@@ -1756,7 +1771,7 @@ apiRoutes.get('/activities/:id/route', async (c) => {
   if (provider.ok) {
     return c.json({
       activity_id: provider.activity_id, source: 'intervals', recording_id: null, route: provider.route,
-      heart_rate_recovery: null,
+      heart_rate_recovery: null, laps: null,
     });
   }
   if (provider.reason === 'unavailable') return c.json({ error: 'intervals_unavailable' }, 502);

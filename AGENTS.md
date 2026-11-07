@@ -314,7 +314,10 @@ chat start) and a **prompt** (`coach_brief`).
   can carry the strap's heart rate at the stop and one and two minutes
   later (`recovery_hr_*`, migration 0067), served with its route; those
   minutes never count toward the run's time, heart rate or load. It can
-  carry the climb the iPhone's barometer measured (`elevation_gain_m`).
+  carry the climb the iPhone's barometer measured (`elevation_gain_m`),
+  and a planned run's laps, one per step plus what was run after the plan
+  (`activity_laps`, migration 0069, `src/runLaps.ts`), served with its
+  route and private like it.
   The file then goes to intervals.icu only when the member has connected it.
   `GET /api/activities/:id/route` also serves the route the app sent for an
   Apple Health run (`PUT /api/activities/healthkit/:id/route`, kept in

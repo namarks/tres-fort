@@ -190,6 +190,17 @@ p { margin: 0 0 0.75rem; }
   border: 1px solid var(--line); background: var(--surface-2);
 }
 .route-recovery { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.875rem; }
+.run-laps { margin-top: 0.75rem; }
+.run-laps h4 { margin: 0 0 0.4rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.run-laps ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.run-lap { border-left: 4px solid var(--line); padding-left: 0.6rem; }
+.run-lap.work { border-left-color: var(--accent); }
+.run-lap.recovery { border-left-color: var(--done); }
+.run-lap.warmup, .run-lap.cooldown { border-left-color: var(--muted); }
+.run-lap-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.run-lap-figures { font-family: JetBrains, monospace; font-size: 0.875rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.run-lap-target { font-size: 0.8125rem; color: var(--muted); }
+.run-lap-target.on-target { color: var(--done); }
 .route-map.outline svg { display: block; width: 100%; height: 100%; }
 .route-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .activity-charts { margin-top: 0.75rem; display: grid; gap: 0.75rem; }

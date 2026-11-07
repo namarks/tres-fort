@@ -206,8 +206,9 @@ integration or social breadth.
   P1's display in the app with a Start run button, P2's step-by-step
   guidance while recording, P3's spoken step and target cues, P5's in-app
   step editor, P6's watch-style step layout, P7's finished run (marked
-  done, a run-aware record, intervals.icu optional) and P8's "New run" from
-  a weekday are in the repository; P4 is the owner's real runs.
+  done, a run-aware record, intervals.icu optional), P8's "New run" from
+  a weekday and P9's laps for each step on the run's detail are in the
+  repository; P4 is the owner's real runs.
 - [Runs on Apple Watch](apple-watch/plan.md) — **paused**; the rest timer
   and run stats laid out for the Watch, planned runs sent to Apple's Workout
   app and brought back as recorded runs, then a Tres Fort Watch app that

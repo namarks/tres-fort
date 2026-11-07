@@ -443,7 +443,7 @@ function DayDetail(props: {
                     {item.planned_duration_sec ? ` · ${formatClock(item.planned_duration_sec)}` : ''}
                     {load ? ` · load ${Math.round(load.load)}${method ? ` (${method})` : ''}` : ''}
                   </div>
-                  {item.completed && routable.has(item.id) ? <RouteMap activityId={item.id} label={`Route of ${title}`} /> : null}
+                  {item.completed && routable.has(item.id) ? <RouteMap activityId={item.id} label={`Route of ${title}`} miles={miles} /> : null}
                   {item.completed && chartable.has(item.id)
                     ? <ActivityCharts activityId={item.id} kind={chartable.get(item.id)!} miles={miles} />
                     : null}

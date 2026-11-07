@@ -213,10 +213,51 @@ intervals.icu, which stays the store of completed runs.
   - No server change: the existing workout create, schedule and slot routes
     do the work and keep their audit (`actor='ios'`) and version checks.
 
+- [x] **P9 — Laps for each step** (in the repository)
+  - The owner, after an interval run on 2026-11-07: walking to cool down at
+    the end made the run's average pace look slow, hiding how hard the
+    intervals were. The post-run summary stays as it is; each step belongs
+    on the run's detail, like a watch's lap list on Strava.
+  - While recording, the plan's progress keeps where each step started and
+    ended in moving seconds and meters (`RunPlanProgress.laps`), including
+    a skipped step, in the run's checkpoint. A checkpoint from an older
+    build has no marks and its run gets no laps rather than a partial list.
+  - `RunLaps` turns the marks into laps: each step run, skipped or stopped
+    in, and the stretch after the plan finished as its own last lap, with
+    the run's own totals closing it so the laps add up to the run. Each
+    lap's average and maximum heart rate come from the readings taken while
+    it ran, pauses left out.
+  - The upload carries them twice. `POST /api/activities/recordings` takes
+    an optional `laps` field (JSON, `src/runLaps.ts`): each lap's step,
+    kind, repeat round, planned time or distance, target, start, moving
+    time, distance, heart rate and how it ended. Migration 0069 keeps them
+    in `activity_laps`, once per recording (a retry fills missing laps,
+    never replaces them). The TCX file has one lap per step (intensity
+    Resting for a recovery), so intervals.icu shows each interval too. A
+    step that ends mid-track starts the next lap's track on the same point,
+    and `parseTcx` joins such tracks, so the route, its chart clock and the
+    stored heart rate run straight across a step change while a pause still
+    breaks them.
+  - `GET /api/activities/:id/route` serves the laps with the recording
+    (`laps`, null otherwise), also behind its intervals.icu copy. The app's
+    run card in a day and a planned run's record, and the web day panel,
+    list them under the run: "Run 2/4", "400 m · 1:33 · 6:14 /mi · 168
+    bpm", and the step's target with on target, faster or slower (above or
+    below for heart rate), "Skipped" or "Ended early", and "After the plan"
+    for the rest.
+  - Private like routes: group views and the coach never read them. The
+    account export includes them; deleting the run or the account removes
+    them.
+  - Not covered: laps of runs the app didn't record (intervals.icu reads
+    a watch's laps; Tres Fort could read them live like its route), splits
+    per mile or kilometer for a run without a plan, and laps for the coach.
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P9 | coordinates_with | plan:run-recorder | The laps change the recorder's checkpoint, upload and TCX file. |
+| P9 | gated_by | external:owner-release-approval | Migration 0069 must be applied before the API that writes laps, and the app needs a TestFlight build, each on the owner's written go-ahead. |
 | P3 | coordinates_with | plan:run-recorder#P3 | Spoken cues are tuned on the same real runs that check the recorder. The owner chose on 2026-10-31 to build P2 before those runs. |
 | P2 | coordinates_with | plan:run-recorder#P4 | Both change the recorder's screen and its pause handling. |
 | P4 | gated_by | external:owner-planned-runs-device-verification | Real runs on the owner's iPhone, on TestFlight build 60. |
@@ -225,7 +266,10 @@ intervals.icu, which stays the store of completed runs.
 
 **Now (@owner):** Run an interval session (P4); the first heart rate run
 is done. P8 reaches the phone with the next TestFlight build after it
-merges; it needs no Worker deploy or migration.
+merges; it needs no Worker deploy or migration. P9 (laps) needs, each on
+the owner's written go-ahead, migration 0069 applied before an API deploy,
+a `tres-fort-web` deploy and a TestFlight build; then the next interval
+run shows its laps.
 Run-recorder P3's real runs can use the same build.
 
 Released on 2026-10-31 with the owner's go-ahead: migration 0058 was applied
@@ -276,6 +320,18 @@ migration, since P5 saves through the existing slot route.
   name another workout has, and the weekday's "Run" label.
   `WeeklyScheduleJourneyTests` (nightly UI suite) makes a run from Monday,
   plans a repeat in the step editor and sees it on the weekday.
+- P9: `test/run_laps.test.ts` covers the lap format and its refusals,
+  `parseTcx` joining a track split on a shared point while a pause stays a
+  break, keeping laps with a recording and serving them with its route to
+  its member only, a retry filling but never replacing them, refusing
+  malformed laps before keeping anything, the export, and deleting them
+  with the run; `account_deletion.test.ts` covers the account.
+  `RunLapsTests` covers the step marks, laps with their own heart rate
+  and the stretch after the plan, a run stopped mid-step, no laps without
+  a plan or from an older checkpoint, moving and clock time around a
+  pause, the upload field, the TCX laps and shared points, and the rows
+  on the run's detail with their verdicts. `web/test/runLaps.test.ts`
+  covers the web's rows.
 - P5: `RunPlanEditingTests` covers saving steps in the plan's format and
   reading them back, the draft's add, move, edit and remove operations,
   repeat defaults, the server's limits and each step problem, and pace and

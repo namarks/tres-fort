@@ -6,7 +6,7 @@ import XCTest
 final class RunSummaryStatsTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_793_000_000)
 
-    private func run(moving: Double = 1800) -> RecordedRun {
+    private func finishedRun(moving: Double = 1800) -> RecordedRun {
         var run = RecordedRun(startedAt: start, timeZone: TimeZone(identifier: "UTC")!)
         run.movingSeconds = moving
         run.endedAt = start.addingTimeInterval(moving)
@@ -31,19 +31,19 @@ final class RunSummaryStatsTests: XCTestCase {
     // MARK: - Training load
 
     func testHeartRateLoadIsOneHundredForAnHourAtThreshold() {
-        var recorded = run()
+        var recorded = finishedRun()
         record(every: 5, through: 1795, bpm: 163, into: &recorded)
         // 359 gaps of 5 s and the last reading's 1 s: 1,796 s at threshold.
         XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1800, thresholdHeartRate: 163, thresholdPacePerKm: 300),
                        RunLoad.Result(load: 50, method: .heartRate))
-        var harder = run()
+        var harder = finishedRun()
         record(every: 5, through: 1795, bpm: 179.3, into: &harder)
         XCTAssertEqual(RunLoad.estimate(harder, movingSeconds: 1800, thresholdHeartRate: 163,
                                         thresholdPacePerKm: nil)?.load, 60)
     }
 
     func testTheLoadUsesTheHeartRateTheUploadCarries() {
-        var recorded = run()
+        var recorded = finishedRun()
         record(every: 5, through: 1795, bpm: 163, into: &recorded)
         // A strap reading with no track point within 5 s never reaches the
         // Worker, so it never counts here either.
@@ -58,7 +58,7 @@ final class RunSummaryStatsTests: XCTestCase {
     }
 
     func testReadingsWhilePausedNeverCount() {
-        var recorded = run()
+        var recorded = finishedRun()
         recorded.endedAt = start.addingTimeInterval(2100)
         recorded.pauses = [.init(start: start.addingTimeInterval(600), end: start.addingTimeInterval(900))]
         record(every: 5, through: 2095, bpm: 163, into: &recorded)
@@ -75,7 +75,7 @@ final class RunSummaryStatsTests: XCTestCase {
     }
 
     func testPaceThenAverageHeartRateWhenTheReadingsCoverTooLittle() {
-        var recorded = run(moving: 1500)
+        var recorded = finishedRun(moving: 1500)
         recorded.distanceMeters = 5000
         // 5:00 /km against a 5:00 /km threshold for 25 minutes.
         XCTAssertEqual(RunLoad.estimate(recorded, movingSeconds: 1500, thresholdHeartRate: 163, thresholdPacePerKm: 300),
@@ -100,7 +100,7 @@ final class RunSummaryStatsTests: XCTestCase {
     func testClimbCountsARiseOnceItClearsThreeMeters() {
         XCTAssertEqual(RunAltitude.gain([0, 1, 2, 5, 4, 8, 2, 2.5]), 9)
         XCTAssertEqual(RunAltitude.gain([0, 1, 2, 1, 2.9]), 0, "Barometer wobble is not a climb")
-        var recorded = run()
+        var recorded = finishedRun()
         XCTAssertNil(RunAltitude.climb(recorded))
         recorded.altitudes = [altitude(0, 0)]
         XCTAssertNil(RunAltitude.climb(recorded))
@@ -109,7 +109,7 @@ final class RunSummaryStatsTests: XCTestCase {
     }
 
     func testAHillWalkedUpWhilePausedIsNotClimbed() {
-        var recorded = run()
+        var recorded = finishedRun()
         recorded.pauses = [.init(start: start.addingTimeInterval(12), end: start.addingTimeInterval(20))]
         recorded.altitudes = [altitude(0, 0), altitude(10, 4), altitude(15, 20), altitude(20, 20), altitude(30, 24)]
         XCTAssertEqual(RunAltitude.movingSegments(recorded).map(\.count), [2, 2])
@@ -127,7 +127,7 @@ final class RunSummaryStatsTests: XCTestCase {
     }
 
     func testTheBarometerShapesElevationAtTheLevelGPSMeasured() {
-        var recorded = run()
+        var recorded = finishedRun()
         let points: [RecordedRun.RoutePoint] = [
             .init(timestamp: start, latitude: 45.5, longitude: -122.6, altitude: 100, horizontalAccuracy: 5),
             .init(timestamp: start.addingTimeInterval(10), latitude: 45.5, longitude: -122.6,

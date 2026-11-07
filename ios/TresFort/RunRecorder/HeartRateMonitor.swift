@@ -159,6 +159,22 @@ final class HeartRateMonitor: ObservableObject {
     }
 }
 
+/// Where a run's live heart rate comes from: the member's Bluetooth strap,
+/// or Apple Health's own readings during the workout, which come from
+/// headphones that measure heart rate (AirPods Pro 3, Powerbeats Pro 2) or
+/// a watch. The strap wins while it streams.
+enum HeartRateSource: Equatable {
+    case strap(name: String?)
+    case health(device: String?)
+
+    var label: String {
+        switch self {
+        case .strap(let name): name ?? "Strap"
+        case .health(let device): device ?? "Apple Health"
+        }
+    }
+}
+
 enum HeartRateCentralEvent: Equatable {
     case bluetooth(HeartRateMonitor.Bluetooth)
     case found(HeartRateMonitor.Strap)

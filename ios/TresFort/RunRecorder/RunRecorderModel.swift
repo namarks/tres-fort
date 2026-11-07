@@ -59,6 +59,8 @@ final class RunRecorderModel: ObservableObject {
     /// Health not saving the workout.
     @Published private(set) var note: String?
     @Published private(set) var latestHeartRate: RecordedRun.HeartRateSample?
+    /// Where `latestHeartRate` came from.
+    @Published private(set) var heartRateSource: HeartRateSource?
     /// The cool-down after a saved run, while the strap stays connected:
     /// the heart rate at the stop and one and two minutes later (P7). Nil
     /// without a strap reading at the stop.
@@ -387,6 +389,7 @@ final class RunRecorderModel: ObservableObject {
         uploadStatus = .idle
         completedWorkoutName = nil
         latestHeartRate = nil
+        heartRateSource = nil
         builderMoving = 0
         guard store(creating: true) != nil else {
             return fail("Très Fort couldn’t save a run on this iPhone. Check its storage and try again.")
@@ -564,6 +567,20 @@ final class RunRecorderModel: ObservableObject {
 
     var isMeasuringRecovery: Bool { measuringRecoveryOf != nil }
 
+    /// The connected strap read within the last few seconds.
+    private var strapStreaming: Bool {
+        guard heartRateMonitor.isConnected, let sample = heartRateMonitor.latest else { return false }
+        return now().timeIntervalSince(sample.timestamp) < Self.heartRateFreshness
+    }
+
+    /// Names the heart rate shown while the run records, such as the strap
+    /// or "AirPods Pro". Nil once the reading is stale.
+    func heartRateSourceLabel(at date: Date) -> String? {
+        guard isRecording, let sample = latestHeartRate, let heartRateSource,
+              date.timeIntervalSince(sample.timestamp) < Self.heartRateFreshness else { return nil }
+        return heartRateSource.label
+    }
+
     /// The strap's reading while it streams after a saved run: until Done,
     /// the strap drops or five minutes pass. Nil otherwise, when the summary
     /// falls back to the run's own heart rate.
@@ -652,6 +669,7 @@ final class RunRecorderModel: ObservableObject {
         run = nil
         note = nil
         latestHeartRate = nil
+        heartRateSource = nil
         plannedRun = nil
         completedWorkoutName = nil
         planSteps = []
@@ -735,10 +753,13 @@ final class RunRecorderModel: ObservableObject {
         guard var run else { return }
         if metrics.distanceMeters > 0 { run.distanceMeters = metrics.distanceMeters }
         if metrics.movingSeconds > 0 { builderMoving = metrics.movingSeconds }
-        if let sample = metrics.heartRate, sample.beatsPerMinute > 0,
+        // Health's own heart rate (headphones or a watch) counts only while
+        // the strap is quiet, so the two never mix in one run.
+        if let sample = metrics.heartRate, sample.beatsPerMinute > 0, !strapStreaming,
            run.heartRates.last.map({ sample.timestamp > $0.timestamp }) ?? true {
             run.heartRates.append(sample)
             latestHeartRate = sample
+            heartRateSource = .health(device: metrics.heartRateDevice)
         }
         self.run = run
         if phase == .running {
@@ -755,6 +776,7 @@ final class RunRecorderModel: ObservableObject {
               run.heartRates.last.map({ sample.timestamp > $0.timestamp }) ?? true else { return }
         run.heartRates.append(sample)
         latestHeartRate = sample
+        heartRateSource = .strap(name: heartRateMonitor.saved?.name)
         self.run = run
         engine?.addHeartRate(sample)
     }

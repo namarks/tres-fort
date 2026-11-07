@@ -209,7 +209,8 @@ struct RunRecorderView: View {
                     stat("Avg /\(unit.abbreviation)",
                          RunFormat.pace(RunPace.average(movingSeconds: moving, meters: meters, unit: unit)),
                          id: "averagePace")
-                    stat("Heart rate", heartRate(at: context.date), id: "heartRate")
+                    stat(Self.heartRateTitle(model.heartRateSourceLabel(at: context.date)), heartRate(at: context.date),
+                         id: "heartRate")
                 }
             }
         }
@@ -313,6 +314,12 @@ struct RunRecorderView: View {
 
     private static func bpm(_ value: Double?) -> String {
         value.map { "\(Int($0.rounded()))" } ?? "–"
+    }
+
+    /// "HR · AirPods Pro" while a source reads, so the member sees which
+    /// device the number comes from.
+    static func heartRateTitle(_ source: String?) -> String {
+        source.map { "HR · \($0)" } ?? "Heart rate"
     }
 
     private func heartRate(at date: Date) -> String {

@@ -363,12 +363,22 @@ coach sees it in the same place as Garmin runs.
       workout carries it as its elevation gain.
     - The App Store build strips `NSMotionUsageDescription` with the other
       recorder keys.
-  - [ ] **(e) Confirm on the device**
+  - [x] **(e) Name the heart rate's source** (in the repository)
+    - Apple Health's live workout feed also carries heart rate from
+      headphones that measure it (AirPods Pro 3, Powerbeats Pro 2) or a
+      watch; the owner saw it on 2026-11-07 with no strap on. A connected
+      strap that read in the last 15 seconds wins, and Health's readings
+      count only while it is quiet, so the two never mix in one run.
+    - The running screens label the heart rate with its source while it
+      is fresh: "HR · AirPods Pro" (the device Health names on its
+      readings, else "Apple Health") or "HR · " and the strap's name.
+  - [ ] **(f) Confirm on the device**
     - On a TestFlight build with the owner's strap: heart rate stays live
       after the stop, the cool-down keeps two readings, and the run's card
       shows them after the upload (build 66). With the next build: the
       load matches the run's load in Activity, the Motion & Fitness prompt
-      appears once, and the climb looks right on a hilly route.
+      appears once, the climb looks right on a hilly route, and AirPods
+      heart rate shows its source and gives way to the strap.
 
 ## Execution frontier
 
@@ -403,9 +413,9 @@ maps of an intervals.icu run and of a Strava run show on the device, after
 allowing Health's workout-route access on build 65.
 
 P7(a) and (b) are live since the 2026-11-06 release (migration 0067, API
-c2252e44, TestFlight build 66). P7(c) and (d) are in the repository and
+c2252e44, TestFlight build 66). P7(c), (d) and (e) are in the repository and
 need, each on the owner's written go-ahead, an API deploy (no migration)
-and a TestFlight build; then (e) is a run with the strap on a hilly route.
+and a TestFlight build; then (f) is a run with the strap on a hilly route.
 
 P3 runs on the owner's iPhone. P1 and P2 are delivered in the repository;
 their HealthKit, location, ActivityKit and speech calls
@@ -525,6 +535,10 @@ the scene delegate is left to P3's force-quit check.
   dropped strap, and a run without a strap uploading at once.
   `RunRecordingTests` covers the multipart fields and runs saved before
   them. `web/test/routeMap.test.ts` covers the web's recovery text.
+  For (e), `RunRecorderTests` covers Health's heart rate counting while
+  the strap is quiet, the strap winning while it streams, Health taking
+  over when the strap drops, and the source label and its fallback. The
+  HealthKit device lookup is compiled only.
   For (c) and (d), `RunSummaryStatsTests` covers the heart rate, pace and
   average heart rate loads, scoring only readings the upload carries,
   readings while paused, the 3 m climb rule,

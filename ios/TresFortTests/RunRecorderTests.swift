@@ -558,6 +558,49 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertTrue(model.heartRateMonitor.isConnected, "The strap stays on while the recorder is open")
     }
 
+    func testTheStrapWinsOverHealthsHeartRateAndTheScreenNamesTheSource() async throws {
+        saveStrap()
+        let model = makeModel()
+        model.opened()
+        central.send(.bluetooth(.on))
+        central.send(.connected(strap.id))
+        await model.start()
+
+        // Headphones read through Health while the strap is quiet.
+        clock = clock.addingTimeInterval(5)
+        engine.onMetrics?(.init(distanceMeters: 20, movingSeconds: 5,
+                                heartRate: .init(timestamp: clock, beatsPerMinute: 160),
+                                heartRateDevice: "AirPods Pro"))
+        XCTAssertEqual(model.run?.heartRates.map(\.beatsPerMinute), [160])
+        XCTAssertEqual(model.heartRateSourceLabel(at: clock), "AirPods Pro")
+        XCTAssertEqual(RunRecorderView.heartRateTitle(model.heartRateSourceLabel(at: clock)), "HR · AirPods Pro")
+
+        // The strap starts streaming and wins: Health's readings stop counting.
+        clock = clock.addingTimeInterval(1)
+        central.send(.heartRate(strap.id, 150))
+        XCTAssertEqual(model.heartRateSourceLabel(at: clock), "Polar H10")
+        clock = clock.addingTimeInterval(1)
+        engine.onMetrics?(.init(distanceMeters: 25, movingSeconds: 7,
+                                heartRate: .init(timestamp: clock, beatsPerMinute: 162),
+                                heartRateDevice: "AirPods Pro"))
+        XCTAssertEqual(model.run?.heartRates.map(\.beatsPerMinute), [160, 150])
+        XCTAssertEqual(model.latestHeartRate?.beatsPerMinute, 150)
+        XCTAssertEqual(model.heartRateSourceLabel(at: clock), "Polar H10")
+
+        // The strap drops, and Health's readings take over again.
+        central.send(.disconnected(strap.id))
+        clock = clock.addingTimeInterval(2)
+        engine.onMetrics?(.init(distanceMeters: 30, movingSeconds: 9,
+                                heartRate: .init(timestamp: clock, beatsPerMinute: 158)))
+        XCTAssertEqual(model.run?.heartRates.map(\.beatsPerMinute), [160, 150, 158])
+        XCTAssertEqual(model.heartRateSourceLabel(at: clock), "Apple Health",
+                       "Without a device from Health, the label names Health")
+
+        // A stale reading shows no source.
+        XCTAssertNil(model.heartRateSourceLabel(at: clock.addingTimeInterval(20)))
+        XCTAssertEqual(RunRecorderView.heartRateTitle(nil), "Heart rate")
+    }
+
     // MARK: - After the run (P7)
 
     /// A run worth saving with the strap connected, ending at 165 bpm.

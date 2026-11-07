@@ -8,6 +8,9 @@ struct RunWorkoutMetrics: Equatable {
     /// Builder elapsed time, which excludes pauses.
     var movingSeconds: Double
     var heartRate: RecordedRun.HeartRateSample?
+    /// The device Health took its heart rate from, such as "AirPods Pro",
+    /// when Health says. Nil when it doesn't.
+    var heartRateDevice: String? = nil
 }
 
 /// What ending a run left in Apple Health.
@@ -92,6 +95,12 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
     private var heartRateRefused = false
     /// The barometer's climb, saved as the workout's elevation gain.
     private var elevationAscended: Double?
+    /// The device Health's own heart rate readings come from (headphones
+    /// or a watch), looked up from the readings once, then kept.
+    private var heartRateDevice: String?
+    private var lastDeviceLookup: Date?
+    /// How often a lookup that found no device is tried again.
+    private static let deviceLookupInterval: TimeInterval = 20
 
     /// Strap readings go to the builder in batches.
     private static let heartRateBatch = 10
@@ -247,6 +256,8 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         sentRoute = false
         sentHeartRate = false
         heartRateRefused = false
+        heartRateDevice = nil
+        lastDeviceLookup = nil
     }
 
     func setElevationAscended(_ meters: Double) {
@@ -259,9 +270,39 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
         sentRoute = false
         sentHeartRate = false
         heartRateRefused = false
+        heartRateDevice = nil
+        lastDeviceLookup = nil
         session = nil
         builder = nil
         routeBuilder = nil
+    }
+
+    /// Names the device behind Health's heart rate: the newest reading since
+    /// the run started that a device took. The strap's readings, which this
+    /// app writes, carry no device and are skipped.
+    private func lookUpHeartRateDevice() {
+        guard heartRateDevice == nil, let start = builder?.startDate else { return }
+        if let last = lastDeviceLookup, Date().timeIntervalSince(last) < Self.deviceLookupInterval { return }
+        lastDeviceLookup = Date()
+        let ownBundle = Bundle.main.bundleIdentifier
+        let query = HKSampleQuery(
+            sampleType: HKQuantityType(.heartRate),
+            predicate: HKQuery.predicateForSamples(withStart: start, end: nil),
+            limit: 20,
+            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]
+        ) { [weak self] _, samples, _ in
+            let name = samples?.lazy.compactMap { sample -> String? in
+                if let device = sample.device?.name, !device.isEmpty { return device }
+                let source = sample.sourceRevision.source
+                return source.bundleIdentifier == ownBundle || source.name.isEmpty ? nil : source.name
+            }.first
+            guard let name else { return }
+            Task { @MainActor in
+                guard let self, self.builder?.startDate == start else { return }
+                self.heartRateDevice = name
+            }
+        }
+        store.execute(query)
     }
 
     nonisolated private static func metrics(from builder: HKLiveWorkoutBuilder) -> RunWorkoutMetrics {
@@ -306,7 +347,14 @@ extension HealthRunWorkoutEngine: HKWorkoutSessionDelegate, HKLiveWorkoutBuilder
     nonisolated func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder,
                                     didCollectDataOf collectedTypes: Set<HKSampleType>) {
         let metrics = Self.metrics(from: workoutBuilder)
-        Task { @MainActor in self.onMetrics?(metrics) }
+        Task { @MainActor in
+            var metrics = metrics
+            if metrics.heartRate != nil {
+                self.lookUpHeartRateDevice()
+                metrics.heartRateDevice = self.heartRateDevice
+            }
+            self.onMetrics?(metrics)
+        }
     }
 
     nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}

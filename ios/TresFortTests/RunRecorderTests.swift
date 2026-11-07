@@ -315,9 +315,14 @@ final class RunRecorderTests: XCTestCase {
     func testSplitAnnouncementReadsAsWords() {
         let split = RunSplit(number: 3, unit: .miles, seconds: 512, averagePace: 521)
         XCTAssertEqual(split.spokenText,
-                       "Mile 3. Split 8 minutes 32 seconds. Average pace 8 minutes 41 seconds per mile.")
+                       "Mile 3. Split 8 32. Average pace 8 41 a mile.")
         XCTAssertEqual(RunSplit(number: 1, unit: .kilometers, seconds: 300, averagePace: 300).spokenText,
-                       "Kilometer 1. Split 5 minutes. Average pace 5 minutes per kilometer.")
+                       "Kilometer 1. Split 5 minutes. Average pace 5 minutes a kilometer.")
+        XCTAssertEqual(RunSplit.spokenPace(390), "6 30")
+        XCTAssertEqual(RunSplit.spokenPace(365), "6 oh 5")
+        XCTAssertEqual(RunSplit.spokenPace(60), "1 minute")
+        XCTAssertEqual(RunSplit.spokenPace(45), "45 seconds")
+        XCTAssertEqual(RunSplit.spokenPace(3_661), "1 hour 1 minute 1 second")
         XCTAssertEqual(RunSplit.spoken(3_661), "1 hour 1 minute 1 second")
         XCTAssertEqual(RunSplit.spoken(0.2), "0 seconds")
     }

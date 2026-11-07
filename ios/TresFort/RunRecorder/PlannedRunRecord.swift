@@ -152,14 +152,17 @@ struct PlannedRunRecordView: View {
 
     var body: some View {
         WithActivityRoute(activity: run, access: routeAccess) { segments, recordingID, recovery, laps in
-            record(routeSegments: segments,
-                   recordedRunID: run?.recordedRunID(routeRecordingID: recordingID),
-                   recovery: recovery, laps: laps)
+            WithActivityStreams(activity: run, access: routeAccess) { streams in
+                record(routeSegments: segments,
+                       recordedRunID: run?.recordedRunID(routeRecordingID: recordingID),
+                       recovery: recovery, laps: laps, streams: streams)
+            }
         }
     }
 
     private func record(routeSegments: [[CLLocationCoordinate2D]], recordedRunID: String?,
-                        recovery: HeartRateRecovery?, laps: [ActivityLap]) -> some View {
+                        recovery: HeartRateRecovery?, laps: [ActivityLap],
+                        streams: ActivityStreams?) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "figure.run")
@@ -204,7 +207,7 @@ struct PlannedRunRecordView: View {
                 if !routeSegments.isEmpty {
                     ActivityRouteThumbnail(segments: routeSegments)
                 }
-                ActivityChartsSection(activity: run, access: routeAccess)
+                ActivityChartsSection(activity: run, streams: streams)
                 // Each step of the plan as it was run (P9).
                 if !laps.isEmpty {
                     RunLapsView(laps: laps, unit: unit)

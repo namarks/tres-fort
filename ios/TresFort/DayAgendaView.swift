@@ -706,9 +706,11 @@ struct DayAgendaView: View {
     /// here.
     private func activityCard(_ a: ExternalActivity) -> some View {
         WithActivityRoute(activity: a, access: sync.activityRouteAccess) { segments, recordingID, recovery, laps in
-            activityCardContent(a, routeSegments: segments,
-                                recordedRunID: a.recordedRunID(routeRecordingID: recordingID),
-                                recovery: recovery, laps: laps)
+            WithActivityStreams(activity: a, access: sync.activityRouteAccess) { streams in
+                activityCardContent(a, routeSegments: segments,
+                                    recordedRunID: a.recordedRunID(routeRecordingID: recordingID),
+                                    recovery: recovery, laps: laps, streams: streams)
+            }
         }
     }
 
@@ -716,7 +718,8 @@ struct DayAgendaView: View {
                                      routeSegments: [[CLLocationCoordinate2D]],
                                      recordedRunID: String?,
                                      recovery: HeartRateRecovery?,
-                                     laps: [ActivityLap]) -> some View {
+                                     laps: [ActivityLap],
+                                     streams: ActivityStreams?) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: a.glyph)
@@ -754,7 +757,7 @@ struct DayAgendaView: View {
             if !routeSegments.isEmpty {
                 ActivityRouteThumbnail(segments: routeSegments)
             }
-            ActivityChartsSection(activity: a, access: sync.activityRouteAccess)
+            ActivityChartsSection(activity: a, streams: streams)
             if !laps.isEmpty {
                 RunLapsView(laps: laps, unit: RunDistanceUnit.preferred())
             }

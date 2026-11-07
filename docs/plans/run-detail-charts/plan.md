@@ -1,6 +1,6 @@
 # Run detail charts
 
-Slug: run-detail-charts · Status: active · Updated: 2026-11-06 · Theme: connected-training
+Slug: run-detail-charts · Status: active · Updated: 2026-11-07 · Theme: connected-training
 
 ## Goal
 
@@ -60,6 +60,10 @@ group views or coach tools.
     (`ActivityStreamsStore`); "nothing to chart" is remembered for ten
     minutes and a failed read is tried again. A chart with no data is left
     out.
+  - Fix (2026-11-07): on device no card ever showed charts. The read was a
+    `.task` on the charts view, which is empty until series arrive, and
+    SwiftUI never runs a task on an empty view. `WithActivityStreams` now
+    reads them from the whole card, like `WithActivityRoute`.
 - [x] **P2 — Charts on the web**
   - The same charts under each completed activity in the web day panel
     (`web/src/ActivityChartsView.tsx`, pure series and paths in
@@ -103,7 +107,8 @@ group views or coach tools.
   - On device: an intervals.icu run, a run recorded in the app and an
     Apple Health run each show their charts, heart rate included, and an
     Apple Health sport (soccer) shows its heart-rate chart; then
-    archive this plan.
+    archive this plan. TestFlight 66 and 67 show no charts at all (see the
+    P1 fix), so this check needs a build with that fix.
 
 ## Execution frontier
 
@@ -122,10 +127,11 @@ series, so it can follow P1 or run beside it.
 
 ## Next step
 
-**Now (@owner):** Approve the release in writing: apply migration 0068 and
-deploy the API, deploy `tres-fort-web` and the website (privacy policy),
-and upload a TestFlight build. Then check a recorded run and an Apple
-Health run show heart rate on device, and archive this plan.
+**Now (@owner):** The server side is live (migration 0068 and the API,
+web and website deploys went out with the 0dc0ef8 release). Approve in
+writing a TestFlight build that carries the P1 loading fix, then check a
+recorded run, an intervals.icu run and an Apple Health run show their
+charts on device, and archive this plan.
 
 ## Verification evidence
 
@@ -140,7 +146,8 @@ Health run show heart rate on device, and archive this plan.
   series in miles and kilometers, line breaks at standing still and missing
   points, speed for a ride, heart-rate-only activities over moving time,
   the percentile clamp, the scrub read-out, the per-account store and which
-  activities ask for series.
+  activities ask for series; `testACardOnScreenAsksForItsSeries` hosts a
+  card in a window and checks its series are asked for.
 - P3: `test/activity_heart_rates.test.ts` covers the encoding, readings on
   moving time lined up with a route across a pause, heart rate alone, an
   route whose first fix came after the start, an Apple Health run's

@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import TresFort
 
@@ -148,5 +149,38 @@ final class ActivityChartsTests: XCTestCase {
         XCTAssertTrue(activity(source: "fit", kind: "ride", hr: 140).mayHaveStreams)
         XCTAssertFalse(activity(source: "manual", kind: "run").mayHaveStreams)
         XCTAssertFalse(activity(source: "manual", kind: "other", hr: 140).mayHaveStreams)
+    }
+
+    /// A card on screen asks for its series and draws them. Before the
+    /// fix the read hung off the empty charts, and SwiftUI never runs a
+    /// `.task` on an empty view, so no card ever asked.
+    func testACardOnScreenAsksForItsSeries() async throws {
+        let response = try decode()
+        let asked = expectation(description: "series asked for")
+        asked.assertForOverFulfill = false
+        let store = ActivityStreamsStore(fetch: { id, _ in
+            XCTAssertEqual(id, "i9")
+            asked.fulfill()
+            return response
+        })
+        let run = ExternalActivity(
+            id: "i9", source: "intervals", external_id: "i9", date: "2026-11-06", kind: "run",
+            name: "Run intervals", moving_time_sec: 60, elapsed_time_sec: nil, distance_m: 205,
+            average_watts: nil, weighted_avg_watts: nil, average_hr: 148, max_hr: nil, training_load: nil,
+            intensity: nil, calories: nil, elevation_gain_m: nil, synced_at: 1, deleted_at: nil)
+        let card = WithActivityStreams(activity: run, access: ActivityRouteAccess(accountID: "a", jwt: "j"),
+                                       store: store) { streams in
+            VStack {
+                Text("Run intervals")
+                ActivityChartsSection(activity: run, streams: streams)
+            }
+        }
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow(frame: UIScreen.main.bounds)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.rootViewController = UIHostingController(rootView: card)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        await fulfillment(of: [asked], timeout: 10)
     }
 }

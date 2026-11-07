@@ -117,6 +117,18 @@ export function parseTcx(text: string): TcxRun {
     }
   }
   tracks.sort((a, b) => a[0]!.t - b[0]!.t);
+  // A planned run's laps split a track where a step ends (planned-runs P9):
+  // the next lap's track starts with the same point the last one ended on,
+  // which a pause never does. Such a track continues the one before it, so
+  // the route, its moving clock and the heart rate on it run straight on.
+  for (let i = tracks.length - 1; i > 0; i--) {
+    const before = tracks[i - 1]!;
+    const track = tracks[i]!;
+    if (track[0]!.t === before[before.length - 1]!.t) {
+      tracks.splice(i, 1);
+      before.push(...track.slice(1));
+    }
+  }
 
   const firstPoint = tracks[0]?.[0]?.t ?? null;
   const start = lapStart ?? firstPoint ?? time(tag(activity[2]!, 'Id'));
